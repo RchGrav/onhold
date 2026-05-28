@@ -17,7 +17,7 @@ cleanup_env() {
   local store ids id
   store="$HOME/.local/state/sigmund"
   if [ -d "$store" ]; then
-    ids=$(find "$store" -maxdepth 1 -type f -name '*.json' -printf '%f\n' 2>/dev/null | sed 's/\.json$//' || true)
+    ids=$(find "$store" -maxdepth 1 -type f -name '*.json' -exec basename {} .json \; 2>/dev/null || true)
     for id in $ids; do
       "$SIGMUND_BIN" kill "$id" >/dev/null 2>&1 || true
     done
@@ -136,6 +136,17 @@ test_fast_exit_record_exited() {
   [ -n "$id" ] || return 1
   sleep 0.1
   "$SIGMUND_BIN" list | grep -Eq "^$id[[:space:]].*exited"
+}
+
+test_exec_replacement_remains_controllable() {
+  local out id pgid
+  out=$("$SIGMUND_BIN" bash -c 'exec sleep 300' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  [ -n "$id" ] && [ -n "$pgid" ] || return 1
+  "$SIGMUND_BIN" list | grep -Eq "^$id[[:space:]].*running" || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
+  pgid_terminated "$pgid"
 }
 
 test_corrupt_record_handling() {
@@ -268,14 +279,14 @@ test_tail_verb_existing_id() {
 
 test_persistent_stale_records() {
   local out id store bootfile oldboot list_out stale_id stale_log
-  out=$("$SIGMUND_BIN" bash -c 'echo stale-line; sleep 0.2' 2>&1) || return 1
+  bootfile="$TEST_ROOT/fake_boot_id"
+  printf 'boot-a\n' >"$bootfile" || return 1
+  out=$(SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" bash -c 'echo stale-line; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   store="$HOME/.local/state/sigmund"
   stale_log="$store/$id.log"
   [ -f "$stale_log" ] || return 1
-  bootfile="$TEST_ROOT/fake_boot_id"
-  printf 'boot-a\n' >"$bootfile" || return 1
   SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" list >/dev/null || return 1
   printf 'boot-b\n' >"$bootfile" || return 1
   list_out=$(SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" list) || return 1
@@ -368,6 +379,7 @@ run_test "start output includes stop helper" test_start_output_stop_hint
 run_test "stop kills full process group (children)" test_group_kill_children
 run_test "exec failure creates no record" test_exec_failure_no_record
 run_test "fast exit command is recorded as exited" test_fast_exit_record_exited
+run_test "exec replacement remains controllable" test_exec_replacement_remains_controllable
 run_test "corrupt record warning and prune cleanup" test_corrupt_record_handling
 run_test "invalid pgid=0 record is not listed as running" test_invalid_pgid_record
 run_test "orphan logs are removed by prune" test_orphan_log_cleanup

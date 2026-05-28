@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -13,7 +14,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#if defined(__linux__)
 #include <sys/random.h>
+#endif
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <sys/sysctl.h>
+#include <sys/time.h>
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -188,11 +196,27 @@ static int read_file_trim(const char *path, char *buf, size_t n) {
 }
 
 static int get_boot_id(char *buf, size_t n) {
-    return read_file_trim(SIGMUND_BOOT_ID_PATH, buf, n);
+    const char *path = getenv("SIGMUND_BOOT_ID_PATH");
+    if (path && *path) {
+        return read_file_trim(path, buf, n);
+    }
+    if (read_file_trim(SIGMUND_BOOT_ID_PATH, buf, n) == 0) {
+        return 0;
+    }
+#if defined(__APPLE__)
+    struct timeval boottime;
+    size_t len = sizeof(boottime);
+    if (sysctlbyname("kern.boottime", &boottime, &len, NULL, 0) == 0 && len == sizeof(boottime)) {
+        snprintf(buf, n, "macos-%lld.%06d", (long long)boottime.tv_sec, boottime.tv_usec);
+        return 0;
+    }
+#endif
+    return -1;
 }
 
 static int rand_bytes(uint8_t *buf, size_t n) {
     size_t off = 0;
+#if defined(__linux__)
     bool fallback = false;
     while (off < n && !fallback) {
         ssize_t r = getrandom(buf + off, n - off, 0);
@@ -212,6 +236,7 @@ static int rand_bytes(uint8_t *buf, size_t n) {
     if (!fallback) {
         return 0;
     }
+#endif
 
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd < 0) {
@@ -484,7 +509,48 @@ static int append_cmd_escaped(char *dst, size_t n, size_t *off, const char *arg)
     return 0;
 }
 
+#if defined(__APPLE__)
+static int mac_kinfo_pid(pid_t pid, struct kinfo_proc *kp) {
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+    size_t len = sizeof(*kp);
+    memset(kp, 0, sizeof(*kp));
+    if (sysctl(mib, 4, kp, &len, NULL, 0) != 0 || len == 0) {
+        return -1;
+    }
+    return 0;
+}
+#endif
+
 static int count_session_escapees(pid_t sid, pid_t expected_pgid) {
+#if defined(__APPLE__)
+    int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
+    size_t len = 0;
+    if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0) {
+        return -1;
+    }
+    struct kinfo_proc *procs = malloc(len);
+    if (!procs) {
+        return -1;
+    }
+    if (sysctl(mib, 3, procs, &len, NULL, 0) != 0) {
+        free(procs);
+        return -1;
+    }
+    int count = 0;
+    size_t nprocs = len / sizeof(procs[0]);
+    for (size_t i = 0; i < nprocs; i++) {
+        pid_t pid = procs[i].kp_proc.p_pid;
+        if (pid <= 0) {
+            continue;
+        }
+        pid_t proc_sid = getsid(pid);
+        if (proc_sid == sid && procs[i].kp_eproc.e_pgid != expected_pgid) {
+            count++;
+        }
+    }
+    free(procs);
+    return count;
+#else
     DIR *d = opendir("/proc");
     if (!d) {
         return -1;
@@ -552,6 +618,7 @@ static int count_session_escapees(pid_t sid, pid_t expected_pgid) {
     }
     closedir(d);
     return count;
+#endif
 }
 
 static void report_session_escapees(const struct record *r) {
@@ -564,6 +631,23 @@ static void report_session_escapees(const struct record *r) {
 }
 
 static int read_proc_stat_tokens(pid_t pid, char *state_out, uint64_t *starttime_out) {
+#if defined(__APPLE__)
+    struct kinfo_proc kp;
+    if (mac_kinfo_pid(pid, &kp) != 0) {
+        return -1;
+    }
+    if (state_out) {
+        *state_out = kp.kp_proc.p_stat == SZOMB ? 'Z' : '?';
+    }
+    if (starttime_out) {
+        struct timeval tv = kp.kp_proc.p_starttime;
+        if (tv.tv_sec == 0 && tv.tv_usec == 0) {
+            return -1;
+        }
+        *starttime_out = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+    }
+    return 0;
+#else
     char path[128], buf[4096];
     if (checked_snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid) != 0) {
         return -1;
@@ -605,14 +689,22 @@ static int read_proc_stat_tokens(pid_t pid, char *state_out, uint64_t *starttime
         }
     }
     return (state_out && got_state && !starttime_out) ? 0 : -1;
+#endif
 }
 
 static int read_proc_exe(pid_t pid, uint64_t *dev, uint64_t *ino) {
-    char path[128];
     struct stat st;
+#if defined(__APPLE__)
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(pid, path, sizeof(path)) <= 0) {
+        return -1;
+    }
+#else
+    char path[128];
     if (checked_snprintf(path, sizeof(path), "/proc/%ld/exe", (long)pid) != 0) {
         return -1;
     }
+#endif
     if (stat(path, &st) != 0) {
         return -1;
     }
@@ -622,6 +714,12 @@ static int read_proc_exe(pid_t pid, uint64_t *dev, uint64_t *ino) {
 }
 
 static bool leader_present(pid_t pid) {
+#if defined(__APPLE__)
+    struct kinfo_proc kp;
+    if (mac_kinfo_pid(pid, &kp) == 0) {
+        return kp.kp_proc.p_stat != SZOMB;
+    }
+#else
     char path[128];
     struct stat st;
     if (checked_snprintf(path, sizeof(path), "/proc/%ld", (long)pid) != 0) {
@@ -634,6 +732,7 @@ static bool leader_present(pid_t pid) {
         }
         return true;
     }
+#endif
     if (kill(pid, 0) == 0 || errno == EPERM) {
         return true;
     }
@@ -1055,8 +1154,7 @@ static enum run_state eval_state(const struct record *r, const char *current_boo
             if (now_starttime != r->proc_starttime_ticks) {
                 return STATE_STALE;
             }
-        }
-        if (r->exe_dev && r->exe_ino) {
+        } else if (r->exe_dev && r->exe_ino) {
             uint64_t d, i;
             if (read_proc_exe(r->pid, &d, &i) == 0 && (d != r->exe_dev || i != r->exe_ino)) {
                 return STATE_STALE;
@@ -1155,7 +1253,7 @@ static int perform_start(const char *dir, bool tail, int argc, char **argv) {
     }
 
     int pipefd[2];
-#ifdef O_CLOEXEC
+#if defined(__linux__) && defined(O_CLOEXEC)
     if (pipe2(pipefd, O_CLOEXEC) != 0)
 #endif
     {

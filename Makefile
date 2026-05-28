@@ -1,7 +1,12 @@
 CC ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2
 LDFLAGS ?=
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+STATIC_LDFLAGS ?=
+else
 STATIC_LDFLAGS ?= -static
+endif
 TEST_LDFLAGS ?=
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 VERSION_CPPFLAG := -DSIGMUND_VERSION=\"$(VERSION)\"
