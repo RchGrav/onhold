@@ -21,7 +21,7 @@ jobs:
     name: Test (ubuntu amd64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build static and dynamic
         run: |
           make clean
@@ -69,7 +69,7 @@ jobs:
             static_ldflags: ''
             package_binary: sigmund-dynamic
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve version
         id: version
@@ -100,7 +100,7 @@ jobs:
           ./.github/scripts/package_tarball.sh "${{ matrix.target }}" "${{ steps.version.outputs.value }}" "${{ matrix.package_binary }}" dist
 
       - name: Upload GNU artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target }}
           path: dist/*.tar.gz
@@ -124,7 +124,7 @@ jobs:
           - target: linux-riscv64-musl-static
             zig_target: riscv64-linux-musl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve version
         id: version
@@ -156,7 +156,7 @@ jobs:
           ./.github/scripts/package_tarball.sh "${{ matrix.target }}" "${{ steps.version.outputs.value }}" sigmund dist
 
       - name: Upload musl artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target }}
           path: dist/*.tar.gz
@@ -178,7 +178,7 @@ jobs:
             arch: x86_64
             uname_m: x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Validate runner architecture
         run: test "$(uname -m)" = "${{ matrix.uname_m }}"
@@ -205,7 +205,7 @@ jobs:
           ./.github/scripts/package_tarball.sh "${{ matrix.target }}" "${{ steps.version.outputs.value }}" sigmund dist
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target }}
           path: dist/*.tar.gz
@@ -220,7 +220,7 @@ jobs:
       - build-macos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: '*'
           path: dist

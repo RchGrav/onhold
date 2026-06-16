@@ -16,7 +16,7 @@ jobs:
       matrix:
         cc: [gcc, clang]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build static and dynamic with strict warnings, then run regression suite
         run: |
           make clean
@@ -29,7 +29,7 @@ jobs:
     name: Linux root-runner harness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run the same test suite with the harness process starting as root
         run: |
           sudo make clean
@@ -49,7 +49,7 @@ jobs:
             arch: x86_64
             uname_m: x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate runner architecture
         run: test "$(uname -m)" = "${{ matrix.uname_m }}"
       - name: Build and run tests on macOS
@@ -62,7 +62,7 @@ jobs:
   sanitizers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run tests with ASan/UBSan to catch memory and UB regressions
         run: |
           make clean
@@ -71,7 +71,7 @@ jobs:
   static-analysis:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install cppcheck
         run: sudo apt-get update && sudo apt-get install -y cppcheck
       - name: Static analysis for suspicious patterns before release
