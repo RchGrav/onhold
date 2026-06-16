@@ -981,11 +981,9 @@ test_concurrent_unique_ids() {
     [ -n "$id" ] || return 1
     ids="$ids\n$id"
   done
-  uniq=$(printf '%b
-' "$ids" | sed '/^$/d' | sort -u | wc -l)
+  uniq=$(printf '%b\n' "$ids" | sed '/^$/d' | sort -u | wc -l)
   [ "$uniq" -eq 20 ] || return 1
-  for id in $(printf '%b
-' "$ids" | sed '/^$/d'); do
+  for id in $(printf '%b\n' "$ids" | sed '/^$/d'); do
     "$SIGMUND_BIN" kill "$id" >/dev/null 2>&1 || true
   done
   return 0
