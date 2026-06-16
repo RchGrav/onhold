@@ -1,4 +1,6 @@
 CC ?= cc
+CPPFLAGS ?=
+EXTRA_CPPFLAGS ?=
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2
 LDFLAGS ?=
 UNAME_S := $(shell uname -s)
@@ -14,10 +16,10 @@ VERSION_CPPFLAG := -DSIGMUND_VERSION=\"$(VERSION)\"
 all: sigmund
 
 sigmund: src/sigmund.c
-	$(CC) $(CFLAGS) $(VERSION_CPPFLAG) $(LDFLAGS) $(STATIC_LDFLAGS) -o $@ $<
+	$(CC) $(CPPFLAGS) $(EXTRA_CPPFLAGS) $(CFLAGS) $(VERSION_CPPFLAG) $(LDFLAGS) $(STATIC_LDFLAGS) -o $@ $<
 
 sigmund-dynamic: src/sigmund.c
-	$(CC) $(CFLAGS) $(VERSION_CPPFLAG) $(LDFLAGS) -o sigmund-dynamic $<
+	$(CC) $(CPPFLAGS) $(EXTRA_CPPFLAGS) $(CFLAGS) $(VERSION_CPPFLAG) $(LDFLAGS) -o sigmund-dynamic $<
 
 clean:
 	rm -f sigmund sigmund-dynamic
@@ -25,5 +27,5 @@ clean:
 .PHONY: all clean test
 
 test:
-	$(CC) $(CFLAGS) $(VERSION_CPPFLAG) $(LDFLAGS) $(TEST_LDFLAGS) -DSIGMUND_BOOT_ID_PATH='"/tmp/sigmund_test_boot_id"' -o sigmund src/sigmund.c
+	$(CC) $(CPPFLAGS) $(EXTRA_CPPFLAGS) $(CFLAGS) $(VERSION_CPPFLAG) $(LDFLAGS) $(TEST_LDFLAGS) -DSIGMUND_TESTING -DSIGMUND_BOOT_ID_PATH='"/tmp/sigmund_test_boot_id"' -o sigmund src/sigmund.c
 	@bash tests/test_sigmund.sh

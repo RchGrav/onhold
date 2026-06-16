@@ -8,6 +8,7 @@ on:
 
 jobs:
   build-and-test:
+    name: Linux user-runner (${{ matrix.cc }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -23,6 +24,28 @@ jobs:
           make sigmund-dynamic CC=${{ matrix.cc }} CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
           make test CC=${{ matrix.cc }} CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
 
+  root-runner-test:
+    name: Linux root-runner harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the same test suite with the harness process starting as root
+        run: |
+          sudo make clean
+          sudo make test CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
+
+  macos-runtime:
+    name: macOS runtime test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run tests on macOS
+        run: |
+          make clean
+          make STATIC_LDFLAGS= CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
+          make clean
+          make test STATIC_LDFLAGS= CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
+
   sanitizers:
     runs-on: ubuntu-latest
     steps:
@@ -30,8 +53,7 @@ jobs:
       - name: Run tests with ASan/UBSan to catch memory and UB regressions
         run: |
           make clean
-          make CC=gcc CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address,undefined" STATIC_LDFLAGS='' TEST_LDFLAGS=''
-          make test CC=gcc CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address,undefined" STATIC_LDFLAGS='' TEST_LDFLAGS=''
+          make test CC=gcc CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address,undefined" STATIC_LDFLAGS='' LDFLAGS='-fsanitize=address,undefined' TEST_LDFLAGS='-fsanitize=address,undefined'
 
   static-analysis:
     runs-on: ubuntu-latest

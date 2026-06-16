@@ -1,20 +1,227 @@
 #!/usr/bin/env bash
-set -u
+set -Eeuo pipefail
 
-SIGMUND_BIN="${SIGMUND_BIN:-./sigmund}"
+SIGMUND_REAL_BIN="${SIGMUND_BIN:-./sigmund}"
+case "$SIGMUND_REAL_BIN" in
+  /*) ;;
+  *) SIGMUND_REAL_BIN="$PWD/$SIGMUND_REAL_BIN" ;;
+esac
+
 FAILS=0
+SUITE_ROOT="$(mktemp -d)"
+chmod 755 "$SUITE_ROOT"
+TEST_ROOT=""
+HOME=""
+SIGMUND_TEST_SYSTEM_STATE_DIR=""
+ROOT_HOME=""
+ACTOR_HOME=""
+TEST_USER=""
+TEST_UID=""
+TEST_GID=""
+USER_ACTOR_NEEDS_SUDO=0
+ROOT_ACTOR_AVAILABLE=0
+SUDO_BIN="$(command -v sudo || true)"
+USER_CREATED=0
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILS=$((FAILS + 1)); }
 
+suite_cleanup() {
+  set +e
+  if [ "$USER_CREATED" -eq 1 ] && [ -n "$TEST_USER" ]; then
+    userdel "$TEST_USER" >/dev/null 2>&1 || true
+  fi
+  remove_tree "$SUITE_ROOT"
+}
+trap suite_cleanup EXIT
+
+remove_tree() {
+  local path="$1"
+  [ -n "$path" ] || return 0
+  if [ "$(id -u)" -eq 0 ]; then
+    rm -rf "$path"
+  elif [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] && [ -n "$SUDO_BIN" ]; then
+    "$SUDO_BIN" -n rm -rf "$path" || rm -rf "$path"
+  else
+    rm -rf "$path"
+  fi
+}
+
+setup_suite_actors() {
+  if [ "$(id -u)" -eq 0 ]; then
+    USER_ACTOR_NEEDS_SUDO=1
+    ROOT_ACTOR_AVAILABLE=1
+    TEST_USER="sigmundtest_$$"
+    ACTOR_HOME="$SUITE_ROOT/user-home"
+    mkdir -p "$ACTOR_HOME" || return 1
+    if ! id "$TEST_USER" >/dev/null 2>&1; then
+      useradd -M -d "$ACTOR_HOME" -s /bin/sh "$TEST_USER" || return 1
+      USER_CREATED=1
+    fi
+    TEST_UID="$(id -u "$TEST_USER")"
+    TEST_GID="$(id -g "$TEST_USER")"
+    chown "$TEST_UID:$TEST_GID" "$ACTOR_HOME" || return 1
+    chmod 700 "$ACTOR_HOME" || return 1
+  else
+    USER_ACTOR_NEEDS_SUDO=0
+    TEST_USER="$(id -un)"
+    TEST_UID="$(id -u)"
+    TEST_GID="$(id -g)"
+    if [ -n "$SUDO_BIN" ] && "$SUDO_BIN" -n true >/dev/null 2>&1; then
+      ROOT_ACTOR_AVAILABLE=1
+    else
+      ROOT_ACTOR_AVAILABLE=0
+    fi
+  fi
+  export SIGMUND_REAL_BIN SUDO_BIN TEST_USER TEST_UID TEST_GID USER_ACTOR_NEEDS_SUDO ROOT_ACTOR_AVAILABLE
+}
+
+as_user() {
+  local env_args
+  env_args=(
+    "HOME=$ACTOR_HOME"
+    "SIGMUND_TEST_SYSTEM_STATE_DIR=$SIGMUND_TEST_SYSTEM_STATE_DIR"
+    "SIGMUND_TEST_INVOKING_HOME=$ACTOR_HOME"
+    "PATH=$PATH"
+  )
+  local name
+  for name in \
+    SIGMUND_BOOT_ID_PATH \
+    SIGMUND_TEST_FAIL_RECORD_WRITE \
+    SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE \
+    SIGMUND_FAKE_SUDO_ARGV \
+    SIGMUND_FAKE_SUDO_RC \
+    SIGMUND_TEST_SUDO_PROG; do
+    if [ "${!name+x}" = x ]; then
+      env_args+=("$name=${!name}")
+    fi
+  done
+  if [ "$USER_ACTOR_NEEDS_SUDO" -eq 1 ]; then
+    "$SUDO_BIN" -n -u "$TEST_USER" env "${env_args[@]}" "$@"
+  else
+    env "${env_args[@]}" "$@"
+  fi
+}
+
+as_root() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 127
+  local env_args
+  env_args=(
+    "HOME=$ROOT_HOME"
+    "SIGMUND_TEST_SYSTEM_STATE_DIR=$SIGMUND_TEST_SYSTEM_STATE_DIR"
+    "PATH=$PATH"
+  )
+  local name
+  for name in \
+    SIGMUND_BOOT_ID_PATH \
+    SIGMUND_TEST_FAIL_RECORD_WRITE \
+    SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE \
+    SIGMUND_FAKE_SUDO_ARGV \
+    SIGMUND_FAKE_SUDO_RC \
+    SIGMUND_TEST_SUDO_PROG; do
+    if [ "${!name+x}" = x ]; then
+      env_args+=("$name=${!name}")
+    fi
+  done
+  if [ "$(id -u)" -eq 0 ]; then
+    env "${env_args[@]}" "$@"
+  else
+    "$SUDO_BIN" -n env "${env_args[@]}" "$@"
+  fi
+}
+
+as_sudo_from_user() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 127
+  local env_args
+  env_args=(
+    "HOME=$ROOT_HOME"
+    "SIGMUND_TEST_SYSTEM_STATE_DIR=$SIGMUND_TEST_SYSTEM_STATE_DIR"
+    "SIGMUND_TEST_INVOKING_HOME=$ACTOR_HOME"
+    "SUDO_UID=$TEST_UID"
+    "SUDO_GID=$TEST_GID"
+    "SUDO_USER=$TEST_USER"
+    "PATH=$PATH"
+  )
+  local name
+  for name in \
+    SIGMUND_BOOT_ID_PATH \
+    SIGMUND_TEST_FAIL_RECORD_WRITE \
+    SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE \
+    SIGMUND_FAKE_SUDO_ARGV \
+    SIGMUND_FAKE_SUDO_RC \
+    SIGMUND_TEST_SUDO_PROG; do
+    if [ "${!name+x}" = x ]; then
+      env_args+=("$name=${!name}")
+    fi
+  done
+  if [ "$(id -u)" -eq 0 ]; then
+    env "${env_args[@]}" "$@"
+  else
+    "$SUDO_BIN" -n env "${env_args[@]}" "$@"
+  fi
+}
+
+write_user_actor_wrapper() {
+  cat > "$TEST_ROOT/user-sigmund" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+env_args=(
+  "HOME=$SIGMUND_ACTOR_HOME"
+  "SIGMUND_TEST_SYSTEM_STATE_DIR=$SIGMUND_TEST_SYSTEM_STATE_DIR"
+  "SIGMUND_TEST_INVOKING_HOME=$SIGMUND_ACTOR_HOME"
+  "PATH=$PATH"
+)
+for name in \
+  SIGMUND_BOOT_ID_PATH \
+  SIGMUND_TEST_FAIL_RECORD_WRITE \
+  SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE \
+  SIGMUND_FAKE_SUDO_ARGV \
+  SIGMUND_FAKE_SUDO_RC \
+  SIGMUND_TEST_SUDO_PROG; do
+  if [ "${!name+x}" = x ]; then
+    env_args+=("$name=${!name}")
+  fi
+done
+if [ "${SIGMUND_USER_ACTOR_NEEDS_SUDO:-0}" -eq 1 ]; then
+  exec "$SIGMUND_ACTOR_SUDO_BIN" -n -u "$SIGMUND_ACTOR_USER" env "${env_args[@]}" "$SIGMUND_REAL_BIN" "$@"
+fi
+exec env "${env_args[@]}" "$SIGMUND_REAL_BIN" "$@"
+SH
+  chmod +x "$TEST_ROOT/user-sigmund" || return 1
+  SIGMUND_BIN="$TEST_ROOT/user-sigmund"
+  export SIGMUND_BIN
+}
+
 new_env() {
-  TEST_ROOT="$(mktemp -d)" || return 1
-  export HOME="$TEST_ROOT/home"
-  mkdir -p "$HOME" || return 1
+  TEST_ROOT="$(mktemp -d "$SUITE_ROOT/test.XXXXXX")" || return 1
+  chmod 755 "$TEST_ROOT" || return 1
+  SIGMUND_TEST_SYSTEM_STATE_DIR="$TEST_ROOT/system"
+  ROOT_HOME="$TEST_ROOT/root-home"
+  mkdir -p "$SIGMUND_TEST_SYSTEM_STATE_DIR" "$ROOT_HOME" || return 1
+  chmod 755 "$SIGMUND_TEST_SYSTEM_STATE_DIR" || return 1
+  chmod 700 "$ROOT_HOME" || return 1
+
+  if [ "$USER_ACTOR_NEEDS_SUDO" -eq 1 ]; then
+    find "$ACTOR_HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+    chown "$TEST_UID:$TEST_GID" "$ACTOR_HOME" || return 1
+    chmod 700 "$ACTOR_HOME" || return 1
+  else
+    ACTOR_HOME="$TEST_ROOT/home"
+    mkdir -p "$ACTOR_HOME" || return 1
+    chmod 700 "$ACTOR_HOME" || return 1
+  fi
+
+  HOME="$ACTOR_HOME"
+  export HOME TEST_ROOT SIGMUND_TEST_SYSTEM_STATE_DIR ROOT_HOME ACTOR_HOME
+  export SIGMUND_ACTOR_HOME="$ACTOR_HOME"
+  export SIGMUND_ACTOR_USER="$TEST_USER"
+  export SIGMUND_ACTOR_SUDO_BIN="$SUDO_BIN"
+  export SIGMUND_USER_ACTOR_NEEDS_SUDO="$USER_ACTOR_NEEDS_SUDO"
+  write_user_actor_wrapper
 }
 
 cleanup_env() {
-  local store ids id
+  local store ids id sys_store
   store="$HOME/.local/state/sigmund"
   if [ -d "$store" ]; then
     ids=$(find "$store" -maxdepth 1 -type f -name '*.json' -exec basename {} .json \; 2>/dev/null || true)
@@ -22,8 +229,67 @@ cleanup_env() {
       "$SIGMUND_BIN" kill "$id" >/dev/null 2>&1 || true
     done
   fi
-  rm -rf "$TEST_ROOT"
+  sys_store="$SIGMUND_TEST_SYSTEM_STATE_DIR/runs"
+  if [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] && [ -d "$sys_store" ]; then
+    ids=$(find "$sys_store" -maxdepth 1 -type f -name '*.json' -exec basename {} .json \; 2>/dev/null || true)
+    for id in $ids; do
+      as_root "$SIGMUND_REAL_BIN" kill "system:$id" >/dev/null 2>&1 || true
+    done
+  fi
+  remove_tree "$TEST_ROOT"
+  if [ "$USER_ACTOR_NEEDS_SUDO" -eq 1 ] && [ -n "$ACTOR_HOME" ]; then
+    find "$ACTOR_HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+  fi
 }
+
+ensure_user_fixture_store() {
+  mkdir -p "$HOME/.local/state/sigmund" || return 1
+  chmod 700 "$HOME" "$HOME/.local" "$HOME/.local/state" "$HOME/.local/state/sigmund" 2>/dev/null || true
+  if [ "$USER_ACTOR_NEEDS_SUDO" -eq 1 ]; then
+    chown -R "$TEST_UID:$TEST_GID" "$HOME/.local" || return 1
+  fi
+}
+
+file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+root_file_exists() {
+  as_root test -f "$1"
+}
+
+root_path_absent() {
+  as_root sh -c '[ ! -e "$1" ]' sh "$1"
+}
+
+root_file_mode() {
+  as_root stat -c '%a' "$1" 2>/dev/null || as_root stat -f '%Lp' "$1"
+}
+
+root_grep() {
+  local pattern="$1" path="$2"
+  as_root grep -q "$pattern" "$path"
+}
+
+run_test() {
+  local desc="$1" fn="$2" rc
+  new_env || { fail "$desc"; return; }
+  export HOME TEST_ROOT SIGMUND_BIN SIGMUND_REAL_BIN SIGMUND_TEST_SYSTEM_STATE_DIR ROOT_HOME ACTOR_HOME
+  export TEST_USER TEST_UID TEST_GID USER_ACTOR_NEEDS_SUDO ROOT_ACTOR_AVAILABLE SUDO_BIN
+  export SIGMUND_ACTOR_HOME SIGMUND_ACTOR_USER SIGMUND_ACTOR_SUDO_BIN SIGMUND_USER_ACTOR_NEEDS_SUDO
+  set +e
+  ( set -Eeuo pipefail; "$fn" )
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    pass "$desc"
+  else
+    fail "$desc"
+  fi
+  cleanup_env
+}
+
+setup_suite_actors
 
 extract_id() {
   sed -n 's/^sigmund: id=\([0-9a-f][0-9a-f]*\).*/\1/p' | head -n1
@@ -35,8 +301,8 @@ pid_dead_enough() {
   if ! kill -0 "$p" 2>/dev/null; then
     return 0
   fi
-  st=$(ps -o stat= -p "$p" 2>/dev/null | tr -d ' ' | cut -c1)
-  [ "$st" = "Z" ]
+  st=$(ps -o stat= -p "$p" 2>/dev/null | tr -d ' ' | cut -c1 || true)
+  [ "$st" = "Z" ] || ! kill -0 "$p" 2>/dev/null
 }
 
 pgid_terminated() {
@@ -45,7 +311,7 @@ pgid_terminated() {
     if ! kill -0 "-$g" 2>/dev/null; then
       return 0
     fi
-    stats=$(ps -o stat= -g "$g" 2>/dev/null | tr -d " ")
+    stats=$(ps -o stat= -g "$g" 2>/dev/null | tr -d " " || true)
     if [ -n "$stats" ] && ! printf "%s\n" "$stats" | grep -qv "^Z"; then
       return 0
     fi
@@ -54,25 +320,13 @@ pgid_terminated() {
   return 1
 }
 
-run_test() {
-  local desc="$1"
-  shift
-  new_env || { fail "$desc"; return; }
-  if "$@"; then
-    pass "$desc"
-  else
-    fail "$desc"
-  fi
-  cleanup_env
-}
-
 test_lifecycle() {
   local out id lines
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   printf '%s\n' "$out" | grep -Eq 'pid=[0-9]+ pgid=[0-9]+ sid=[0-9]+'
-  printf '%s\n' "$out" | grep -Eq '^sigmund: log: .+/.+\\.log$'
+  printf '%s\n' "$out" | grep -Eq '^sigmund: log: .+/.+\.log$'
   printf '%s\n' "$out" | grep -Eq "^sigmund: stop: sigmund stop $id$"
   "$SIGMUND_BIN" list | grep -Eq "^$id[[:space:]].*running"
   "$SIGMUND_BIN" stop "$id" >/dev/null
@@ -126,6 +380,8 @@ test_exec_failure_no_record() {
   set -e
   [ "$rc" -eq 1 ] || return 1
   count=$(find "$HOME/.local/state/sigmund" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)
+  [ "$count" -eq 0 ] || return 1
+  count=$(find "$HOME/.local/state/sigmund" -maxdepth 1 -type f 2>/dev/null | wc -l)
   [ "$count" -eq 0 ]
 }
 
@@ -150,7 +406,7 @@ test_exec_replacement_remains_controllable() {
 }
 
 test_corrupt_record_handling() {
-  mkdir -p "$HOME/.local/state/sigmund" || return 1
+  ensure_user_fixture_store || return 1
   printf 'garbage\n' > "$HOME/.local/state/sigmund/badbad.json" || return 1
   "$SIGMUND_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
   ! grep -q '^badbad' "$TEST_ROOT/list.out"
@@ -160,8 +416,53 @@ test_corrupt_record_handling() {
   [ ! -e "$HOME/.local/state/sigmund/badbad.json" ]
 }
 
+test_deep_json_record_rejected_not_crashed() {
+  ensure_user_fixture_store || return 1
+  local json i
+  json='{"junk":'
+  for i in $(seq 1 80); do json="${json}["; done
+  json="${json}0"
+  for i in $(seq 1 80); do json="${json}]"; done
+  json="${json},\"version\":1,\"id\":\"abc124\",\"pid\":12345,\"pgid\":12345,\"sid\":12345,\"start_unix_ns\":0,\"argv\":[\"x\"],\"cmdline_display\":\"x\",\"uid\":0,\"gid\":0,\"proc_starttime_ticks\":0,\"exe_dev\":0,\"exe_ino\":0}"
+  printf '%s\n' "$json" > "$HOME/.local/state/sigmund/abc124.json" || return 1
+  "$SIGMUND_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
+  ! grep -q '^abc124' "$TEST_ROOT/list.out" || return 1
+  grep -q 'warning: skipping corrupt record abc124.json' "$TEST_ROOT/list.err"
+}
+
+test_symlinked_record_rejected() {
+  ensure_user_fixture_store || return 1
+  cat > "$TEST_ROOT/record-target.json" <<'JSON'
+{"version":1,"id":"abc125","pid":12345,"pgid":12345,"sid":12345,"start_unix_ns":0,"argv":["x"],"cmdline_display":"x","uid":0,"gid":0,"proc_starttime_ticks":0,"exe_dev":0,"exe_ino":0}
+JSON
+  ln -s "$TEST_ROOT/record-target.json" "$HOME/.local/state/sigmund/abc125.json" || return 1
+  "$SIGMUND_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
+  ! grep -q '^abc125' "$TEST_ROOT/list.out" || return 1
+  grep -q 'warning: skipping corrupt record abc125.json' "$TEST_ROOT/list.err"
+}
+
+test_symlinked_log_rejected() {
+  local out id log rc
+  out=$("$SIGMUND_BIN" /bin/echo original-log-line 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  log="$HOME/.local/state/sigmund/$id.log"
+  sleep 0.2
+  [ -f "$log" ] || return 1
+  printf 'symlink-secret\n' > "$TEST_ROOT/log-target" || return 1
+  rm -f "$log" || return 1
+  ln -s "$TEST_ROOT/log-target" "$log" || return 1
+  set +e
+  "$SIGMUND_BIN" dump "$id" >"$TEST_ROOT/dump.out" 2>"$TEST_ROOT/dump.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 1
+  ! grep -q 'symlink-secret' "$TEST_ROOT/dump.out" || return 1
+  grep -q 'failed to open log for dump' "$TEST_ROOT/dump.err"
+}
+
 test_invalid_pgid_record() {
-  mkdir -p "$HOME/.local/state/sigmund" || return 1
+  ensure_user_fixture_store || return 1
   cat > "$HOME/.local/state/sigmund/abc123.json" <<'JSON'
 {"version":1,"id":"abc123","pid":12345,"pgid":0,"sid":12345,"start_unix_ns":0,"argv":["x"],"cmdline_display":"x","uid":0,"gid":0,"proc_starttime_ticks":0,"exe_dev":0,"exe_ino":0}
 JSON
@@ -170,7 +471,7 @@ JSON
 }
 
 test_orphan_log_cleanup() {
-  mkdir -p "$HOME/.local/state/sigmund" || return 1
+  ensure_user_fixture_store || return 1
   : > "$HOME/.local/state/sigmund/a1b2c3.log" || return 1
   : > "$HOME/.local/state/sigmund/deadbe.log" || return 1
   "$SIGMUND_BIN" prune >/dev/null || return 1
@@ -230,7 +531,7 @@ test_argument_edges() {
   [ "$rc" -eq 5 ] || return 1
   "$SIGMUND_BIN" --help >/dev/null || return 1
   out=$("$SIGMUND_BIN" --version) || return 1
-  printf '%s\n' "$out" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'
+  printf '%s\n' "$out" | grep -Eq '^(dev|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
   set +e
   "$SIGMUND_BIN" -l >/dev/null 2>&1
   rc=$?
@@ -309,6 +610,49 @@ test_persistent_stale_records() {
   [ -f "$store/$id.json" ] && [ -f "$store/$id.log" ]
 }
 
+
+test_boot_unavailable_does_not_force_stale() {
+  local out id bootfile list_out
+  bootfile="$TEST_ROOT/fake_boot_id"
+  printf 'boot-a\n' >"$bootfile" || return 1
+  out=$(SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" sleep 60 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  rm -f "$bootfile"
+  list_out=$(SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" list) || return 1
+  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+running[[:space:]]" || return 1
+  ! printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+stale[[:space:]]" || return 1
+  SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" stop "$id" >/dev/null
+}
+
+test_leader_zombie_group_still_running() {
+  local i id list_out tail_pid
+  "$SIGMUND_BIN" --tail bash -c 'sleep 60 & exit 0' >"$TEST_ROOT/tail.out" 2>"$TEST_ROOT/tail.err" &
+  tail_pid=$!
+  id=""
+  for i in $(seq 1 50); do
+    id=$(extract_id <"$TEST_ROOT/tail.out" || true)
+    [ -n "$id" ] && break
+    sleep 0.05
+  done
+  [ -n "$id" ] || return 1
+  sleep 0.3
+  list_out=$("$SIGMUND_BIN" list) || return 1
+  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+running[[:space:]]" || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
+  wait "$tail_pid" || true
+}
+
+test_tail_finished_log_prints_existing_output() {
+  local out id tailed
+  out=$("$SIGMUND_BIN" bash -c 'echo finished-tail-line' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.2
+  tailed=$("$SIGMUND_BIN" tail "$id" 2>&1) || return 1
+  printf '%s\n' "$tailed" | grep -q 'finished-tail-line'
+}
+
 test_prune_by_id() {
   local out1 out2 id1 id2 store
   out1=$("$SIGMUND_BIN" true 2>&1) || return 1
@@ -347,11 +691,280 @@ test_transactional_record_write_failure() {
   [ -z "$pids" ]
 }
 
+
+make_fake_sudo() {
+  mkdir -p "$TEST_ROOT/fakebin" || return 1
+  cat > "$TEST_ROOT/fakebin/sudo" <<'SH'
+#!/usr/bin/env bash
+: "${SIGMUND_FAKE_SUDO_ARGV:?}"
+printf '%s\n' "$@" > "$SIGMUND_FAKE_SUDO_ARGV"
+exit "${SIGMUND_FAKE_SUDO_RC:-77}"
+SH
+  chmod 755 "$TEST_ROOT/fakebin" "$TEST_ROOT/fakebin/sudo" || return 1
+  export SIGMUND_FAKE_SUDO_ARGV="$TEST_ROOT/sudo.argv"
+  : > "$SIGMUND_FAKE_SUDO_ARGV" || return 1
+  chmod 0666 "$SIGMUND_FAKE_SUDO_ARGV" || return 1
+  export SIGMUND_FAKE_SUDO_RC=77
+  export PATH="$TEST_ROOT/fakebin:$PATH"
+}
+
+write_public_index_fixture() {
+  local id="$1" state="${2:-running}" started="${3:-2026-06-15T18:42:11Z}"
+  mkdir -p "$SIGMUND_TEST_SYSTEM_STATE_DIR/public" || return 1
+  chmod 755 "$SIGMUND_TEST_SYSTEM_STATE_DIR" "$SIGMUND_TEST_SYSTEM_STATE_DIR/public" || return 1
+  cat > "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" <<JSON
+{"id":"$id","root_managed":true,"requires_elevation":true,"state_hint":"$state","started_at":"$started","argv":["secret"],"cmdline_display":"secret command"}
+JSON
+  chmod 0644 "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" || return 1
+}
+
+test_raw_start_does_not_steal_trailing_system() {
+  local out id log
+  out=$("$SIGMUND_BIN" sh -c 'printf "arg:%s\n" "$1"' sh --system 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  log="$HOME/.local/state/sigmund/$id.log"
+  sleep 0.2
+  grep -q '^arg:--system$' "$log"
+}
+
+test_public_root_index_list_is_redacted() {
+  write_public_index_fixture abc123 running 2026-06-15T18:42:11Z || return 1
+  "$SIGMUND_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
+  grep -Eq '^abc123[[:space:]]+unknown[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+-[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || return 1
+  ! grep -q 'secret' "$TEST_ROOT/list.out"
+}
+
+test_user_local_wins_over_public_root_collision() {
+  local out id pgid
+  out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  [ -n "$id" ] && [ -n "$pgid" ] || return 1
+  write_public_index_fixture "$id" running 2026-06-15T18:42:11Z || return 1
+  make_fake_sudo || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
+  [ ! -s "$SIGMUND_FAKE_SUDO_ARGV" ] || return 1
+  pgid_terminated "$pgid" || return 1
+  [ -f "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" ]
+}
+
+test_explicit_user_target() {
+  local out id pgid
+  out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  [ -n "$id" ] && [ -n "$pgid" ] || return 1
+  "$SIGMUND_BIN" stop "user:$id" >/dev/null || return 1
+  pgid_terminated "$pgid"
+}
+
+
+
+test_action_self_elevation_uses_argv_fork_wait() {
+  local rc
+  write_public_index_fixture abc123 running 2026-06-15T18:42:11Z || return 1
+  make_fake_sudo || return 1
+  set +e
+  "$SIGMUND_BIN" stop abc123 >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  args=()
+  while IFS= read -r line; do args+=("$line"); done < "$SIGMUND_FAKE_SUDO_ARGV"
+  [ "${#args[@]}" -eq 6 ] || return 1
+  [ "${args[0]}" = "--" ] || return 1
+  [ -x "${args[1]}" ] || return 1
+  [ "${args[2]}" = "--system" ] || return 1
+  [ "${args[3]}" = "--elevated" ] || return 1
+  [ "${args[4]}" = "stop" ] || return 1
+  [ "${args[5]}" = "abc123" ] || return 1
+  ! grep -qx -- 'sh\|-c' "$SIGMUND_FAKE_SUDO_ARGV"
+}
+
+test_elevated_action_returns_child_status() {
+  local rc
+  write_public_index_fixture abc123 running 2026-06-15T18:42:11Z || return 1
+  make_fake_sudo || return 1
+  export SIGMUND_FAKE_SUDO_RC=42
+  set +e
+  "$SIGMUND_BIN" kill abc123 >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 42 ]
+}
+
+test_sudo_exec_failure_returns_clean_error() {
+  local rc
+  write_public_index_fixture abc123 running 2026-06-15T18:42:11Z || return 1
+  export SIGMUND_TEST_SUDO_PROG="$TEST_ROOT/missing-sudo"
+  set +e
+  "$SIGMUND_BIN" stop abc123 >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 127 ] || return 1
+  grep -q 'failed to exec sudo' "$TEST_ROOT/stderr"
+}
+
+test_tail_ctrl_c_detaches_from_tail_and_keeps_run() {
+  command -v setsid >/dev/null 2>&1 || return 0
+  local out id pgid tail_pid rc
+  out=$("$SIGMUND_BIN" bash -c 'while :; do echo tail-still-running; sleep 1; done' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  [ -n "$id" ] && [ -n "$pgid" ] || return 1
+  setsid "$SIGMUND_BIN" tail "$id" >"$TEST_ROOT/tail.out" 2>"$TEST_ROOT/tail.err" &
+  tail_pid=$!
+  sleep 0.3
+  kill -INT "-$tail_pid" 2>/dev/null || kill -INT "$tail_pid" 2>/dev/null || true
+  set +e
+  wait "$tail_pid"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || return 1
+  kill -0 "-$pgid" 2>/dev/null || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
+  pgid_terminated "$pgid"
+}
+
+test_system_switch_canonicalizes_owned_command() {
+  local rc
+  make_fake_sudo || return 1
+  set +e
+  "$SIGMUND_BIN" --system stop abc123 >/dev/null 2>"$TEST_ROOT/one.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  cp "$SIGMUND_FAKE_SUDO_ARGV" "$TEST_ROOT/one.argv" || return 1
+  set +e
+  "$SIGMUND_BIN" stop abc123 --system >/dev/null 2>"$TEST_ROOT/two.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  cmp -s "$TEST_ROOT/one.argv" "$SIGMUND_FAKE_SUDO_ARGV" || return 1
+  grep -qx -- '--system' "$TEST_ROOT/one.argv" || return 1
+  grep -qx -- '--elevated' "$TEST_ROOT/one.argv" || return 1
+  tail -n 2 "$TEST_ROOT/one.argv" | grep -qx 'abc123'
+}
+
+test_system_raw_self_elevation_preserves_child_switches_and_delimiter() {
+  local rc
+  make_fake_sudo || return 1
+  set +e
+  "$SIGMUND_BIN" --system child-command --system >/dev/null 2>"$TEST_ROOT/raw.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  args=()
+  while IFS= read -r line; do args+=("$line"); done < "$SIGMUND_FAKE_SUDO_ARGV"
+  [ "${args[4]}" = "child-command" ] || return 1
+  [ "${args[5]}" = "--system" ] || return 1
+
+  set +e
+  "$SIGMUND_BIN" --system -- list --system >/dev/null 2>"$TEST_ROOT/delim.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  args=()
+  while IFS= read -r line; do args+=("$line"); done < "$SIGMUND_FAKE_SUDO_ARGV"
+  [ "${args[4]}" = "--" ] || return 1
+  [ "${args[5]}" = "list" ] || return 1
+  [ "${args[6]}" = "--system" ] || return 1
+}
+
+test_elevated_requires_root() {
+  local rc
+  set +e
+  "$SIGMUND_BIN" --elevated stop abc123 >/dev/null 2>"$TEST_ROOT/elevated.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || return 1
+  grep -q -- '--elevated without root authority' "$TEST_ROOT/elevated.err"
+}
+
+
+test_long_command_list_truncates_instead_of_skips() {
+  local out id long_arg list_out
+  long_arg=$(printf 'x%.0s' $(seq 1 140))
+  out=$("$SIGMUND_BIN" /bin/echo "$long_arg" 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.2
+  list_out=$("$SIGMUND_BIN" list) || return 1
+  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]" || return 1
+  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]].*\.\.\."
+}
+
+test_normal_start_writes_user_local_state() {
+  local out id mode
+  out=$("$SIGMUND_BIN" true 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  [ -f "$HOME/.local/state/sigmund/$id.json" ] || return 1
+  [ -f "$HOME/.local/state/sigmund/$id.log" ] || return 1
+  [ ! -e "$SIGMUND_TEST_SYSTEM_STATE_DIR/runs/$id.json" ] || return 1
+  [ ! -e "$SIGMUND_TEST_SYSTEM_STATE_DIR/logs/$id.log" ] || return 1
+  [ ! -e "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" ] || return 1
+  mode=$(file_mode "$HOME/.local/state/sigmund/$id.json") || return 1
+  [ "$mode" = 600 ] || return 1
+  mode=$(file_mode "$HOME/.local/state/sigmund/$id.log") || return 1
+  [ "$mode" = 600 ]
+}
+
+test_root_start_writes_system_store_and_public_unknown() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
+  local out id mode list_out
+  out=$(as_root "$SIGMUND_REAL_BIN" true 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  root_file_exists "$SIGMUND_TEST_SYSTEM_STATE_DIR/runs/$id.json" || return 1
+  root_file_exists "$SIGMUND_TEST_SYSTEM_STATE_DIR/logs/$id.log" || return 1
+  [ -f "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" ] || return 1
+  root_path_absent "$ROOT_HOME/.local/state/sigmund/$id.json" || return 1
+  mode=$(root_file_mode "$SIGMUND_TEST_SYSTEM_STATE_DIR/runs/$id.json") || return 1
+  [ "$mode" = 600 ] || return 1
+  mode=$(root_file_mode "$SIGMUND_TEST_SYSTEM_STATE_DIR/logs/$id.log") || return 1
+  [ "$mode" = 600 ] || return 1
+  mode=$(file_mode "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json") || return 1
+  [ "$mode" = 644 ] || return 1
+  grep -q '"state_hint": "unknown"' "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" || return 1
+  list_out=$("$SIGMUND_BIN" list) || return 1
+  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+unknown[[:space:]]"
+}
+
+test_sudo_start_writes_system_store_with_invoking_metadata() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
+  local out id json
+  out=$(as_sudo_from_user "$SIGMUND_REAL_BIN" true 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  json="$SIGMUND_TEST_SYSTEM_STATE_DIR/runs/$id.json"
+  root_file_exists "$json" || return 1
+  root_file_exists "$SIGMUND_TEST_SYSTEM_STATE_DIR/logs/$id.log" || return 1
+  [ -f "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" ] || return 1
+  [ ! -e "$ACTOR_HOME/.local/state/sigmund/$id.json" ] || return 1
+  root_grep '"invoked_by_uid": '"$TEST_UID" "$json" || return 1
+  root_grep '"invoked_by_gid": '"$TEST_GID" "$json" || return 1
+  root_grep '"invoked_by_user": "'"$TEST_USER"'"' "$json" || return 1
+  root_grep '"invoked_via_sudo": true' "$json"
+}
+
+test_sudo_context_can_stop_unique_user_local_run() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
+  local out id pgid
+  out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  [ -n "$id" ] && [ -n "$pgid" ] || return 1
+  as_sudo_from_user "$SIGMUND_REAL_BIN" stop "$id" >/dev/null || return 1
+  pgid_terminated "$pgid"
+}
+
 test_build_artifact_coexistence() {
   make clean >/dev/null || return 1
-  make sigmund STATIC_LDFLAGS= >/dev/null || return 1
+  make sigmund STATIC_LDFLAGS= EXTRA_CPPFLAGS=-DSIGMUND_TESTING >/dev/null || return 1
   [ -x ./sigmund ] || return 1
-  make sigmund-dynamic >/dev/null || return 1
+  make sigmund-dynamic EXTRA_CPPFLAGS=-DSIGMUND_TESTING >/dev/null || return 1
   [ -x ./sigmund ] && [ -x ./sigmund-dynamic ] || return 1
   [ -e ./sigmund ] && [ -e ./sigmund-dynamic ]
 }
@@ -368,8 +981,14 @@ test_concurrent_unique_ids() {
     [ -n "$id" ] || return 1
     ids="$ids\n$id"
   done
-  uniq=$(printf '%b\n' "$ids" | sed '/^$/d' | sort -u | wc -l)
-  [ "$uniq" -eq 20 ]
+  uniq=$(printf '%b
+' "$ids" | sed '/^$/d' | sort -u | wc -l)
+  [ "$uniq" -eq 20 ] || return 1
+  for id in $(printf '%b
+' "$ids" | sed '/^$/d'); do
+    "$SIGMUND_BIN" kill "$id" >/dev/null 2>&1 || true
+  done
+  return 0
 }
 
 set -e
@@ -381,6 +1000,9 @@ run_test "exec failure creates no record" test_exec_failure_no_record
 run_test "fast exit command is recorded as exited" test_fast_exit_record_exited
 run_test "exec replacement remains controllable" test_exec_replacement_remains_controllable
 run_test "corrupt record warning and prune cleanup" test_corrupt_record_handling
+run_test "deeply nested/corrupt JSON record is rejected, not crashed" test_deep_json_record_rejected_not_crashed
+run_test "symlinked record is rejected" test_symlinked_record_rejected
+run_test "symlinked log is rejected" test_symlinked_log_rejected
 run_test "invalid pgid=0 record is not listed as running" test_invalid_pgid_record
 run_test "orphan logs are removed by prune" test_orphan_log_cleanup
 run_test "ID input sanitization rejects invalid ids" test_id_sanitization
@@ -391,9 +1013,28 @@ run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture
 run_test "tail <id> tails an existing run log" test_tail_verb_existing_id
 run_test "persistent stale records remain visible and dumpable" test_persistent_stale_records
+run_test "missing boot source does not force stale" test_boot_unavailable_does_not_force_stale
+run_test "leader zombie with live group remains running" test_leader_zombie_group_still_running
+run_test "tail <id> prints finished log output" test_tail_finished_log_prints_existing_output
 run_test "prune <id> removes exactly one run record/output" test_prune_by_id
 run_test "prune all removes prunable while preserving running" test_prune_all_keeps_running
 run_test "transactional launch rollback on record write failure" test_transactional_record_write_failure
+run_test "raw start does not steal trailing --system" test_raw_start_does_not_steal_trailing_system
+run_test "long command appears in list, truncated with ..." test_long_command_list_truncates_instead_of_skips
+run_test "normal start writes user-local state" test_normal_start_writes_user_local_state
+run_test "root starts use system store and public state is unknown" test_root_start_writes_system_store_and_public_unknown
+run_test "sudo start writes system state with invoking-user metadata" test_sudo_start_writes_system_store_with_invoking_metadata
+run_test "sudo context can stop unique invoking-user local run" test_sudo_context_can_stop_unique_user_local_run
+run_test "public root index rows are redacted in normal list" test_public_root_index_list_is_redacted
+run_test "normal run does not self-elevate on local/root ID conflict" test_user_local_wins_over_public_root_collision
+run_test "explicit user:<id> targets user-local run" test_explicit_user_target
+run_test "action self-elevation uses argv-preserving sudo fork+wait" test_action_self_elevation_uses_argv_fork_wait
+run_test "elevated action returns child/root-sigmund status" test_elevated_action_returns_child_status
+run_test "sudo exec failure returns clean error" test_sudo_exec_failure_returns_clean_error
+run_test "tail Ctrl-C detaches from tail and does not stop run" test_tail_ctrl_c_detaches_from_tail_and_keeps_run
+run_test "--system owned commands canonicalize sudo argv" test_system_switch_canonicalizes_owned_command
+run_test "--system raw self-elevation preserves child args and delimiter" test_system_raw_self_elevation_preserves_child_switches_and_delimiter
+run_test "--elevated requires root authority" test_elevated_requires_root
 run_test "build artifacts for static and dynamic coexist" test_build_artifact_coexistence
 run_test "concurrent starts produce unique ids" test_concurrent_unique_ids
 

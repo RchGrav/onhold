@@ -1,349 +1,553 @@
-## sigmund specification
+# Sigmund Specification
 
-### Purpose
+This document describes the current Sigmund implementation contract: user-local state, root-managed state, public redacted discovery, sudo-aware ID resolution, argv-preserving fork/wait self-elevation, and process-safety behavior.
 
-`sigmund` is a small CLI utility that launches a command so it survives CI/runner “process-group cleanup” and then provides a durable handle to manage that run.
+## 1. Storage contexts
 
-Many CI runners and non-interactive job systems terminate the invoking shell’s **process group** at step completion (commonly via SIGTERM to the group). A long-running process started in the same group can be terminated immediately. `sigmund` prevents this by launching the command in a **new session / new process group** and recording a run record that can later be listed and stopped safely.
+Sigmund has two storage contexts.
 
-Name note: in Old English and related Germanic languages, *mund* relates to “protection/guardianship,” so `sigmund` reads naturally as “signal protection.”
+### 1.1 User-local state
 
----
+Normal non-root starts create records and logs under:
 
-### Non-goals
-
-* Not a supervisor (no restart loops, no monitoring)
-* Not a scheduler
-* Not a cgroup manager by default
-* No mandatory configuration or naming ceremony; the primary interface remains `sigmund <command> …`
-
----
-
-## Command-line interface
-
-### Start
-
-```
-sigmund <command> [args...]
+```text
+~/.local/state/sigmund
 ```
 
-Behavior:
+Required permissions:
 
-* Launches `<command>` in a new session and new process group.
-* Creates a run record and prints a short durable `id`.
-
-Default output (human):
-
-```
-sigmund: id=7f3c2a pid=12345 pgid=12345 sid=12345
-sigmund: log: /path/to/7f3c2a.log
-sigmund: stop: sigmund stop 7f3c2a
+```text
+directory: 0700 user:user
+records:   0600 user:user
+logs:      0600 user:user
 ```
 
-### Tail
+User-local state is private to the user. Sigmund does not scan every user's home directory and does not require globally unique run IDs across users.
 
-    sigmund --tail <cmd> [args...]
-    sigmund tail <id>
+### 1.2 Root-managed state
 
-`sigmund --tail <cmd> [args...]` launches the command identically to `sigmund <cmd>` (backgrounded, log file, new session), then tails the log file to stdout.
+Root, sudo, and `--system` starts create records and logs under a universal system store:
 
-`sigmund tail <id>` tails the log for an already-running tracked process.
-
-Ctrl-C detaches from tailing — the background process keeps running.
-
-### List
-
+```text
+Linux: /var/lib/sigmund
+macOS: /var/db/sigmund
 ```
+
+Layout:
+
+```text
+/var/lib/sigmund/runs/      private root run records
+/var/lib/sigmund/logs/      private root logs
+/var/lib/sigmund/public/    public root run index
+```
+
+macOS uses the same layout under `/var/db/sigmund`.
+
+Required permissions:
+
+```text
+root state dir:       0755 root:root
+private run records:  0600 root:root
+private logs:         0600 root:root
+public dir:           0755 root:root
+public index files:   0644 root:root
+```
+
+A root-managed start must never create a run under `/root/.local/state/sigmund` and must never accidentally create a root-managed run inside the invoking user's home state.
+
+Production builds use the compiled system store path. Test builds compiled with `SIGMUND_TESTING` may honor `SIGMUND_TEST_SYSTEM_STATE_DIR`; production root Sigmund must not honor arbitrary user-controlled environment paths for the system store.
+
+## 2. Invocation context
+
+Sigmund detects the current authority and provenance at startup:
+
+```text
+effective UID is root?
+was --system requested?
+was internal --elevated present?
+was root reached through sudo?
+who is the invoking user, if sudo provenance exists?
+```
+
+When `geteuid() == 0`, Sigmund checks:
+
+```text
+SUDO_UID
+SUDO_GID
+SUDO_USER
+```
+
+If all are valid, they identify the invoking user. Sigmund resolves the invoking user's home directory through the user database (`getpwuid()`), not `$HOME`. In test builds only, `SIGMUND_TEST_INVOKING_HOME` may override that resolved path so tests can avoid real user homes.
+
+Root private records for system runs include private provenance metadata:
+
+```text
+invoked_by_uid
+invoked_by_gid
+invoked_by_user
+invoked_via_sudo
+```
+
+This metadata is not written to the public index.
+
+The internal `--elevated` flag marks an intentional sudo self-elevation boundary. It is not a user-facing feature. If `--elevated` is present while `geteuid() != 0`, Sigmund exits with a clean internal error.
+
+## 3. Command parsing
+
+Sigmund has two parsing modes.
+
+### 3.1 Raw start form
+
+```bash
+sigmund <cmd...>
+```
+
+In raw start form, only invocation switches before the child command belong to Sigmund. Once the child command begins, all remaining arguments belong to the child.
+
+```bash
+sigmund --system qemu-system-x86_64 -m 4096
+# --system belongs to Sigmund
+
+sigmund qemu-system-x86_64 -m 4096 --system
+# --system belongs to qemu-system-x86_64
+```
+
+Quoted child command text is opaque to Sigmund:
+
+```bash
+sigmund sh -c "qemu-system-x86_64 -m 4096 --system"
+```
+
+### 3.2 Sigmund-owned command form
+
+If the first non-invocation argument is a known Sigmund command, Sigmund owns that command's argument list. Known commands include:
+
+```text
+list
+stop
+kill
+tail
+dump
+prune
+start
+```
+
+For Sigmund-owned commands, invocation switches may appear before or after the command arguments:
+
+```bash
+sigmund --system stop 7f3c2a
+sigmund stop 7f3c2a --system
+sigmund start "qemu-system-x86_64 -m 4096" --system
+```
+
+These canonicalize to the same root-side command shape when elevation is required.
+
+## 4. Start behavior
+
+### 4.1 Target store selection
+
+```text
+if --system was requested:
+  self-elevate through sudo when not already root
+  start in root-managed state
+else if geteuid() == 0:
+  start in root-managed state
+else:
+  start in user-local state
+```
+
+### 4.2 User-local start
+
+Normal non-root start:
+
+```bash
+sigmund <cmd...>
+```
+
+writes:
+
+```text
+~/.local/state/sigmund/<id>.json
+~/.local/state/sigmund/<id>.log
+```
+
+### 4.3 Root-managed start
+
+These create root-managed runs:
+
+```bash
+sudo sigmund <cmd...>
+sigmund --system <cmd...>
+sigmund start <cmd...> --system
+```
+
+A root-managed start writes:
+
+1. a private root run record;
+2. a private root log;
+3. a public root index entry.
+
+If public index creation fails, startup fails and rolls back. A root-managed run that cannot be discovered violates the storage model.
+
+## 5. Public root index
+
+The public root index contains only safe discovery and elevation metadata.
+
+Example:
+
+```json
+{
+  "id": "7f3c2a",
+  "root_managed": true,
+  "requires_elevation": true,
+  "state_hint": "unknown",
+  "started_at": "2026-06-15T18:42:11Z"
+}
+```
+
+The public index must not include:
+
+```text
+argv
+cmdline_display
+log_path
+environment
+pid
+pgid
+sid
+boot_id
+process start time
+executable identity
+sudo provenance
+private filesystem paths
+```
+
+Private root records are authoritative. Public records are derived discovery data.
+
+Because Sigmund is daemonless and cannot continuously refresh root-public state after natural process exit, normal `sigmund list` displays public root rows as `unknown` rather than overselling stale `running` hints. Root/private list and root action commands evaluate authoritative state from private records.
+
+## 6. Run IDs and collision checks
+
+Run IDs are random opaque hex identifiers. Global uniqueness across all users is not required.
+
+### 6.1 User-local start avoids
+
+```text
+that user's local records
+that user's local logs
+that user's local reservation files
+root-managed public index IDs
+```
+
+### 6.2 Root-managed start with sudo provenance avoids
+
+```text
+root-managed private records
+root-managed private logs
+root-managed reservation files
+root-managed public index IDs
+the invoking user's local records/logs/reservations
+```
+
+### 6.3 Direct root start avoids
+
+```text
+root-managed private records
+root-managed private logs
+root-managed reservation files
+root-managed public index IDs
+```
+
+If old state, manual files, or cross-user private state still create a collision, correctness is preserved by invocation-based resolution.
+
+## 7. ID resolution
+
+All action commands use the shared resolver. Action commands are:
+
+```text
+stop
+kill
+prune
+tail
+dump
+```
+
+The resolver returns one normative result:
+
+```text
+resolved user-local
+resolved root-managed
+not found
+clean error
+```
+
+Final action execution must use only the resolved target. Action commands must not perform ad hoc store probing outside the shared resolver except for final execution against the already resolved target.
+
+### 7.1 Normal non-root plain ID
+
+```text
+if user-local ID exists:
+  target user-local
+else if root public ID exists:
+  target root-managed requiring elevation
+else:
+  not found
+```
+
+Important invariant:
+
+```text
+If user-local and root-managed public entries share a plain ID,
+normal Sigmund targets the user-local run and does not self-elevate.
+```
+
+### 7.2 Root/sudo plain ID
+
+```text
+root_match = root-managed private ID exists
+user_match = invoking-user-local ID exists, if sudo provenance exists
+
+if root_match:
+  target root-managed
+else if user_match:
+  target invoking-user-local
+else:
+  not found
+```
+
+This means `sudo sigmund stop <id>` can stop an invoking user's local run when that ID exists only in the invoking user's local state. In the rare conflict where both exist, root-managed wins.
+
+Direct root without sudo provenance has no invoking-user context and resolves plain IDs only against root-managed state.
+
+### 7.3 Explicit deterministic ID tokens
+
+Plain IDs are the normal interface. Explicit tokens are supported for rare deterministic cases:
+
+```text
+user:<id>    force user-local lookup
+system:<id>  force root-managed lookup
+```
+
+Rules:
+
+```text
+user:<id> never targets root-managed state.
+system:<id> never targets user-local state.
+```
+
+If `system:<id>` is used from normal non-root invocation, Sigmund may self-elevate. If `user:<id>` is used from root/sudo invocation, Sigmund targets the invoking user's local state when sudo provenance exists. Direct root using `user:<id>` without sudo provenance returns a clean error.
+
+## 8. Self-elevation boundary
+
+Normal non-root Sigmund may self-elevate only when:
+
+```text
+the command is stop, kill, prune, tail, or dump;
+no user-local plain-ID target matched;
+a root-managed public entry matched;
+the target requires elevation.
+```
+
+The elevation boundary is argv-preserving `fork()` + `waitpid()`:
+
+```text
+parent:
+  fork()
+  waitpid(sudo_child)
+  return sudo/root-Sigmund exit status
+
+child:
+  execvp("sudo", [
+    "sudo",
+    "--",
+    "/absolute/path/to/sigmund",
+    "--system",
+    "--elevated",
+    <canonical-command...>,
+    NULL
+  ])
+```
+
+No shell is used. There is no quoting layer, no `sudo sh -c`, and no string command payload.
+
+Before building the sudo argv, Sigmund resolves its own executable path:
+
+```text
+Linux: /proc/self/exe
+macOS: _NSGetExecutablePath() + realpath()
+fallback: realpath(argv[0]) when argv[0] contains '/'
+```
+
+If it cannot determine a safe executable path, elevation fails before invoking sudo:
+
+```text
+sigmund: cannot determine executable path for sudo self-elevation
+```
+
+For action commands, `stdin`, `stdout`, and `stderr` are inherited by the sudo/root-Sigmund child. Sigmund does not pipe or capture terminal I/O across the elevation boundary. This preserves sudo password prompting, sudo diagnostics, root Sigmund diagnostics, streamed output, and Ctrl-C behavior while still letting the non-root parent return the child status.
+
+Exit-code contract:
+
+```text
+If sudo successfully starts root Sigmund:
+  final exit code is root Sigmund's exit code.
+
+If sudo cannot authenticate, is denied, or is cancelled:
+  sudo owns the failure and its stderr explains it.
+
+If the child cannot exec sudo at all:
+  the child prints a diagnostic and exits 127;
+  the non-root parent returns 127.
+```
+
+## 9. List behavior
+
+Normal list:
+
+```bash
 sigmund list
 ```
 
-Lists run records and their status.
+shows:
 
-Columns (stable):
-
-* `RUNID`
-* `STATE` (`running`, `exited`, `stale`, `failed`, `unknown`)
-* `STARTED_AT` (RFC3339 UTC)
-* `RESULT` (`-`, `exit=<code>`, `signal=<sig>`, `launch=<reason>`)
-* `CMD` (truncated)
-
-### Stop
-
-```
-sigmund stop <id>
+```text
+user-local private rows
+root-managed public redacted rows
 ```
 
-Behavior:
+Normal list must never prompt for sudo. Redacted root rows use:
 
-* Sends SIGTERM to the run’s process group (`kill(-pgid, SIGTERM)`).
-* Waits up to a fixed timeout (default 5000ms) for group exit.
-* If the group still exists after timeout, sends SIGKILL (`kill(-pgid, SIGKILL)`).
-* Updates the run record state.
-
-Exit codes:
-
-* `0` success (stopped or already dead)
-* `2` stale / identity mismatch (refused)
-* `3` permission denied
-* `4` timeout / could not terminate group
-* `5` record not found / invalid id
-
-### Kill
-
-```
-sigmund kill <id>
+```text
+CMD   = <root-managed>
+STATE = unknown
+RESULT = -
 ```
 
-Behavior:
+Root/system list reads authoritative private root records:
 
-* Sends SIGKILL to the run’s process group (`kill(-pgid, SIGKILL)`) after safety checks.
-* Updates state if possible.
-
-Exit codes follow `stop`.
-
-### Prune
-
-```
-sigmund prune
-sigmund prune <id>
-sigmund prune all
+```bash
+sudo sigmund list
+sigmund --system list
 ```
 
-* `sigmund prune`: backward-compatible cleanup of exited/failed records and orphan logs.
-* `sigmund prune <id>`: removes exactly one prunable run (`stale`, `exited`, `failed`) and associated output.
-* `sigmund prune all`: removes all prunable runs (`stale`, `exited`, `failed`) and associated output.
-* Running runs are never pruned.
+The implementation may later add non-interactive hydration through `sudo -n`, but any such hydration must be optional and must fall back silently to redacted public rows when unavailable.
 
-### Dump
+## 10. Record format
 
+One JSON record is written per run.
+
+Core fields:
+
+```text
+version
+id
+run_id
+pid
+pgid
+sid
+start_unix_ns
+argv
+uid
+gid
+log_path
+boot_id
+started_at
+ended_at
+state
+exit_code
+term_signal
+launch_error
 ```
-sigmund dump <id>
+
+Best-effort process identity fields:
+
+```text
+proc_starttime_ticks
+exe_dev
+exe_ino
 ```
 
-Prints saved output for a run and exits. Works for stale runs when the log exists.
+Root-managed private records also include:
 
-### Kill command helper
-
-```
-sigmund killcmd <id>
-```
-
-Prints a copy/paste command that targets the process group:
-
-```
-kill -TERM -- -<pgid>
+```text
+invoked_by_uid
+invoked_by_gid
+invoked_by_user
+invoked_via_sudo
 ```
 
----
+Record writes are atomic:
 
-## Stdio policy
+```text
+write temp file in same directory
+fsync temp file
+rename to final name
+fsync containing directory when possible
+```
 
-* `stdin` is always redirected from `/dev/null`.
-* `stdout` and `stderr` are always redirected to a per-run log file: `<storage_dir>/<id>.log`.
+## 11. Process creation and logging
 
-Start output always includes the log path and a stop command:
+Sigmund launches the child in a new session / process group. Child `stdin` is redirected from `/dev/null`; child `stdout` and `stderr` are redirected to the per-run log.
 
-    sigmund: id=<id> pid=<pid> pgid=<pgid> sid=<sid>
-    sigmund: log: /path/to/<id>.log
-    sigmund: stop: sigmund stop <id>
+An exec-success handshake distinguishes successful `execvp()` from immediate exec failure:
 
----
+```text
+parent creates close-on-exec pipe
+child writes errno if execvp fails
+successful exec closes the pipe through CLOEXEC
+parent treats EOF as exec success
+```
 
-## Storage and run records
+Exec-launch failure must leave no record and no orphan log.
 
-### Storage directory
+## 12. State evaluation and signaling safety
 
-Persistent per-user storage:
+Before signaling, Sigmund evaluates the record against the current process table.
 
-1. `$XDG_STATE_HOME/sigmund/` when explicitly supported by the implementation
-2. otherwise `~/.local/state/sigmund/`
+Checks include:
 
-Current implementation note:
+1. current boot marker when available;
+2. leader PID identity;
+3. same-session process-group membership when the leader is gone but group members remain.
 
-* The current Linux implementation intentionally uses `~/.local/state/sigmund/` directly rather than preferring `$XDG_RUNTIME_DIR`.
-* This is a design choice to keep state and logs stable across shells, CI runners, WSL environments, and hosts where XDG runtime handling is unavailable or inconsistent.
+Linux uses `/proc/<pid>/stat`, `/proc/<pid>/exe`, and `/proc/sys/kernel/random/boot_id` where available. macOS uses `sysctl`/kernel process metadata, best-effort executable identity, and `kern.boottime`.
 
-Permissions:
+States:
 
-* directory `0700`
-* files `0600`
+```text
+running
+exited
+stale
+failed
+unknown
+```
 
-### Boot correlation (Linux)
+Signaling refuses `stale` and `unknown` targets. A zombie leader with live same-session group members remains `running`; an empty or zombie-only same-session group is treated as exited.
 
-Because the implementation uses persistent storage, records must include Linux `boot_id` from:
+## 13. Prune behavior
 
-* `/proc/sys/kernel/random/boot_id`
+`sigmund prune` removes prunable records and orphan logs. Running records are kept. `sigmund prune <id>` removes exactly one prunable target. `sigmund prune all` removes all prunable targets.
 
-On `list/stop/kill/killcmd`, if current `boot_id` differs from the record’s `boot_id`, the record is `stale` and signaling commands must refuse. Records/logs are not auto-deleted on boot change.
+Root-managed prune follows the same resolver and elevation rules as other action commands.
 
-### Record format
+## 14. Test harness contract
 
-One JSON record per run: `<id>.json`
+The test suite must validate Sigmund contexts explicitly rather than inheriting the test runner's EUID.
 
-Required fields:
+The harness creates three actors:
 
-* `version` (int)
-* `id` (string; 6–10 hex chars)
-* `run_id` (string; equals `id` for this concrete execution)
-* `pid` (int) — leader PID at launch
-* `pgid` (int)
-* `sid` (int)
-* `start_unix_ns` (int64)
-* `argv` (array of strings)
-* `uid` (int)
-* `gid` (int)
-* `log_path` (string)
-* `boot_id` (string; Linux; required when not using `$XDG_RUNTIME_DIR`)
-* `started_at` (string; RFC3339 UTC)
-* `ended_at` (string; optional)
-* `state` (string)
-* `exit_code` (int; optional)
-* `term_signal` (int; optional)
-* `launch_error` (string; optional)
+```text
+USER_ACTOR = normal non-root Sigmund context
+ROOT_ACTOR = direct root/system Sigmund context
+SUDO_ACTOR = root Sigmund with SUDO_UID/SUDO_GID/SUDO_USER for USER_ACTOR
+```
 
-Linux identity fields (best-effort; required for “safe stop” when available):
+Normal-behavior tests run through the user actor. Root/system behavior tests run through the root actor. Mixed-resolution tests use both actors.
 
-* `proc_starttime_ticks` (uint64) — from `/proc/<pid>/stat` field 22
-* `exe_dev` (uint64, optional) — from `stat("/proc/<pid>/exe")`
-* `exe_ino` (uint64, optional) — from `stat("/proc/<pid>/exe")`
+When CI starts as root, the harness creates a temporary non-root test user. When CI starts as non-root, the current user is the user actor and `sudo -n` is used for root actor tests when available.
 
-Record writes must be atomic:
+Tests must not touch real `/var/lib/sigmund` or `/var/db/sigmund`. `make test` compiles with `SIGMUND_TESTING` and uses `SIGMUND_TEST_SYSTEM_STATE_DIR`.
 
-* write temp file in same directory
-* `fsync` the temp file
-* `rename()` to final name
-* (recommended) `fsync` the directory
+## 15. Non-goals
 
-### ID generation
-
-* Random 6–10 hex chars from a cryptographic source:
-
-  * Linux: `getrandom()` when available
-  * fallback: `/dev/urandom`
-* Collision check: if `<id>.json` exists, regenerate.
-
----
-
-## Process creation and session isolation (C11 implementation requirements)
-
-### Exec success handshake (required)
-
-A pipe is used to distinguish “exec succeeded” from “exec failed” without races:
-
-* Parent creates pipe with close-on-exec set on both ends (`pipe2(O_CLOEXEC)` where available; otherwise `fcntl(FD_CLOEXEC)` on both fds).
-* Child keeps the write end open until `execvp()`:
-
-  * If `execvp()` succeeds, the write end is closed automatically by CLOEXEC; the parent reads EOF.
-  * If `execvp()` fails, the child writes `errno` to the pipe and exits.
-
-### Start algorithm
-
-1. Determine storage directory; ensure it exists with mode `0700`.
-2. Generate `id`.
-3. Compute log path as `<storage_dir>/<id>.log`.
-4. Create exec-handshake pipe (CLOEXEC both ends).
-5. `fork()`.
-6. Child process:
-
-   * `setsid()`; on failure, write `errno` to pipe and `_exit(127)`.
-   * Open `/dev/null` and `dup2` to `STDIN_FILENO`.
-   * Open log file and `dup2` it to `STDOUT_FILENO` and `STDERR_FILENO`.
-   * `execvp(argv[0], argv)`.
-   * On exec failure: write `errno` to pipe; `_exit(127)`.
-7. Parent process:
-
-   * Read the pipe:
-
-     * EOF: exec succeeded.
-     * errno payload: `waitpid(child_pid, ...)` to reap; return error; do not write a record.
-   * Record leader identifiers without extra syscalls:
-
-     * `pid = child_pid`
-     * `pgid = pid`
-     * `sid = pid`
-   * Capture identity fields (Linux best-effort):
-
-     * Read `/proc/<pid>/stat` and extract field 22 (`proc_starttime_ticks`).
-
-       * Parsing requirement: `/proc/<pid>/stat` contains `comm` in parentheses; locate the last `)` and parse fields after it to reach field 22.
-     * `stat("/proc/<pid>/exe")` to capture `(st_dev, st_ino)` when permitted.
-     * If `/proc` reads return `ENOENT` (fast exit after exec), treat as non-fatal and write the record with missing identity fields set to 0.
-   * Write record atomically.
-   * Print start output including id/pid/pgid/sid, log path, and stop command.
-
----
-
-## Stop/kill safety and semantics
-
-### Safety requirements (hard)
-
-Before signaling `-pgid`, `sigmund` must ensure the target corresponds to the recorded run:
-
-1. If the record contains `boot_id`, it must match the current boot.
-2. Determine whether the leader PID exists:
-
-   * If `/proc/<pid>` exists (Linux) or `kill(pid, 0)` indicates existence (0 or `EPERM`), the leader is considered present.
-   * If the leader is present and Linux identity fields are available, `proc_starttime_ticks` must match the current `/proc/<pid>/stat` field 22. If recorded `exe_dev/exe_ino` are present and readable, they must match.
-   * If identity mismatch occurs, mark record `stale` and refuse to signal.
-3. If the leader PID is absent:
-
-   * If `kill(-pgid, 0)` returns `0` or `EPERM`, the group exists and may be signaled.
-   * If `kill(-pgid, 0)` returns `ESRCH`, the group is gone and the run is `dead`.
-
-### Stop behavior
-
-* Send SIGTERM to `-pgid`.
-* Poll for group disappearance using `kill(-pgid, 0)` until timeout:
-
-  * `0` or `EPERM` means group exists
-  * `ESRCH` means group gone
-* Poll loop must sleep to avoid CPU spin (e.g., `nanosleep` 20–50ms per iteration).
-* If timeout expires and group still exists, send SIGKILL to `-pgid`, then recheck.
-* Update record state to `dead` when group is gone.
-
-### Kill behavior
-
-* Send SIGKILL to `-pgid` after the same safety checks.
-* Optionally recheck and mark `dead` when gone.
-
----
-
-## List semantics
-
-For each record:
-
-* If `boot_id` mismatches, state is `stale`.
-* If leader PID exists and identity checks pass, state is `running`.
-* If leader PID exists and identity checks fail, state is `stale`.
-* If leader PID is absent:
-
-  * `kill(-pgid,0)` is `0`/`EPERM` → `running` (leader exited, group lives)
-  * `ESRCH` → `exited`
-* If validation cannot be performed (non-Linux without strong evidence), state is `unknown`.
-
----
-
-## Escape diagnostics (Linux, informational)
-
-After stopping, session-based diagnostics may be emitted:
-
-* Scan `/proc/[0-9]*/stat` for processes whose `SID` equals the recorded `sid`.
-* If any have `PGID != recorded_pgid`, report them as having escaped the group within the session.
-* Processes that created a new session cannot be detected without stronger containment (e.g., cgroups); diagnostics do not affect exit codes.
-
----
-
-## Security and robustness
-
-* Operations are constrained by OS permissions; only processes the user can signal are manageable.
-* Storage directory is private (0700) and records are 0600.
-* Exec failures are reaped (`waitpid`) to avoid zombies.
-* No signals are sent to `-pgid` if safety checks fail; such records become `stale`.
-
----
-
-## Build and compatibility
-
-* Language: C11
-* Requires POSIX APIs: `fork`, `execvp`, `setsid`, `kill`, `waitpid`, `open`, `dup2`, `pipe/pipe2`, `fcntl`, `stat`, `rename`, `fsync`, `nanosleep`
-* Linux enhancements: `/proc` parsing, `boot_id`, optional `getrandom()` (fallback `/dev/urandom`)
+This implementation does not add root log visibility for normal users, global all-user private state scanning, global run-ID uniqueness across all users, or a daemon/supervisor. Root logs and private root records require root authority; normal users see only redacted public index rows.
