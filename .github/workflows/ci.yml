@@ -1,10 +1,11 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, macos-portability]
   pull_request:
-    branches: [main]
+    branches: [main, macos-portability]
 
 jobs:
   build-and-test:
@@ -35,16 +36,28 @@ jobs:
           sudo make test CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
 
   macos-runtime:
-    name: macOS runtime test
-    runs-on: macos-latest
+    name: macOS runtime test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            uname_m: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+            uname_m: x86_64
     steps:
       - uses: actions/checkout@v4
+      - name: Validate runner architecture
+        run: test "$(uname -m)" = "${{ matrix.uname_m }}"
       - name: Build and run tests on macOS
         run: |
           make clean
-          make STATIC_LDFLAGS= CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
+          make CC=clang STATIC_LDFLAGS= CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
           make clean
-          make test STATIC_LDFLAGS= CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
+          make test CC=clang STATIC_LDFLAGS= CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
 
   sanitizers:
     runs-on: ubuntu-latest
