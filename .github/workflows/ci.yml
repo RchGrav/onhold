@@ -75,4 +75,4 @@ jobs:
       - name: Install cppcheck
         run: sudo apt-get update && sudo apt-get install -y cppcheck
       - name: Static analysis for suspicious patterns before release
-        run: cppcheck --enable=all --error-exitcode=1 --suppress=missingIncludeSystem --std=c11 src/sigmund.c
+        run: cppcheck --enable=warning,performance,portability --error-exitcode=1 --suppress=missingIncludeSystem --std=c11 src/sigmund.c

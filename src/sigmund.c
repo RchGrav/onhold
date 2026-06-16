@@ -954,6 +954,7 @@ static int mac_kinfo_pid(pid_t pid, struct kinfo_proc *kp) {
 
 enum group_liveness { GROUP_SCAN_ERROR = -1, GROUP_EMPTY = 0, GROUP_ZOMBIE_ONLY = 1, GROUP_LIVE = 2 };
 
+#if !defined(__APPLE__)
 static int parse_pid_token(const char *tok, pid_t *out) {
     char *end = NULL;
     errno = 0;
@@ -966,26 +967,6 @@ static int parse_pid_token(const char *tok, pid_t *out) {
 }
 
 static int read_process_ids_state(pid_t pid, pid_t *pgid_out, pid_t *sid_out, char *state_out) {
-#if defined(__APPLE__)
-    struct kinfo_proc kp;
-    if (mac_kinfo_pid(pid, &kp) != 0) {
-        return -1;
-    }
-    if (pgid_out) {
-        *pgid_out = kp.kp_eproc.e_pgid;
-    }
-    if (sid_out) {
-        pid_t sid = getsid(pid);
-        if (sid <= 0) {
-            return -1;
-        }
-        *sid_out = sid;
-    }
-    if (state_out) {
-        *state_out = kp.kp_proc.p_stat == SZOMB ? 'Z' : '?';
-    }
-    return 0;
-#else
     char path[128], buf[4096];
     if (checked_snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid) != 0) {
         return -1;
@@ -1051,8 +1032,8 @@ static int read_process_ids_state(pid_t pid, pid_t *pgid_out, pid_t *sid_out, ch
         *sid_out = sid;
     }
     return 0;
-#endif
 }
+#endif
 
 static enum group_liveness group_session_liveness(pid_t pgid, pid_t sid) {
     if (pgid <= 1 || sid <= 0) {

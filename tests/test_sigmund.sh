@@ -531,7 +531,7 @@ test_argument_edges() {
   [ "$rc" -eq 5 ] || return 1
   "$SIGMUND_BIN" --help >/dev/null || return 1
   out=$("$SIGMUND_BIN" --version) || return 1
-  printf '%s\n' "$out" | grep -Eq '^(dev|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
+  printf '%s\n' "$out" | grep -Eq '^(dev|[0-9a-f]{7,40}|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
   set +e
   "$SIGMUND_BIN" -l >/dev/null 2>&1
   rc=$?

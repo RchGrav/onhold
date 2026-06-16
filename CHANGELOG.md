@@ -1,6 +1,6 @@
 # Changelog
 
-## Root-managed state stabilization pass
+## 0.2.0 - Root-managed state stabilization pass
 
 This pass hardens the root-managed state boundary without adding future command features.
 
