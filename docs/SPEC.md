@@ -618,7 +618,7 @@ The grant target must be an existing root-managed alias. The `<user>` argument m
 Before writing sudoers, Sigmund resolves its own executable path and refuses to proceed unless that file is root-owned, regular, and not writable by group or world. Managed sudoers lines grant NOPASSWD access only to exact canonical invocations such as:
 
 ```text
-alice ALL=(root) NOPASSWD: /usr/bin/sigmund --system --elevated stop system:<hash>
+alice ALL=(root) NOPASSWD: /usr/bin/sigmund --system --elevated stop system\:<hash>
 ```
 
 The managed file path is `/etc/sudoers.d/sigmund_<alias>_<user>` in production. Test builds may use `SIGMUND_TEST_SUDOERS_DIR`. Writes go to a same-directory `.tmp` candidate, use mode `0440`, are validated with `visudo -cf <tmp>`, and then `rename()` into place.

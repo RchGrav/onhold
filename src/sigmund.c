@@ -4688,7 +4688,7 @@ static int build_sudoers_line(char *out,
                               const char *action,
                               const char *hash) {
     return checked_snprintf(out, n,
-                            "%s ALL=(root) NOPASSWD: %s --system --elevated %s system:%s",
+                            "%s ALL=(root) NOPASSWD: %s --system --elevated %s system\\:%s",
                             subject, abs_sigmund, action, hash);
 }
 

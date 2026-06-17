@@ -276,7 +276,7 @@ root_file_mode() {
 
 root_grep() {
   local pattern="$1" path="$2"
-  as_root grep -q "$pattern" "$path"
+  as_root grep -F -q -- "$pattern" "$path"
 }
 
 run_test() {
@@ -849,23 +849,23 @@ test_grant_revoke_writes_hash_scoped_sudoers() {
   as_root "$safe" grant "$hash" "$TEST_USER" start >"$TEST_ROOT/grant-hash.out" 2>"$TEST_ROOT/grant-hash.err"
   rc=$?
   set -e
-  [ "$rc" -eq 5 ] || return 1
-  grep -q 'existing system alias' "$TEST_ROOT/grant-hash.err" || return 1
-  as_root "$safe" grant web-sys "$TEST_USER" start,stop >"$TEST_ROOT/grant.out" 2>"$TEST_ROOT/grant.err" || return 1
+  [ "$rc" -eq 5 ] || { cat "$TEST_ROOT/grant-hash.out" "$TEST_ROOT/grant-hash.err" >&2; return 1; }
+  grep -q 'existing system alias' "$TEST_ROOT/grant-hash.err" || { cat "$TEST_ROOT/grant-hash.err" >&2; return 1; }
+  as_root "$safe" grant web-sys "$TEST_USER" start,stop >"$TEST_ROOT/grant.out" 2>"$TEST_ROOT/grant.err" || { cat "$TEST_ROOT/grant.out" "$TEST_ROOT/grant.err" >&2; return 1; }
   sudoers_file="$sudoers_dir/sigmund_web-sys_$TEST_USER"
-  root_file_exists "$sudoers_file" || return 1
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated start system:$hash" "$sudoers_file" || return 1
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated stop system:$hash" "$sudoers_file" || return 1
+  root_file_exists "$sudoers_file" || { echo "missing $sudoers_file" >&2; cat "$TEST_ROOT/grant.err" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated start system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated stop system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
 
-  as_root "$safe" revoke web-sys "$TEST_USER" start >"$TEST_ROOT/revoke.out" 2>"$TEST_ROOT/revoke.err" || return 1
-  as_root sh -c '! grep -q "$1" "$2"' sh "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated start system:$hash" "$sudoers_file" || return 1
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated stop system:$hash" "$sudoers_file" || return 1
+  as_root "$safe" revoke web-sys "$TEST_USER" start >"$TEST_ROOT/revoke.out" 2>"$TEST_ROOT/revoke.err" || { cat "$TEST_ROOT/revoke.out" "$TEST_ROOT/revoke.err" >&2; return 1; }
+  as_root sh -c '! grep -F -q -- "$1" "$2"' sh "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated start system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated stop system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
 
-  as_root "$safe" grant web-sys "$TEST_USER" >"$TEST_ROOT/grant-all.out" 2>"$TEST_ROOT/grant-all.err" || return 1
-  root_grep '# actions: ALL' "$sudoers_file" || return 1
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated start system:$hash" "$sudoers_file" || return 1
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated prune system:$hash" "$sudoers_file" || return 1
-  as_root "$safe" revoke web-sys "$TEST_USER" >"$TEST_ROOT/revoke-all.out" 2>"$TEST_ROOT/revoke-all.err" || return 1
+  as_root "$safe" grant web-sys "$TEST_USER" >"$TEST_ROOT/grant-all.out" 2>"$TEST_ROOT/grant-all.err" || { cat "$TEST_ROOT/grant-all.out" "$TEST_ROOT/grant-all.err" >&2; return 1; }
+  root_grep '# actions: ALL' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated start system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe --system --elevated prune system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  as_root "$safe" revoke web-sys "$TEST_USER" >"$TEST_ROOT/revoke-all.out" 2>"$TEST_ROOT/revoke-all.err" || { cat "$TEST_ROOT/revoke-all.out" "$TEST_ROOT/revoke-all.err" >&2; return 1; }
   root_path_absent "$sudoers_file"
 }
 
