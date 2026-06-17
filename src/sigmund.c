@@ -856,26 +856,26 @@ static void sha256_update_nul_field(struct sha256_ctx *ctx, const char *s) {
     sha256_update(ctx, &nul, 1);
 }
 
+/*
+ * This digest is a stable capability key. Do not add versions, environment,
+ * cwd, uid, timestamps, or other context: existing aliases, profiles, and
+ * sudoers grants are keyed to exactly this binary-path + argv framing.
+ */
 static void profile_hash_for_argv(const char *binary_path, int argc, char **argv, char out[PROFILE_HASH_STR_LEN]) {
     struct sha256_ctx ctx;
     unsigned char digest[32];
     sha256_init(&ctx);
-    sha256_update_nul_field(&ctx, "sigmund-profile-v1");
-    sha256_update_nul_field(&ctx, "bin");
+    sha256_update_nul_field(&ctx, "sigmund-profile");
     sha256_update_nul_field(&ctx, binary_path);
     char count[32];
     snprintf(count, sizeof(count), "%d", argc);
-    sha256_update_nul_field(&ctx, "argc");
     sha256_update_nul_field(&ctx, count);
     for (int i = 0; i < argc; i++) {
         char idx[32];
         snprintf(idx, sizeof(idx), "%d", i);
-        sha256_update_nul_field(&ctx, "arg");
         sha256_update_nul_field(&ctx, idx);
         sha256_update_nul_field(&ctx, argv[i]);
     }
-    sha256_update_nul_field(&ctx, "envc");
-    sha256_update_nul_field(&ctx, "0");
     sha256_final(&ctx, digest);
     hex_encode(digest, sizeof(digest), out, PROFILE_HASH_STR_LEN);
 }
@@ -2895,6 +2895,7 @@ static int perform_start(const struct invocation *inv,
         } else {
             execvp(argv[0], argv);
         }
+        /* No envp variant here: children intentionally inherit Sigmund's environment. */
         int e = errno;
         write_all(pipefd[1], &e, sizeof(e));
         _exit(127);
