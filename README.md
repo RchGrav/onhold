@@ -208,7 +208,7 @@ flowchart LR
     User(["Standard user"])
     Admin(["Root / sudo"])
 
-    subgraph UserStore["User local store<br/>~/.local/state/sigmund/"]
+    subgraph UserStore["User local store   ~/.local/state/sigmund/"]
         direction TB
         UR["run records<br/>0600 private"]
         UL["logs<br/>0600 private"]
@@ -216,7 +216,7 @@ flowchart LR
         UP["profiles.json<br/>0600 private"]
     end
 
-    subgraph SystemStore["System store<br/>/var/lib/sigmund or /var/db/sigmund"]
+    subgraph SystemStore["System store   /var/lib/sigmund or /var/db/sigmund"]
         direction TB
         SR["runs/<br/>0600 root private"]
         SL["logs/<br/>0600 root private"]
