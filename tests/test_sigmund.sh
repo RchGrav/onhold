@@ -417,7 +417,11 @@ test_exec_failure_no_record() {
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || return 1
-  count=$(find "$HOME/.local/state/sigmund" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l)
+  if [ -d "$HOME/.local/state/sigmund" ]; then
+    count=$(find "$HOME/.local/state/sigmund" -maxdepth 1 -type f -name '*.json' | wc -l)
+  else
+    count=0
+  fi
   [ "$count" -eq 0 ] || return 1
   count=$(find "$HOME/.local/state/sigmund" -maxdepth 1 -type f 2>/dev/null | wc -l)
   [ "$count" -eq 0 ]
@@ -707,6 +711,57 @@ test_tail_finished_log_prints_existing_output() {
   printf '%s\n' "$tailed" | grep -q 'finished-tail-line'
 }
 
+test_console_requires_socat_before_launch() {
+  local fake_path rc count
+  fake_path="$TEST_ROOT/no-socat"
+  mkdir -p "$fake_path" || return 1
+  set +e
+  as_user env PATH="$fake_path" "$SIGMUND_REAL_BIN" --console /bin/true >"$TEST_ROOT/console-nosocat.out" 2>"$TEST_ROOT/console-nosocat.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || { cat "$TEST_ROOT/console-nosocat.out" "$TEST_ROOT/console-nosocat.err" >&2; return 1; }
+  grep -q -- '--console requires socat' "$TEST_ROOT/console-nosocat.err" || { cat "$TEST_ROOT/console-nosocat.err" >&2; return 1; }
+  if [ -d "$HOME/.local/state/sigmund" ]; then
+    count=$(find "$HOME/.local/state/sigmund" -maxdepth 1 -type f -name '*.json' | wc -l)
+  else
+    count=0
+  fi
+  [ "$count" -eq 0 ]
+}
+
+test_console_reports_non_console_run() {
+  local out id rc
+  out=$("$SIGMUND_BIN" sleep 30 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  "$SIGMUND_BIN" console "$id" >"$TEST_ROOT/console-none.out" 2>"$TEST_ROOT/console-none.err"
+  rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  grep -q "has no console" "$TEST_ROOT/console-none.err" || { cat "$TEST_ROOT/console-none.err" >&2; return 1; }
+  "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
+}
+
+test_console_round_trip_and_log_tee() {
+  command -v socat >/dev/null 2>&1 || return 0
+  local out id store record
+  out=$("$SIGMUND_BIN" --console /bin/sh -c 'read line; echo "got:$line"' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  store="$HOME/.local/state/sigmund"
+  record="$store/$id.json"
+  grep -q '"console_sock": "' "$record" || { cat "$record" >&2; return 1; }
+  "$SIGMUND_BIN" list | grep -Eq "^$id[[:space:]]+running[[:space:]]+.*[[:space:]]console[[:space:]]" || return 1
+  printf 'ping\n' | "$SIGMUND_BIN" console "$id" >"$TEST_ROOT/console.out" 2>"$TEST_ROOT/console.err" || {
+    cat "$TEST_ROOT/console.out" "$TEST_ROOT/console.err" >&2
+    return 1
+  }
+  grep -q 'got:ping' "$TEST_ROOT/console.out" || { cat "$TEST_ROOT/console.out" >&2; return 1; }
+  sleep 0.2
+  grep -q 'got:ping' "$store/$id.log" || { cat "$store/$id.log" >&2; return 1; }
+  "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
+  [ ! -e "$store/console/$id.sock" ]
+}
+
 test_prune_by_id() {
   local out1 out2 id1 id2 store
   out1=$("$SIGMUND_BIN" true 2>&1) || return 1
@@ -976,8 +1031,8 @@ test_grant_revoke_writes_hash_scoped_sudoers() {
 
   as_root "$safe" grant web-sys "$TEST_USER" >"$TEST_ROOT/grant-all.out" 2>"$TEST_ROOT/grant-all.err" || { cat "$TEST_ROOT/grant-all.out" "$TEST_ROOT/grant-all.err" >&2; return 1; }
   root_grep '# actions: ALL' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep '# actions-list: start,stop,kill,tail,dump,prune' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^--system --elevated (start|stop|kill|tail|dump|prune) [0-9a-f]{8} web-sys $hash$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep '# actions-list: start,stop,kill,tail,dump,prune,console' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^--system --elevated (start|stop|kill|tail|dump|prune|console) [0-9a-f]{8} web-sys $hash$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
   as_root "$safe" revoke web-sys "$TEST_USER" >"$TEST_ROOT/revoke-all.out" 2>"$TEST_ROOT/revoke-all.err" || { cat "$TEST_ROOT/revoke-all.out" "$TEST_ROOT/revoke-all.err" >&2; return 1; }
   root_path_absent "$sudoers_file"
 }
@@ -1312,6 +1367,9 @@ run_test "persistent stale records remain visible and dumpable" test_persistent_
 run_test "missing boot source does not force stale" test_boot_unavailable_does_not_force_stale
 run_test "leader zombie with live group remains running" test_leader_zombie_group_still_running
 run_test "tail <id> prints finished log output" test_tail_finished_log_prints_existing_output
+run_test "--console refuses before launch when socat is missing" test_console_requires_socat_before_launch
+run_test "console reports a normal run has no console" test_console_reports_non_console_run
+run_test "console attach round-trips and tees to the log" test_console_round_trip_and_log_tee
 run_test "prune <id> removes exactly one run record/output" test_prune_by_id
 run_test "prune all removes prunable while preserving running" test_prune_all_keeps_running
 run_test "transactional launch rollback on record write failure" test_transactional_record_write_failure

@@ -27,7 +27,11 @@ material, not normal action targets.
 - Added `stop --print` and `kill --print` as the dry-run replacement for the
   old standalone signal-command helper.
 - Added root-managed `grant` and `revoke` support for hash-scoped sudoers
-  entries covering `start`, `stop`, `kill`, `tail`, `dump`, and `prune`.
+  entries covering `start`, `stop`, `kill`, `tail`, `dump`, `prune`, and
+  `console`.
+- Added `sigmund --console <cmd...>` and `sigmund console <target>` for
+  socat-backed attachable PTY sessions. Console runs still tee output to the
+  normal log so `tail` and `dump` continue to work.
 - Added `sigmund help [topic]` plus action `-h` help for the core command
   surface.
 - Added `-f` as the documented start-and-follow short form while keeping
@@ -50,6 +54,8 @@ material, not normal action targets.
 - Root-managed alias self-elevation now carries the internal capability argv
   shape `<verb> <runid_sel> <alias> <hash>` so sudoers remains hash-pinned
   while root Sigmund resolves concrete runs by alias label and command intent.
+- Console socket paths are private run-state fields and are cleaned up by
+  normal prune lifecycle handling.
 - Start now writes only the bare 8-hex run ID to stdout and writes the human
   banner to stderr; `--quiet` suppresses that human banner/status output.
 - `list` now supports alias filtering and relative start ages by default; use
@@ -79,6 +85,7 @@ The following checks passed in the update environment:
 make clean && make test CC=gcc CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -O2'
 make clean && make test CC=clang CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -O2'
 make clean && make test CC=gcc CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address,undefined' STATIC_LDFLAGS='' LDFLAGS='-fsanitize=address,undefined' TEST_LDFLAGS='-fsanitize=address,undefined'
+cppcheck --enable=warning,performance,portability --error-exitcode=1 --suppress=missingIncludeSystem --std=c11 src/sigmund.c
 ```
 
 ## 0.2.0 - Root-managed state stabilization pass

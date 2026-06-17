@@ -20,6 +20,7 @@ Required permissions:
 directory: 0700 user:user
 records:   0600 user:user
 logs:      0600 user:user
+console:   0700 user:user console sockets, 0600 per socket
 aliases:   0600 user:user aliases.json
 ```
 
@@ -39,6 +40,7 @@ Layout:
 ```text
 /var/lib/sigmund/runs/      private root run records
 /var/lib/sigmund/logs/      private root logs
+/var/lib/sigmund/console/   private root console sockets
 /var/lib/sigmund/profiles.json
 /var/lib/sigmund/public/    public root run index
 /var/lib/sigmund/public/aliases.json
@@ -52,6 +54,8 @@ Required permissions:
 root state dir:       0755 root:root
 private run records:  0600 root:root
 private logs:         0600 root:root
+private console dir:  0700 root:root
+private sockets:      0600 root:root
 private profiles:     0600 root:root
 public dir:           0755 root:root
 public index files:   0644 root:root
@@ -132,6 +136,7 @@ list
 stop
 kill
 tail
+console
 dump
 prune
 start
@@ -209,6 +214,19 @@ For user-local aliases, Sigmund loads the direct recipe from the user's private 
 
 `--multi` is an alias-start modifier. Without `--multi`, `start <alias>` refuses when that alias already has a running process. Bare `--multi` starts one additional run and bypasses that guard; `--multi N` and `--multi=N` start N runs.
 
+### 4.5 Console start
+
+`--console` is a start modifier. It may be used with raw starts or alias starts:
+
+```bash
+sigmund --console <cmd...>
+sigmund start <alias> --console
+```
+
+Console starts require `socat`. If `socat` is not available in `PATH`, Sigmund refuses before generating a run ID or launching the command.
+
+A console run records a private `console_sock` path and starts the command behind a per-run PTY broker. Output is tee'd to the normal log, so `tail` and `dump` keep their normal behavior. Console sockets are private state and must not be exposed through the public root index.
+
 ## 5. Public root index and aliases
 
 The public root index contains only safe discovery and elevation metadata.
@@ -232,6 +250,7 @@ The public index must not include:
 argv
 cmdline_display
 log_path
+console_sock
 environment
 pid
 pgid
@@ -256,7 +275,7 @@ Because Sigmund is daemonless and cannot continuously refresh root-public state 
 }
 ```
 
-Public aliases must not include argv, binary paths, log paths, environment, process identity, or sudo provenance.
+Public aliases must not include argv, binary paths, log paths, console socket paths, environment, process identity, or sudo provenance.
 
 ## 6. Run IDs and collision checks
 
@@ -267,6 +286,7 @@ Run IDs are random opaque 8-character lowercase hex identifiers. `00000000` and 
 ```text
 that user's local records
 that user's local logs
+that user's local console sockets
 that user's local reservation files
 root-managed public index IDs
 ```
@@ -276,9 +296,10 @@ root-managed public index IDs
 ```text
 root-managed private records
 root-managed private logs
+root-managed private console sockets
 root-managed reservation files
 root-managed public index IDs
-the invoking user's local records/logs/reservations
+the invoking user's local records/logs/console sockets/reservations
 ```
 
 ### 6.3 Direct root start avoids
@@ -286,6 +307,7 @@ the invoking user's local records/logs/reservations
 ```text
 root-managed private records
 root-managed private logs
+root-managed private console sockets
 root-managed reservation files
 root-managed public index IDs
 ```
@@ -301,6 +323,7 @@ stop
 kill
 prune
 tail
+console
 dump
 ```
 
@@ -323,6 +346,7 @@ Alias resolution is verb-specific:
 start: running alias-labeled runs gate new starts unless --multi is supplied
 stop/kill: running alias-labeled runs
 tail: running alias-labeled runs
+console: running console-enabled alias-labeled runs
 dump: alias-labeled runs with logs
 prune: prunable alias-labeled past data
 ```
@@ -635,17 +659,29 @@ Signaling refuses `stale` and `unknown` targets. A zombie leader with live same-
 
 ## 13. Prune behavior
 
-`sigmund prune` removes prunable past run data and unreferenced logs. Running records are kept. `sigmund prune <id>` removes exactly one prunable target. `sigmund prune all` removes all prunable targets.
+`sigmund prune` removes prunable past run data, unreferenced logs, and orphan console sockets. Running records are kept. `sigmund prune <id>` removes exactly one prunable target. `sigmund prune all` removes all prunable targets.
 
 Root-managed prune follows the same resolver and elevation rules as other action commands.
+
+### 13.1 Console behavior
+
+`sigmund console <target>` attaches to a running console-enabled run through the recorded private socket:
+
+```text
+socat -,raw,echo=0 UNIX-CONNECT:<console_sock>
+```
+
+A run ID targets that one run directly. An alias resolves by recorded alias label and the `console` verb intent-set: running runs with `console_sock`. More than one matching alias run exits 6 and prints candidates; zero candidates for a known alias exits 0. A finished run reports that it has exited and points the user to `sigmund dump <id>`. A non-console run reports that it has no console.
+
+Console is interactive process access and follows the same privilege boundary as `stop` and `kill`: user-local sockets are private to that user, and root-managed console attaches require root authority or a matching sudoers grant. The public root index must not expose console socket paths.
 
 ## 14. Sudoers grants
 
 `sigmund grant` and `sigmund revoke` manage only Sigmund-owned sudoers entries. They require root authority and operate on root-managed profiles only:
 
 ```text
-sigmund grant <alias> <user> [start,stop,kill,tail,dump,prune]
-sigmund revoke <alias> <user> [start,stop,kill,tail,dump,prune]
+sigmund grant <alias> <user> [start,stop,kill,tail,dump,prune,console]
+sigmund revoke <alias> <user> [start,stop,kill,tail,dump,prune,console]
 ```
 
 The grant target must be an existing root-managed alias. The `<user>` argument may be a username, `%group`, or `all`. Sigmund resolves the alias to its immutable profile hash before writing sudoers; the managed filename is keyed by alias and user, and the sudoers command carries a fixed alias/hash pair plus an 8-hex `runid_sel` slot so root can verify the alias/hash pair and selected run records before acting. If the action list is omitted, all supported Sigmund actions for that alias are selected. This is a wildcard over Sigmund's supported alias actions, not arbitrary sudo command access. `purge` is not a supported action; the command is `prune`.

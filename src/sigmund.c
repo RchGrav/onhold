@@ -15,6 +15,11 @@
 #include <string.h>
 #include <limits.h>
 #include <pwd.h>
+#include <sys/ioctl.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <termios.h>
 #if defined(__linux__)
 #include <sys/random.h>
 #endif
@@ -56,6 +61,10 @@
 #ifndef O_NOFOLLOW
 #define O_NOFOLLOW 0
 #endif
+#ifndef SOCK_CLOEXEC
+#define SOCK_CLOEXEC 0
+#define SIGMUND_NEED_SOCKET_CLOEXEC 1
+#endif
 #define JSON_MAX_DEPTH 64
 #ifndef SIGMUND_SYSTEM_STATE_DIR
 #if defined(__APPLE__)
@@ -71,6 +80,7 @@ struct record {
     char run_id[16];
     char alias[ALIAS_MAX_LEN + 1];
     char profile_hash[PROFILE_HASH_STR_LEN];
+    char console_sock[SIGMUND_PATH_MAX];
     pid_t pid;
     pid_t pgid;
     pid_t sid;
@@ -104,6 +114,7 @@ struct record {
     bool has_invocation;
     bool has_alias;
     bool has_profile_hash;
+    bool has_console;
 };
 
 enum run_state { STATE_RUNNING, STATE_EXITED, STATE_STALE, STATE_FAILED, STATE_UNKNOWN };
@@ -116,6 +127,7 @@ struct store_paths {
     char record_dir[SIGMUND_PATH_MAX];
     char log_dir[SIGMUND_PATH_MAX];
     char public_dir[SIGMUND_PATH_MAX];
+    char console_dir[SIGMUND_PATH_MAX];
     char profile_path[SIGMUND_PATH_MAX];
     char alias_path[SIGMUND_PATH_MAX];
 };
@@ -160,6 +172,7 @@ static int write_all(int fd, const void *buf, size_t n);
 static void usage(void);
 static int show_help(const char *topic);
 static void format_rfc3339_utc_from_ns(int64_t unix_ns, char *out, size_t n);
+static int read_exec_handshake(int fd, int *child_errno);
 
 static void handle_tail_sigint(int signo) {
     (void)signo;
@@ -582,6 +595,7 @@ static int init_user_store_from_home(const char *home, struct store_paths *store
     if (checked_snprintf(store->base, sizeof(store->base), "%s/.local/state/sigmund", home) != 0 ||
         checked_snprintf(store->record_dir, sizeof(store->record_dir), "%s", store->base) != 0 ||
         checked_snprintf(store->log_dir, sizeof(store->log_dir), "%s", store->base) != 0 ||
+        checked_snprintf(store->console_dir, sizeof(store->console_dir), "%s/console", store->base) != 0 ||
         checked_snprintf(store->profile_path, sizeof(store->profile_path), "%s/profiles.json", store->base) != 0 ||
         checked_snprintf(store->alias_path, sizeof(store->alias_path), "%s/aliases.json", store->base) != 0) {
         return -1;
@@ -609,6 +623,10 @@ static int ensure_user_store_for_current_user(struct store_paths *store) {
     if (chmod(store->base, 0700) != 0) {
         return -1;
     }
+    if (mkdir_p0700(store->console_dir) != 0 ||
+        chmod(store->console_dir, 0700) != 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -626,6 +644,7 @@ static int init_system_store(struct store_paths *store) {
         checked_snprintf(store->record_dir, sizeof(store->record_dir), "%s/runs", base) != 0 ||
         checked_snprintf(store->log_dir, sizeof(store->log_dir), "%s/logs", base) != 0 ||
         checked_snprintf(store->public_dir, sizeof(store->public_dir), "%s/public", base) != 0 ||
+        checked_snprintf(store->console_dir, sizeof(store->console_dir), "%s/console", base) != 0 ||
         checked_snprintf(store->profile_path, sizeof(store->profile_path), "%s/profiles.json", base) != 0 ||
         checked_snprintf(store->alias_path, sizeof(store->alias_path), "%s/public/aliases.json", base) != 0) {
         return -1;
@@ -650,6 +669,11 @@ static int ensure_system_store(struct store_paths *store) {
     if (mkdir_p_mode(store->log_dir, 0700) != 0 ||
         chmod(store->log_dir, 0700) != 0 ||
         chown_root_if_root(store->log_dir) != 0) {
+        return -1;
+    }
+    if (mkdir_p_mode(store->console_dir, 0700) != 0 ||
+        chmod(store->console_dir, 0700) != 0 ||
+        chown_root_if_root(store->console_dir) != 0) {
         return -1;
     }
     if (mkdir_p_mode(store->public_dir, 0755) != 0 ||
@@ -720,6 +744,10 @@ static bool id_collides_in_store(const struct store_paths *store, const char *id
     if (checked_snprintf(path, sizeof(path), "%s/.%s.reserve", store->record_dir, id) == 0 && path_exists(path)) {
         return true;
     }
+    if (store->console_dir[0] &&
+        checked_snprintf(path, sizeof(path), "%s/%s.sock", store->console_dir, id) == 0 && path_exists(path)) {
+        return true;
+    }
     if (include_public && store->public_dir[0]) {
         if (checked_snprintf(path, sizeof(path), "%s/%s.json", store->public_dir, id) == 0 && path_exists(path)) {
             return true;
@@ -740,6 +768,10 @@ static bool id_material_collides_in_store(const struct store_paths *store, const
         if (checked_snprintf(path, sizeof(path), "%s/%s.json", store->public_dir, id) == 0 && path_exists(path)) {
             return true;
         }
+    }
+    if (store->console_dir[0] &&
+        checked_snprintf(path, sizeof(path), "%s/%s.sock", store->console_dir, id) == 0 && path_exists(path)) {
+        return true;
     }
     return false;
 }
@@ -833,6 +865,344 @@ static void sig_note(const struct invocation *inv, const char *fmt, ...) {
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
+}
+
+static bool executable_available(const char *name) {
+    if (!name || !*name) {
+        return false;
+    }
+    if (strchr(name, '/')) {
+        return access(name, X_OK) == 0;
+    }
+    const char *path = getenv("PATH");
+    if (!path || !*path) {
+        path = "/usr/bin:/bin";
+    }
+    char *copy = strdup(path);
+    if (!copy) {
+        return false;
+    }
+    bool found = false;
+    char *save = NULL;
+    for (char *dir = strtok_r(copy, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
+        if (!*dir) {
+            dir = ".";
+        }
+        char candidate[SIGMUND_PATH_MAX];
+        if (checked_snprintf(candidate, sizeof(candidate), "%s/%s", dir, name) == 0 &&
+            access(candidate, X_OK) == 0) {
+            found = true;
+            break;
+        }
+    }
+    free(copy);
+    return found;
+}
+
+static int make_console_listener(const char *sock_path) {
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    size_t len = strlen(sock_path);
+    if (len == 0 || len >= sizeof(addr.sun_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memcpy(addr.sun_path, sock_path, len + 1);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        return -1;
+    }
+#ifdef SIGMUND_NEED_SOCKET_CLOEXEC
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+#endif
+    unlink(sock_path);
+    mode_t old_umask = umask(077);
+    int rc = bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+    umask(old_umask);
+    if (rc != 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    if (chmod(sock_path, 0600) != 0 || listen(fd, 1) != 0) {
+        int saved = errno;
+        close(fd);
+        unlink(sock_path);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+}
+
+static int open_console_pty(int *master_out, int *slave_out) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (master < 0) {
+        return -1;
+    }
+    if (grantpt(master) != 0 || unlockpt(master) != 0) {
+        int saved = errno;
+        close(master);
+        errno = saved;
+        return -1;
+    }
+    char *slave_name = ptsname(master);
+    if (!slave_name) {
+        int saved = errno;
+        close(master);
+        errno = saved;
+        return -1;
+    }
+    int slave = open(slave_name, O_RDWR | O_CLOEXEC);
+    if (slave < 0) {
+        int saved = errno;
+        close(master);
+        errno = saved;
+        return -1;
+    }
+#ifdef TIOCSCTTY
+    (void)ioctl(slave, TIOCSCTTY, 0);
+#endif
+    (void)tcsetpgrp(slave, getpgrp());
+    *master_out = master;
+    *slave_out = slave;
+    return 0;
+}
+
+static void broker_cleanup_and_exit(int parent_pipe,
+                                    const char *sock_path,
+                                    int listener,
+                                    int master,
+                                    int slave,
+                                    int logfd,
+                                    pid_t target,
+                                    int exit_code) {
+    if (target > 0) {
+        kill(target, SIGKILL);
+        int st = 0;
+        while (waitpid(target, &st, 0) < 0 && errno == EINTR) {
+            continue;
+        }
+    }
+    if (parent_pipe >= 0) close(parent_pipe);
+    if (listener >= 0) close(listener);
+    if (master >= 0) close(master);
+    if (slave >= 0) close(slave);
+    if (logfd >= 0) close(logfd);
+    if (sock_path && *sock_path) unlink(sock_path);
+    _exit(exit_code);
+}
+
+static void broker_fail_errno(int parent_pipe,
+                              const char *sock_path,
+                              int listener,
+                              int master,
+                              int slave,
+                              int logfd,
+                              pid_t target,
+                              int err) {
+    if (err == 0) {
+        err = EIO;
+    }
+    (void)write_all(parent_pipe, &err, sizeof(err));
+    broker_cleanup_and_exit(parent_pipe, sock_path, listener, master, slave, logfd, target, 127);
+}
+
+static void run_console_broker(int parent_pipe,
+                               const char *log_path,
+                               const char *sock_path,
+                               int argc,
+                               char **argv,
+                               const char *exec_path) {
+    int listener = -1;
+    int master = -1;
+    int slave = -1;
+    int logfd = -1;
+    pid_t target = -1;
+
+    if (argc <= 0 || !argv || !argv[0]) {
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, EINVAL);
+    }
+
+    listener = make_console_listener(sock_path);
+    if (listener < 0) {
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
+    }
+    logfd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (logfd < 0) {
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
+    }
+    if (open_console_pty(&master, &slave) != 0) {
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
+    }
+
+    int exec_pipe[2];
+#if defined(__linux__) && defined(O_CLOEXEC)
+    if (pipe2(exec_pipe, O_CLOEXEC) != 0)
+#endif
+    {
+        if (pipe(exec_pipe) != 0) {
+            broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
+        }
+        if (fcntl(exec_pipe[0], F_SETFD, FD_CLOEXEC) != 0 ||
+            fcntl(exec_pipe[1], F_SETFD, FD_CLOEXEC) != 0) {
+            int saved = errno;
+            close(exec_pipe[0]);
+            close(exec_pipe[1]);
+            broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, saved);
+        }
+    }
+
+    target = fork();
+    if (target < 0) {
+        int saved = errno;
+        close(exec_pipe[0]);
+        close(exec_pipe[1]);
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, saved);
+    }
+    if (target == 0) {
+        close(exec_pipe[0]);
+        close(listener);
+        close(master);
+        close(logfd);
+        if (dup2(slave, STDIN_FILENO) < 0 ||
+            dup2(slave, STDOUT_FILENO) < 0 ||
+            dup2(slave, STDERR_FILENO) < 0) {
+            int e = errno;
+            (void)write_all(exec_pipe[1], &e, sizeof(e));
+            _exit(127);
+        }
+        if (slave > STDERR_FILENO) {
+            close(slave);
+        }
+        if (exec_path && *exec_path) {
+            execv(exec_path, argv);
+        } else {
+            execvp(argv[0], argv);
+        }
+        int e = errno;
+        (void)write_all(exec_pipe[1], &e, sizeof(e));
+        _exit(127);
+    }
+
+    close(exec_pipe[1]);
+    int child_errno = 0;
+    int handshake = read_exec_handshake(exec_pipe[0], &child_errno);
+    int handshake_errno = errno;
+    close(exec_pipe[0]);
+    close(slave);
+    slave = -1;
+    if (handshake < 0) {
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, handshake_errno);
+    }
+    if (handshake > 0) {
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, child_errno);
+    }
+    close(parent_pipe);
+    parent_pipe = -1;
+
+    int client = -1;
+    bool client_input_closed = false;
+    bool target_done = false;
+    while (1) {
+        if (!target_done) {
+            int st = 0;
+            pid_t got = waitpid(target, &st, WNOHANG);
+            if (got == target) {
+                target_done = true;
+                target = -1;
+            }
+        }
+
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(master, &rfds);
+        FD_SET(listener, &rfds);
+        int maxfd = master > listener ? master : listener;
+        if (client >= 0 && !client_input_closed) {
+            FD_SET(client, &rfds);
+            if (client > maxfd) {
+                maxfd = client;
+            }
+        }
+        struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
+        int sr = select(maxfd + 1, &rfds, NULL, NULL, &tv);
+        if (sr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        if (sr == 0) {
+            if (target_done) {
+                char drain[4096];
+                ssize_t n = read(master, drain, sizeof(drain));
+                if (n > 0) {
+                    (void)write_all(logfd, drain, (size_t)n);
+                    if (client >= 0 && write_all(client, drain, (size_t)n) != 0) {
+                        close(client);
+                        client = -1;
+                        client_input_closed = false;
+                    }
+                    continue;
+                }
+                break;
+            }
+            continue;
+        }
+        if (FD_ISSET(listener, &rfds)) {
+            int next = accept(listener, NULL, NULL);
+            if (next >= 0) {
+                if (client >= 0) {
+                    close(next);
+                } else {
+                    client = next;
+                    client_input_closed = false;
+                }
+            }
+        }
+        if (client >= 0 && !client_input_closed && FD_ISSET(client, &rfds)) {
+            char buf[4096];
+            ssize_t n = read(client, buf, sizeof(buf));
+            if (n > 0) {
+                if (write_all(master, buf, (size_t)n) != 0) {
+                    close(client);
+                    client = -1;
+                    client_input_closed = false;
+                }
+            } else if (n == 0) {
+                client_input_closed = true;
+            } else {
+                close(client);
+                client = -1;
+                client_input_closed = false;
+            }
+        }
+        if (FD_ISSET(master, &rfds)) {
+            char buf[4096];
+            ssize_t n = read(master, buf, sizeof(buf));
+            if (n > 0) {
+                (void)write_all(logfd, buf, (size_t)n);
+                if (client >= 0 && write_all(client, buf, (size_t)n) != 0) {
+                    close(client);
+                    client = -1;
+                    client_input_closed = false;
+                }
+            } else if (n == 0 || errno == EIO) {
+                break;
+            }
+        }
+    }
+
+    if (client >= 0) close(client);
+    broker_cleanup_and_exit(parent_pipe, sock_path, listener, master, slave, logfd, target, 0);
 }
 
 static void json_escape(FILE *f, const char *s) {
@@ -983,6 +1353,11 @@ static int write_record_atomic(const char *dir, const struct record *r, int argc
     if (r->has_profile_hash) {
         fprintf(f, "  \"profile_hash\": \"");
         json_escape(f, r->profile_hash);
+        fprintf(f, "\",\n");
+    }
+    if (r->has_console) {
+        fprintf(f, "  \"console_sock\": \"");
+        json_escape(f, r->console_sock);
         fprintf(f, "\",\n");
     }
     fprintf(f, "  \"uid\": %u,\n", r->uid);
@@ -2836,6 +3211,10 @@ static int load_record(const char *path, struct record *r) {
         valid_profile_hash(r->profile_hash)) {
         r->has_profile_hash = true;
     }
+    if (json_get_str(j, "console_sock", r->console_sock, sizeof(r->console_sock)) == 0 &&
+        r->console_sock[0] == '/') {
+        r->has_console = true;
+    }
     if (json_get_u64(j, "proc_starttime_ticks", &r->proc_starttime_ticks) != 0 ||
         json_get_u64(j, "exe_dev", &r->exe_dev) != 0 ||
         json_get_u64(j, "exe_ino", &r->exe_ino) != 0) {
@@ -3049,6 +3428,7 @@ static int read_exec_handshake(int fd, int *child_errno) {
 static int perform_start(const struct invocation *inv,
                          const struct store_paths *store,
                          bool tail,
+                         bool console_mode,
                          int argc,
                          char **argv,
                          const char *profile_hash,
@@ -3059,7 +3439,13 @@ static int perform_start(const struct invocation *inv,
         return 5;
     }
 
-    char id[16], log_path[SIGMUND_PATH_MAX], reserve_path[SIGMUND_PATH_MAX], boot_id[128] = {0};
+    if (console_mode && !executable_available("socat")) {
+        fprintf(stderr, "sigmund: --console requires socat (not found in PATH)\n");
+        return 1;
+    }
+
+    char id[16], log_path[SIGMUND_PATH_MAX], reserve_path[SIGMUND_PATH_MAX], console_sock[SIGMUND_PATH_MAX], boot_id[128] = {0};
+    console_sock[0] = '\0';
     bool has_boot = current_boot_id(boot_id, sizeof(boot_id));
     struct store_paths system_hint;
     struct store_paths invoking_user_store;
@@ -3084,6 +3470,10 @@ static int perform_start(const struct invocation *inv,
     }
     if (checked_snprintf(reserve_path, sizeof(reserve_path), "%s/.%s.reserve", store->record_dir, id) != 0) {
         die_errno("sigmund: reserve path too long");
+    }
+    if (console_mode &&
+        checked_snprintf(console_sock, sizeof(console_sock), "%s/%s.sock", store->console_dir, id) != 0) {
+        die_errno("sigmund: console socket path too long");
     }
 
     int pipefd[2];
@@ -3121,6 +3511,22 @@ static int perform_start(const struct invocation *inv,
         if (setsid() < 0) {
             int e = errno;
             write_all(pipefd[1], &e, sizeof(e));
+            _exit(127);
+        }
+        if (console_mode) {
+            int nullfd = open("/dev/null", O_RDWR);
+            if (nullfd < 0 ||
+                dup2(nullfd, STDIN_FILENO) < 0 ||
+                dup2(nullfd, STDOUT_FILENO) < 0 ||
+                dup2(nullfd, STDERR_FILENO) < 0) {
+                int e = errno;
+                write_all(pipefd[1], &e, sizeof(e));
+                _exit(127);
+            }
+            if (nullfd > STDERR_FILENO) {
+                close(nullfd);
+            }
+            run_console_broker(pipefd[1], log_path, console_sock, argc, argv, exec_path);
             _exit(127);
         }
         int nullfd = open("/dev/null", O_RDONLY);
@@ -3162,6 +3568,9 @@ static int perform_start(const struct invocation *inv,
         rollback_spawned_group(pid, pid);
         unlink(reserve_path);
         unlink(log_path);
+        if (console_sock[0]) {
+            unlink(console_sock);
+        }
         errno = handshake_errno;
         die_errno("sigmund: exec handshake failed");
     }
@@ -3177,6 +3586,9 @@ static int perform_start(const struct invocation *inv,
         }
         unlink(reserve_path);
         unlink(log_path);
+        if (console_sock[0]) {
+            unlink(console_sock);
+        }
         return 1;
     }
 
@@ -3230,6 +3642,12 @@ static int perform_start(const struct invocation *inv,
             die_errno("sigmund: alias too long");
         }
     }
+    if (console_sock[0]) {
+        r.has_console = true;
+        if (checked_snprintf(r.console_sock, sizeof(r.console_sock), "%s", console_sock) != 0) {
+            die_errno("sigmund: console socket path too long");
+        }
+    }
     r.has_log = true;
     if (checked_snprintf(r.log_path, sizeof(r.log_path), "%s", log_path) != 0) {
         die_errno("sigmund: log path too long");
@@ -3266,6 +3684,9 @@ static int perform_start(const struct invocation *inv,
                     unlink(record_path);
                 }
                 unlink(log_path);
+                if (console_sock[0]) {
+                    unlink(console_sock);
+                }
                 unlink(reserve_path);
                 char public_path[SIGMUND_PATH_MAX];
                 if (checked_snprintf(public_path, sizeof(public_path), "%s/%s.json", store->public_dir, r.id) == 0) {
@@ -3280,8 +3701,16 @@ static int perform_start(const struct invocation *inv,
                  "sigmund  started  %s   %s\n"
                  "         log      %s\n"
                  "         tail     sigmund tail %s\n"
+                 "%s%s%s"
                  "         stop     sigmund stop %s\n",
-                 r.id, r.cmdline[0] ? r.cmdline : "?", r.log_path, r.id, r.id);
+                 r.id,
+                 r.cmdline[0] ? r.cmdline : "?",
+                 r.log_path,
+                 r.id,
+                 r.has_console ? "         console  sigmund console " : "",
+                 r.has_console ? r.id : "",
+                 r.has_console ? "\n" : "",
+                 r.id);
         fflush(stdout);
 
         if (tail) {
@@ -3294,6 +3723,9 @@ static int perform_start(const struct invocation *inv,
         rollback_spawned_group(pid, pid);
         unlink(reserve_path);
         unlink(log_path);
+        if (console_sock[0]) {
+            unlink(console_sock);
+        }
         errno = saved;
         die_errno("sigmund: failed to write record");
     }
@@ -3440,7 +3872,7 @@ static void format_rfc3339_utc_from_ns(int64_t unix_ns, char *out, size_t n) {
 
 static void format_result(const struct record *r, enum run_state st, char *out, size_t n) {
     if (st == STATE_RUNNING) {
-        snprintf(out, n, "-");
+        snprintf(out, n, "%s", r->has_console ? "console" : "-");
         return;
     }
     if (r->has_launch_error && r->launch_error[0]) {
@@ -3765,6 +4197,9 @@ static int prune_one_run(const struct store_paths *store, const char *id, const 
     if (r.has_log) {
         unlink(r.log_path);
     }
+    if (r.has_console) {
+        unlink(r.console_sock);
+    }
     unlink_public_index(store, id);
     if (removed) {
         *removed = true;
@@ -3807,6 +4242,9 @@ static int cmd_prune_store_all(const struct store_paths *store, bool include_sta
             if (r.has_log) {
                 unlink(r.log_path);
             }
+            if (r.has_console) {
+                unlink(r.console_sock);
+            }
             unlink_public_index(store, r.id);
             if (removed_count) {
                 (*removed_count)++;
@@ -3846,6 +4284,41 @@ static int cmd_prune_store_all(const struct store_paths *store, bool include_sta
         }
         if (access(json_path, F_OK) != 0) {
             unlink(log_path);
+            if (removed_count) {
+                (*removed_count)++;
+            }
+        }
+    }
+    closedir(d);
+    d = opendir(store->console_dir);
+    if (!d) {
+        return 0;
+    }
+    while ((e = readdir(d))) {
+        if (!has_suffix(e->d_name, ".sock")) {
+            continue;
+        }
+        size_t len = strlen(e->d_name);
+        if (len <= 5) {
+            continue;
+        }
+        char id[32];
+        size_t id_len = len - 5;
+        if (id_len >= sizeof(id)) {
+            continue;
+        }
+        memcpy(id, e->d_name, id_len);
+        id[id_len] = '\0';
+        if (!valid_id(id)) {
+            continue;
+        }
+        char json_path[SIGMUND_PATH_MAX], sock_path[SIGMUND_PATH_MAX];
+        if (checked_snprintf(json_path, sizeof(json_path), "%s/%s.json", store->record_dir, id) != 0 ||
+            checked_snprintf(sock_path, sizeof(sock_path), "%s/%s", store->console_dir, e->d_name) != 0) {
+            continue;
+        }
+        if (access(json_path, F_OK) != 0) {
+            unlink(sock_path);
             if (removed_count) {
                 (*removed_count)++;
             }
@@ -4136,6 +4609,9 @@ static bool record_matches_alias_intent(const char *command, const struct record
     if (!strcmp(command, "start") || !strcmp(command, "stop") || !strcmp(command, "kill") ||
         !strcmp(command, "tail")) {
         return st == STATE_RUNNING;
+    }
+    if (!strcmp(command, "console")) {
+        return st == STATE_RUNNING && r->has_console;
     }
     if (!strcmp(command, "dump")) {
         return r->has_log;
@@ -4862,6 +5338,7 @@ static int elevate_with_sudo_parsed(const char *program,
                                     bool owned,
                                     const char *command,
                                     bool tail,
+                                    bool console_mode,
                                     bool all,
                                     bool print_cmd,
                                     bool multi,
@@ -4875,6 +5352,9 @@ static int elevate_with_sudo_parsed(const char *program,
         if (!strcmp(command, "start") && tail) {
             extra += 1;
         }
+        if (!strcmp(command, "start") && console_mode) {
+            extra += 1;
+        }
         if (all) {
             extra += 1;
         }
@@ -4886,6 +5366,9 @@ static int elevate_with_sudo_parsed(const char *program,
         }
     } else {
         if (tail) {
+            extra += 1;
+        }
+        if (console_mode) {
             extra += 1;
         }
         if (force_raw) {
@@ -4904,6 +5387,9 @@ static int elevate_with_sudo_parsed(const char *program,
         if (!strcmp(command, "start") && tail) {
             canon[n++] = "--tail";
         }
+        if (!strcmp(command, "start") && console_mode) {
+            canon[n++] = "--console";
+        }
         if (all) {
             canon[n++] = "--all";
         }
@@ -4920,6 +5406,9 @@ static int elevate_with_sudo_parsed(const char *program,
     } else {
         if (tail) {
             canon[n++] = "--tail";
+        }
+        if (console_mode) {
+            canon[n++] = "--console";
         }
         if (force_raw) {
             canon[n++] = "--";
@@ -5205,6 +5694,94 @@ static int cmd_dump_action(const struct invocation *inv,
     close(fd);
     free(targets);
     return 0;
+}
+
+static int run_socat_console(const char *sock_path) {
+    if (!executable_available("socat")) {
+        fprintf(stderr, "sigmund: console requires socat (not found in PATH)\n");
+        return 1;
+    }
+    struct stat st;
+    if (stat(sock_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
+        fprintf(stderr, "sigmund: console socket is not available\n");
+        return 5;
+    }
+    char connect_arg[SIGMUND_PATH_MAX + 16];
+    if (checked_snprintf(connect_arg, sizeof(connect_arg), "UNIX-CONNECT:%s", sock_path) != 0) {
+        fprintf(stderr, "sigmund: console socket path is too long\n");
+        return 5;
+    }
+    const char *stdio_arg = isatty(STDIN_FILENO) ? "-,raw,echo=0" : "-";
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "sigmund: failed to fork socat: %s\n", strerror(errno));
+        return 3;
+    }
+    if (pid == 0) {
+        execlp("socat", "socat", stdio_arg, connect_arg, (char *)NULL);
+        fprintf(stderr, "sigmund: failed to exec socat: %s\n", strerror(errno));
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) {
+            continue;
+        }
+        fprintf(stderr, "sigmund: failed to wait for socat: %s\n", strerror(errno));
+        return 3;
+    }
+    return child_status_to_exit_code(status);
+}
+
+static int attach_console_record(const struct invocation *inv,
+                                 const struct record *r,
+                                 enum run_state st) {
+    if (st != STATE_RUNNING) {
+        sig_note(inv, "sigmund: %s has exited - see 'sigmund dump %s'\n", r->id, r->id);
+        return 0;
+    }
+    if (!r->has_console) {
+        sig_note(inv, "sigmund: %s has no console (start with --console)\n", r->id);
+        return 0;
+    }
+    return run_socat_console(r->console_sock);
+}
+
+static int cmd_console_action(const struct invocation *inv,
+                              const struct store_paths *user_store,
+                              const struct store_paths *system_store,
+                              const char *program,
+                              const char *id_token) {
+    struct resolved_target *targets = NULL;
+    int ntargets = 0;
+    int rc = resolve_action_token(inv, user_store, system_store, "console", id_token, false, &targets, &ntargets);
+    if (rc != 0) {
+        free(targets);
+        return rc;
+    }
+    if (ntargets == 0) {
+        free(targets);
+        sig_note(inv, "sigmund: nothing to console\n");
+        return 0;
+    }
+    struct resolved_target target = targets[0];
+    if (target.needs_elevation) {
+        rc = elevate_with_sudo_targets(program, "console", NULL, &target, 1, false, false);
+        free(targets);
+        return rc;
+    }
+    struct record r;
+    char path[SIGMUND_PATH_MAX];
+    if (load_record_by_id(target.store.record_dir, target.id, &r, path, sizeof(path)) != 0) {
+        free(targets);
+        return 5;
+    }
+    char boot[128] = {0};
+    bool have_boot = current_boot_id(boot, sizeof(boot));
+    enum run_state st = eval_state(&r, have_boot ? boot : NULL);
+    rc = attach_console_record(inv, &r, st);
+    free(targets);
+    return rc;
 }
 
 static int cmd_prune_action(const struct invocation *inv,
@@ -5526,17 +6103,21 @@ static int resolve_start_profile_target(const struct invocation *inv,
 
 static int elevate_start_token(const char *program,
                                bool tail,
+                               bool console_mode,
                                const char *token_atom,
                                const char *hash,
                                bool multi,
                                int multi_count) {
     char token[8 + ALIAS_MAX_LEN + 1 + PROFILE_HASH_STR_LEN];
     char count_buf[32];
-    char *canon[6];
+    char *canon[7];
     int n = 0;
     canon[n++] = "start";
     if (tail) {
         canon[n++] = "--tail";
+    }
+    if (console_mode) {
+        canon[n++] = "--console";
     }
     if (hash && valid_alias(token_atom) && valid_profile_hash(hash)) {
         canon[n++] = "00000000";
@@ -5560,6 +6141,7 @@ static int elevate_start_token(const char *program,
 static int perform_profile_start(const struct invocation *inv,
                                  const struct store_paths *store,
                                  bool tail,
+                                 bool console_mode,
                                  const char *hash,
                                  const char *alias) {
     struct profile p;
@@ -5567,7 +6149,7 @@ static int perform_profile_start(const struct invocation *inv,
         fprintf(stderr, "sigmund: error: profile %s is unavailable\n", hash);
         return 5;
     }
-    int rc = perform_start(inv, store, tail, p.argc, p.argv, hash, p.binary_path, alias);
+    int rc = perform_start(inv, store, tail, console_mode, p.argc, p.argv, hash, p.binary_path, alias);
     free_profile(&p);
     return rc;
 }
@@ -5575,6 +6157,7 @@ static int perform_profile_start(const struct invocation *inv,
 static int perform_explicit_start(const struct invocation *inv,
                                   const struct store_paths *store,
                                   bool tail,
+                                  bool console_mode,
                                   int argc,
                                   char **argv);
 
@@ -5584,6 +6167,7 @@ static int cmd_start_action(const struct invocation *inv,
                             const char *program,
                             const struct store_paths *fallback_store,
                             bool tail,
+                            bool console_mode,
                             bool multi,
                             int multi_count,
                             int argc,
@@ -5607,6 +6191,7 @@ static int cmd_start_action(const struct invocation *inv,
                 for (int i = 0; i < starts; i++) {
                     start_rc = elevate_start_token(program,
                                                    tail,
+                                                   console_mode,
                                                    target.has_alias ? target.alias : target.hash,
                                                    target.has_alias ? target.hash : NULL,
                                                    false,
@@ -5636,6 +6221,7 @@ static int cmd_start_action(const struct invocation *inv,
                         start_rc = perform_start(inv,
                                                  &target.store,
                                                  tail,
+                                                 console_mode,
                                                  target.recipe.argc,
                                                  target.recipe.argv,
                                                  NULL,
@@ -5645,6 +6231,7 @@ static int cmd_start_action(const struct invocation *inv,
                         start_rc = perform_profile_start(inv,
                                                          &target.store,
                                                          tail,
+                                                         console_mode,
                                                          target.hash,
                                                          target.has_alias ? target.alias : NULL);
                     }
@@ -5662,13 +6249,13 @@ static int cmd_start_action(const struct invocation *inv,
         fprintf(stderr, "sigmund: error: --multi applies only to alias starts\n");
         return 5;
     }
-    return perform_explicit_start(inv, fallback_store, tail, argc, argv);
+    return perform_explicit_start(inv, fallback_store, tail, console_mode, argc, argv);
 }
 
 static bool command_accepts_target_tokens(const char *command) {
     return command && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                        !strcmp(command, "tail") || !strcmp(command, "dump") ||
-                       !strcmp(command, "prune"));
+                       !strcmp(command, "prune") || !strcmp(command, "console"));
 }
 
 static int maybe_elevate_requested_system_targets(const char *program,
@@ -5936,7 +6523,7 @@ static int cmd_aliases_action(const struct invocation *inv,
     return rc;
 }
 
-static const char *const grant_action_names[] = {"start", "stop", "kill", "tail", "dump", "prune"};
+static const char *const grant_action_names[] = {"start", "stop", "kill", "tail", "dump", "prune", "console"};
 #define GRANT_ACTION_COUNT ((int)(sizeof(grant_action_names) / sizeof(grant_action_names[0])))
 
 static int parse_grant_subject(const char *input, char *out, size_t n) {
@@ -6325,7 +6912,7 @@ static int cmd_grant_revoke_action(const struct invocation *inv,
                                    int argc,
                                    char **argv) {
     if (argc < 2 || argc > 3) {
-        fprintf(stderr, "usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune]\n",
+        fprintf(stderr, "usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune,console]\n",
                 grant ? "grant" : "revoke");
         return 5;
     }
@@ -6438,10 +7025,12 @@ static void usage(void) {
            "START\n"
            "  sigmund <command>...             start it; prints a short run id\n"
            "  sigmund -f <command>...          start it and stream output\n"
+           "  sigmund --console <command>...   start it with an attachable console\n"
            "  sigmund start <alias>            start a pinned alias\n\n"
            "MANAGE\n"
            "  sigmund list   [alias]          show tracked runs (optionally one alias)\n"
            "  sigmund tail   <target>         follow a run's live output\n"
+           "  sigmund console <target>        attach to a run's console\n"
            "  sigmund dump   <target>         print a run's log and exit\n"
            "  sigmund stop   <target>         graceful stop (TERM, then KILL)\n"
            "  sigmund kill   <target>         force kill now (KILL)\n"
@@ -6453,7 +7042,7 @@ static void usage(void) {
            "  sigmund help targets            id, alias, and scope resolution\n"
            "  sigmund help system             root-managed runs and elevation\n"
            "  sigmund help scripting          exit codes, --print, --quiet, stdout\n"
-           "  sigmund help console            console status for this build\n"
+           "  sigmund help console            attachable PTY consoles\n"
            "  sigmund <action> -h             help for one action\n\n"
            "  sigmund --version\n",
            SIGMUND_VERSION);
@@ -6467,7 +7056,7 @@ static int help_profiles(void) {
            "  sigmund aliases [-v]            list visible aliases\n"
            "  sigmund start <name>            start a fresh run under that name\n\n"
            "The name is also a history label. Runs started as <name> stay grouped under\n"
-           "<name> for list, tail, dump, stop, kill, and prune. If the command behind\n"
+           "<name> for list, tail, console, dump, stop, kill, and prune. If the command behind\n"
            "<name> is updated later, future starts use the updated command; prior runs\n"
            "remain under the same recorded alias label.\n");
     return 0;
@@ -6481,7 +7070,8 @@ static int help_targets(void) {
            "target = run id, leading id prefix, or alias name\n\n"
            "A run id addresses one run directly, always. An alias resolves among runs\n"
            "recorded under that name, narrowed by the verb: stop/kill/tail look at\n"
-           "running runs, dump looks at logged runs, and prune looks at removable past\n"
+           "running runs, console looks at running console-enabled runs, dump looks at\n"
+           "logged runs, and prune looks at removable past\n"
            "run data. One match acts. Several matches exit 6 and print candidates;\n"
            "--all resolves that ambiguity for stop, kill, and prune. A known alias with\n"
            "nothing to do exits 0.\n");
@@ -6494,7 +7084,7 @@ static int help_access(void) {
            "root, without a password, scoped to one immutable protected profile.\n\n"
            "  sigmund grant  <alias> <user> [actions]\n"
            "  sigmund revoke <alias> <user> [actions]\n\n"
-           "actions = any of: start,stop,kill,tail,dump,prune   (default: all)\n\n"
+           "actions = any of: start,stop,kill,tail,dump,prune,console   (default: all)\n\n"
            "The <user> field may be a username, %%group, or all. Sigmund stores one\n"
            "managed sudoers file per alias/user pair. The file contains the current\n"
            "protected profile hash for that alias, an anchored action alternation, and\n"
@@ -6538,10 +7128,15 @@ static int help_scripting(void) {
 
 static int help_console(void) {
     printf("sigmund help console\n\n"
-           "Console attach support is tracked for the 0.3.0 polish work, but this build\n"
-           "does not expose a console command yet. Current live inspection is:\n\n"
-           "  sigmund tail <id|alias>         follow captured output\n"
-           "  sigmund dump <id|alias>         print captured output and exit\n");
+           "Start a run with an attachable PTY console, then reconnect to it later.\n"
+           "Console output is still tee'd to the normal log, so tail and dump continue\n"
+           "to work.\n\n"
+           "  sigmund --console <cmd...>      start with an attachable console\n"
+           "  sigmund start <alias> --console start an alias with a console\n"
+           "  sigmund console <target>        attach to that console\n\n"
+           "Console attach uses socat. If socat is not available, --console refuses\n"
+           "before launching the command. Ctrl-] detaches from socat's raw terminal\n"
+           "session without asking Sigmund to stop the run.\n");
     return 0;
 }
 
@@ -6549,13 +7144,15 @@ static int help_action(const char *action) {
     if (!strcmp(action, "list")) {
         printf("usage: sigmund list [alias] [--iso|-l]\n\nShow all visible runs, optionally filtered by recorded alias label.\n");
     } else if (!strcmp(action, "start")) {
-        printf("usage: sigmund start <alias> [--multi [N]]\n       sigmund start <cmd> [args...]\n\nStart an alias recipe, or use explicit start form for a raw command.\n");
+        printf("usage: sigmund start <alias> [--multi [N]] [--console]\n       sigmund start <cmd> [args...]\n\nStart an alias recipe, or use explicit start form for a raw command.\n");
     } else if (!strcmp(action, "stop")) {
         printf("usage: sigmund stop [--print] [--all] <target>...\n\nGracefully stop matching runs with TERM, then KILL if needed.\n");
     } else if (!strcmp(action, "kill")) {
         printf("usage: sigmund kill [--print] [--all] <target>...\n\nForce matching runs down with KILL.\n");
     } else if (!strcmp(action, "tail")) {
         printf("usage: sigmund tail <target>\n\nFollow live output for an alias match, or follow an id's log directly.\n");
+    } else if (!strcmp(action, "console")) {
+        printf("usage: sigmund console <target>\n\nAttach to a running console-enabled run.\n");
     } else if (!strcmp(action, "dump")) {
         printf("usage: sigmund dump <target>\n\nPrint a run log and exit.\n");
     } else if (!strcmp(action, "prune")) {
@@ -6565,7 +7162,7 @@ static int help_action(const char *action) {
     } else if (!strcmp(action, "aliases")) {
         printf("usage: sigmund aliases [-v]\n\nList visible aliases. User aliases show commands; system commands are redacted.\n");
     } else if (!strcmp(action, "grant") || !strcmp(action, "revoke")) {
-        printf("usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune]\n\nManage Sigmund-owned sudoers access for a root-managed alias.\n", action);
+        printf("usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune,console]\n\nManage Sigmund-owned sudoers access for a root-managed alias.\n", action);
     } else {
         return -1;
     }
@@ -6591,6 +7188,7 @@ static int show_help(const char *topic) {
 static bool is_sigmund_owned_command(const char *s) {
     return s && (!strcmp(s, "list") || !strcmp(s, "stop") || !strcmp(s, "kill") ||
                  !strcmp(s, "tail") || !strcmp(s, "dump") || !strcmp(s, "prune") ||
+                 !strcmp(s, "console") ||
                  !strcmp(s, "start") ||
                  !strcmp(s, "alias") || !strcmp(s, "aliases") ||
                  !strcmp(s, "grant") || !strcmp(s, "revoke") ||
@@ -6614,6 +7212,7 @@ static bool parse_positive_count(const char *s, int *out) {
 static int perform_explicit_start(const struct invocation *inv,
                                   const struct store_paths *store,
                                   bool tail,
+                                  bool console_mode,
                                   int argc,
                                   char **argv) {
     if (argc <= 0) {
@@ -6626,15 +7225,16 @@ static int perform_explicit_start(const struct invocation *inv,
         shell_argv[1] = "-c";
         shell_argv[2] = argv[0];
         shell_argv[3] = NULL;
-        return perform_start(inv, store, tail, 3, shell_argv, NULL, NULL, NULL);
+        return perform_start(inv, store, tail, console_mode, 3, shell_argv, NULL, NULL, NULL);
     }
-    return perform_start(inv, store, tail, argc, argv, NULL, NULL, NULL);
+    return perform_start(inv, store, tail, console_mode, argc, argv, NULL, NULL, NULL);
 }
 
 static int cmd_elevated_capability_action(const struct invocation *inv,
                                           const struct store_paths *system_store,
                                           const char *command,
                                           bool tail,
+                                          bool console_mode,
                                           int sig,
                                           bool graceful,
                                           int argc,
@@ -6658,7 +7258,7 @@ static int cmd_elevated_capability_action(const struct invocation *inv,
             fprintf(stderr, "sigmund: error: start capability requires selector 00000000\n");
             return 5;
         }
-        return perform_profile_start(inv, system_store, tail, hash, alias);
+        return perform_profile_start(inv, system_store, tail, console_mode, hash, alias);
     }
 
     if (strcmp(runid_sel, "00000000") == 0) {
@@ -6734,6 +7334,9 @@ static int cmd_elevated_capability_action(const struct invocation *inv,
     char selected_boot[128] = {0};
     bool have_selected_boot = current_boot_id(selected_boot, sizeof(selected_boot));
     enum run_state selected_state = eval_state(&selected_record, have_selected_boot ? selected_boot : NULL);
+    if (!strcmp(command, "console")) {
+        return attach_console_record(inv, &selected_record, selected_state);
+    }
     if (!record_matches_alias_intent(command, &selected_record, selected_state)) {
         sig_note(inv, "sigmund: nothing to %s\n", command);
         return 0;
@@ -6812,6 +7415,7 @@ int main(int argc, char **argv) {
     bool requested_system = false;
     bool elevated = false;
     bool tail = false;
+    bool console_mode = false;
     bool force_raw = false;
     bool all = false;
     bool multi = false;
@@ -6834,6 +7438,11 @@ int main(int argc, char **argv) {
         }
         if (!strcmp(argv[argi], "--tail") || !strcmp(argv[argi], "-f")) {
             tail = true;
+            argi++;
+            continue;
+        }
+        if (!strcmp(argv[argi], "--console")) {
+            console_mode = true;
             argi++;
             continue;
         }
@@ -6898,6 +7507,10 @@ int main(int argc, char **argv) {
                 tail = true;
                 continue;
             }
+            if (!literal_owned_arg && !strcmp(command, "start") && !strcmp(argv[i], "--console")) {
+                console_mode = true;
+                continue;
+            }
             if (!literal_owned_arg && !strcmp(command, "list") &&
                 (!strcmp(argv[i], "--iso") || !strcmp(argv[i], "-l"))) {
                 list_iso = true;
@@ -6958,6 +7571,11 @@ int main(int argc, char **argv) {
         free(cmd_argv);
         return rc;
     }
+    if (console_mode && owned && strcmp(command, "start") != 0) {
+        fprintf(stderr, "sigmund: error: --console applies only to starts\n");
+        free(cmd_argv);
+        return 5;
+    }
 
     struct invocation inv;
     if (detect_invocation(&inv, requested_system, elevated) != 0) {
@@ -6987,6 +7605,7 @@ int main(int argc, char **argv) {
                     for (int i = 0; i < starts; i++) {
                         rc = elevate_start_token(argv[0],
                                                  tail,
+                                                 console_mode,
                                                  valid_alias(atom) ? atom : hash,
                                                  valid_alias(atom) ? hash : NULL,
                                                  false,
@@ -7007,7 +7626,7 @@ int main(int argc, char **argv) {
             free(cmd_argv);
             return canonical_rc;
         }
-        int rc = elevate_with_sudo_parsed(argv[0], owned, command, tail, all, print_cmd, multi, multi_count, force_raw, cmd_argc, cmd_argv);
+        int rc = elevate_with_sudo_parsed(argv[0], owned, command, tail, console_mode, all, print_cmd, multi, multi_count, force_raw, cmd_argc, cmd_argv);
         if (owned) {
             free(cmd_argv);
         }
@@ -7023,7 +7642,7 @@ int main(int argc, char **argv) {
 
     if (!inv.euid_root || is_list || (owned && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                                                !strcmp(command, "tail") || !strcmp(command, "dump") ||
-                                               !strcmp(command, "prune")))) {
+                                               !strcmp(command, "prune") || !strcmp(command, "console")))) {
         if (!inv.euid_root) {
             if (ensure_user_store_for_current_user(&user_store) != 0) {
                 die_errno("sigmund: failed to init user storage");
@@ -7033,10 +7652,11 @@ int main(int argc, char **argv) {
 
     if (inv.elevated && inv.euid_root && owned && cmd_argc == 3 &&
         (!strcmp(command, "start") || !strcmp(command, "stop") || !strcmp(command, "kill") ||
-         !strcmp(command, "tail") || !strcmp(command, "dump") || !strcmp(command, "prune"))) {
+         !strcmp(command, "tail") || !strcmp(command, "dump") || !strcmp(command, "prune") ||
+         !strcmp(command, "console"))) {
         int sig = !strcmp(command, "kill") ? SIGKILL : SIGTERM;
         bool graceful = !strcmp(command, "stop");
-        int rc = cmd_elevated_capability_action(&inv, &system_store, command, tail, sig, graceful, cmd_argc, cmd_argv);
+        int rc = cmd_elevated_capability_action(&inv, &system_store, command, tail, console_mode, sig, graceful, cmd_argc, cmd_argv);
         if (rc >= 0) {
             free(cmd_argv);
             return rc;
@@ -7054,7 +7674,7 @@ int main(int argc, char **argv) {
                 die_errno("sigmund: failed to init user storage");
             }
         }
-        return perform_start(&inv, &start_store, tail, cmd_argc, cmd_argv, NULL, NULL, NULL);
+        return perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL, NULL);
     }
 
     if (!strcmp(command, "start")) {
@@ -7068,7 +7688,7 @@ int main(int argc, char **argv) {
                 die_errno("sigmund: failed to init user storage");
             }
         }
-        int rc = cmd_start_action(&inv, &user_store, &system_store, argv[0], &start_store, tail, multi, multi_count, cmd_argc, cmd_argv);
+        int rc = cmd_start_action(&inv, &user_store, &system_store, argv[0], &start_store, tail, console_mode, multi, multi_count, cmd_argc, cmd_argv);
         free(cmd_argv);
         return rc;
     }
@@ -7112,6 +7732,16 @@ int main(int argc, char **argv) {
             return 5;
         }
         int rc = cmd_dump_action(&inv, &user_store, &system_store, argv[0], cmd_argv[0]);
+        free(cmd_argv);
+        return rc;
+    }
+    if (!strcmp(command, "console")) {
+        if (cmd_argc < 1) {
+            fprintf(stderr, "usage: sigmund console <target>\n");
+            free(cmd_argv);
+            return 5;
+        }
+        int rc = cmd_console_action(&inv, &user_store, &system_store, argv[0], cmd_argv[0]);
         free(cmd_argv);
         return rc;
     }

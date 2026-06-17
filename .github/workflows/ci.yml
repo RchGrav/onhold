@@ -17,6 +17,8 @@ jobs:
         cc: [gcc, clang]
     steps:
       - uses: actions/checkout@v5
+      - name: Install runtime test dependencies
+        run: sudo apt-get update && sudo apt-get install -y socat
       - name: Build static and dynamic with strict warnings, then run regression suite
         run: |
           make clean
@@ -30,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Install runtime test dependencies
+        run: sudo apt-get update && sudo apt-get install -y socat
       - name: Run the same test suite with the harness process starting as root
         run: |
           tmpdir="$(mktemp -d)"
@@ -67,6 +71,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Install runtime test dependencies
+        run: sudo apt-get update && sudo apt-get install -y socat
       - name: Run tests with ASan/UBSan to catch memory and UB regressions
         run: |
           make clean
