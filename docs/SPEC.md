@@ -417,7 +417,7 @@ a root-managed public ID, alias, or profile hash matched;
 the target requires elevation.
 ```
 
-`sigmund --system start <alias|hash>` may also self-elevate. Before the sudo boundary, a root-managed alias must be resolved to its profile hash.
+`sigmund --system start <profile>` may also self-elevate. Here, `<profile>` is an alias or a profile hash. Before the sudo boundary, a root-managed alias must be resolved to its profile hash.
 
 The elevation boundary is argv-preserving `fork()` + `waitpid()`:
 
@@ -609,11 +609,11 @@ Root-managed prune follows the same resolver and elevation rules as other action
 `sigmund grant` and `sigmund revoke` manage only Sigmund-owned sudoers entries. They require root authority and operate on root-managed profiles only:
 
 ```text
-sigmund grant <alias> <user|%group|all> [start,stop,kill,tail,dump,prune]
-sigmund revoke <alias> <user|%group|all> [start,stop,kill,tail,dump,prune]
+sigmund grant <alias> <user> [start,stop,kill,tail,dump,prune]
+sigmund revoke <alias> <user> [start,stop,kill,tail,dump,prune]
 ```
 
-The grant target must be an existing root-managed alias. Sigmund resolves that alias to its immutable profile hash before writing sudoers; the alias name is used only for the managed filename. If the action list is omitted, all supported Sigmund actions for the profile are selected. This is a wildcard over Sigmund's supported profile actions, not arbitrary sudo command access. `purge` is not a supported action; the command is `prune`.
+The grant target must be an existing root-managed alias. The `<user>` argument may be a username, `%group`, or `all`. Sigmund resolves the alias to its immutable profile hash before writing sudoers; the alias name is used only for the managed filename. If the action list is omitted, all supported Sigmund actions for the profile are selected. This is a wildcard over Sigmund's supported profile actions, not arbitrary sudo command access. `purge` is not a supported action; the command is `prune`.
 
 Before writing sudoers, Sigmund resolves its own executable path and refuses to proceed unless that file is root-owned, regular, and not writable by group or world. Managed sudoers lines grant NOPASSWD access only to exact canonical invocations such as:
 
@@ -621,7 +621,7 @@ Before writing sudoers, Sigmund resolves its own executable path and refuses to 
 alice ALL=(root) NOPASSWD: /usr/bin/sigmund --system --elevated stop system:<hash>
 ```
 
-The managed file path is `/etc/sudoers.d/sigmund_<alias-or-hash>_<user>` in production. Test builds may use `SIGMUND_TEST_SUDOERS_DIR`. Writes go to a same-directory `.tmp` candidate, use mode `0440`, are validated with `visudo -cf <tmp>`, and then `rename()` into place.
+The managed file path is `/etc/sudoers.d/sigmund_<alias>_<user>` in production. Test builds may use `SIGMUND_TEST_SUDOERS_DIR`. Writes go to a same-directory `.tmp` candidate, use mode `0440`, are validated with `visudo -cf <tmp>`, and then `rename()` into place.
 
 ## 15. Test harness contract
 
