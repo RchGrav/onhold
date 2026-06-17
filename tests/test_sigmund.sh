@@ -274,6 +274,14 @@ root_file_mode() {
   as_root stat -c '%a' "$1" 2>/dev/null || as_root stat -f '%Lp' "$1"
 }
 
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
 root_grep() {
   local pattern="$1" path="$2"
   as_root grep -F -q -- "$pattern" "$path"
@@ -739,7 +747,7 @@ JSON
 }
 
 test_alias_profile_map_start_and_stop() {
-  local out id hash out2 id2 pgid2 store
+  local out id hash out2 id2 pgid2 store bin expected_hash
   store="$HOME/.local/state/sigmund"
   out=$("$SIGMUND_BIN" /bin/sh -c 'while :; do sleep 1; done' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
@@ -752,6 +760,22 @@ test_alias_profile_map_start_and_stop() {
   grep -q "\"$hash\"" "$store/profiles.json" || return 1
   grep -q '"bin": "' "$store/profiles.json" || return 1
   grep -q '"args": \["/bin/sh", "-c", "while :; do sleep 1; done"\]' "$store/profiles.json" || return 1
+  bin=$(sed -n 's/.*"bin": "\([^"]*\)".*/\1/p' "$store/profiles.json" | head -n1)
+  [ -n "$bin" ] || return 1
+  expected_hash=$(
+    {
+      printf '%s\0' 'sigmund-profile'
+      printf '%s\0' "$bin"
+      printf '%s\0' '3'
+      printf '%s\0' '0'
+      printf '%s\0' '/bin/sh'
+      printf '%s\0' '1'
+      printf '%s\0' '-c'
+      printf '%s\0' '2'
+      printf '%s\0' 'while :; do sleep 1; done'
+    } | sha256_stdin
+  )
+  [ "$hash" = "$expected_hash" ] || return 1
   "$SIGMUND_BIN" aliases | grep -Eq "^user[[:space:]]+$hash[[:space:]]+web-test$" || return 1
   "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
   "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
@@ -763,6 +787,22 @@ test_alias_profile_map_start_and_stop() {
   grep -q "\"profile_hash\": \"$hash\"" "$store/$id2.json" || return 1
   "$SIGMUND_BIN" stop web-test >/dev/null || return 1
   pgid_terminated "$pgid2"
+}
+
+test_profile_start_inherits_current_environment() {
+  local out id out2 id2 got
+  out=$(as_user env SIGMUND_PROFILE_ENV=seed "$SIGMUND_REAL_BIN" /bin/sh -c 'printf "%s\n" "$SIGMUND_PROFILE_ENV"' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  as_user "$SIGMUND_REAL_BIN" alias "$id" env-test >"$TEST_ROOT/alias-env.out" 2>"$TEST_ROOT/alias-env.err" || return 1
+
+  out2=$(as_user env SIGMUND_PROFILE_ENV=profile-value "$SIGMUND_REAL_BIN" start env-test 2>&1) || return 1
+  id2=$(printf '%s\n' "$out2" | extract_id)
+  [ -n "$id2" ] || return 1
+  sleep 0.2
+  got=$(as_user "$SIGMUND_REAL_BIN" dump "$id2") || return 1
+  printf '%s\n' "$got" | grep -qx 'profile-value' || return 1
+  ! printf '%s\n' "$got" | grep -qx 'seed'
 }
 
 test_invalid_alias_names_rejected() {
@@ -1179,6 +1219,7 @@ run_test "public root index rows are redacted in normal list" test_public_root_i
 run_test "normal run does not self-elevate on local/root ID conflict" test_user_local_wins_over_public_root_collision
 run_test "explicit user:<id> targets user-local run" test_explicit_user_target
 run_test "alias creates protected profile map and starts/stops by alias" test_alias_profile_map_start_and_stop
+run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
 run_test "invalid alias names are rejected" test_invalid_alias_names_rejected
 run_test "short hex-looking alias names are allowed" test_short_hex_alias_name_allowed
 run_test "system alias action self-elevates hash not alias" test_system_alias_action_elevates_hash_not_alias
