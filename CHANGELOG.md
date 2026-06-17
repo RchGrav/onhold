@@ -2,17 +2,27 @@
 
 ## 0.3.0 - Alias capability profiles and stable fingerprints
 
-This release promotes Sigmund from run-ID lifecycle management into named,
-hash-pinned capability profiles while preserving the existing user-local and
-root-managed privilege boundary.
+This release promotes Sigmund from run-ID lifecycle management into named
+aliases while preserving the existing user-local and root-managed privilege
+boundary. Run IDs remain concrete process-group handles; aliases are human
+labels and launch recipes; protected hashes are root-managed capability
+material, not normal action targets.
 
 ### Added
 
-- Added `sigmund alias <id> <name>` to promote a recorded run into an immutable
-  profile stored in `profiles.json` and mapped through `aliases.json`.
-- Added `sigmund start <profile>` so aliases and profile hashes can start the
-  recorded command template without retyping the original argv.
-- Added `sigmund aliases` for visible alias/profile lookup.
+- Added `sigmund alias <id> <name>` to create or update an alias from a
+  recorded run. User-local aliases store a direct recipe in private
+  `aliases.json`; root-managed aliases publish only `alias -> hash` while the
+  protected recipe stays in root-private `profiles.json`.
+- Added `sigmund start <alias>` so aliases can start the recorded command
+  template without retyping the original argv.
+- Added `--multi [N]` for alias starts. Without it, `start <alias>` refuses when
+  that alias already has a running process.
+- Added alias-aware target resolution for `stop`, `kill`, `tail`, `dump`, and
+  `prune`; ambiguous alias selections exit 6 and print the matching run IDs.
+- Added `--all` to resolve alias ambiguity for `stop`, `kill`, and `prune`.
+- Added `sigmund aliases` for visible alias lookup. User aliases show `-` in the
+  hash column; system aliases show their protected profile hash.
 - Added root-managed `grant` and `revoke` support for hash-scoped sudoers
   entries covering `start`, `stop`, `kill`, `tail`, `dump`, and `prune`.
 - Added macOS arm64 and x86_64 package builds to the multi-arch release
@@ -26,18 +36,34 @@ root-managed privilege boundary.
   hostnames, and other context so aliases, profiles, and grants remain stable.
 - Profile starts inherit Sigmund's current environment unchanged; privilege
   crossing continues to rely on sudo's standard `env_reset` behavior.
+- Run IDs are now generated as 8 lowercase hex characters, with `00000000` and
+  `ffffffff` reserved for internal capability selectors.
+- Alias-started runs record their alias label in private run records and, for
+  root-managed runs, in the redacted public index.
+- Root-managed alias self-elevation now carries an internal
+  `system:<alias>@<hash>` capability token so sudoers remains hash-pinned while
+  root Sigmund resolves concrete runs by alias label and command intent.
 - Release/dev artifact fallback versions now use the `0.3.0-<sha>` prefix.
 
 ### Fixed
 
-- Fixed self-elevation for aliases so privileged aliases resolve to
-  `system:<hash>` before crossing sudo, never to a mutable alias token.
-- Fixed sudoers profile grants so generated command entries contain immutable
-  hashes rather than alias names.
+- Fixed sudoers profile grants so generated command entries contain both the
+  alias label and immutable hash (`system:<alias>@<hash>`), and root Sigmund
+  verifies the pair before acting.
 - Fixed the profile fingerprint regression test to extract the `bin` value from
   the exact hash entry under test.
 - Fixed the SHA-256 test helper to fail with a clear diagnostic when neither
   `sha256sum` nor `shasum` is available.
+
+### Verification
+
+The following checks passed in the update environment:
+
+```bash
+make clean && make test CC=gcc CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -O2'
+make clean && make test CC=clang CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -O2'
+make clean && make test CC=gcc CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address,undefined' STATIC_LDFLAGS='' LDFLAGS='-fsanitize=address,undefined' TEST_LDFLAGS='-fsanitize=address,undefined'
+```
 
 ## 0.2.0 - Root-managed state stabilization pass
 
