@@ -283,7 +283,7 @@ sigmund stop 7f3c2a9d --system
 sigmund start "qemu-system-x86_64 -m 4096" --system
 ```
 
-Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `start`, `alias`, `aliases`, `grant`, and `revoke`.
+Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `start`, `alias`, `aliases`, `grant`, `revoke`, and `help`.
 
 ## Command reference
 
@@ -292,7 +292,7 @@ Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `start`,
 | Command | Description |
 |---|---|
 | `sigmund <cmd...>` | Starts a command in a new session / process group using user-local state. |
-| `sigmund --tail <cmd...>` | Starts a command and immediately follows its log. |
+| `sigmund -f <cmd...>` | Starts a command and immediately follows its log. `--tail` is still accepted for compatibility. |
 | `sigmund -- <cmd...>` | Starts a command whose name overlaps with a Sigmund subcommand. |
 | `sigmund --system <cmd...>` | Self-elevates through sudo when needed and starts a root-managed run. |
 | `sigmund start <cmd...>` | Explicit start form; Sigmund-owned switches such as trailing `--system` are parsed by Sigmund. |
@@ -314,6 +314,7 @@ Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `start`,
 | `sigmund aliases [-v]` | Lists visible aliases by name. User-local aliases show their command and `-` for hash; system aliases show `<root-managed>` and a truncated hash unless `-v` is used. |
 | `sigmund grant <alias> <user> [actions]` | Adds root-managed NOPASSWD sudoers entries for `start,stop,kill,tail,dump,prune`. The user may be a username, `%group`, or `all`; omitted actions means all supported actions for that alias. |
 | `sigmund revoke <alias> <user> [actions]` | Removes matching Sigmund-managed sudoers entries; omitted actions removes the managed file. |
+| `sigmund help [topic]` | Shows main help or focused help for `profiles`, `targets`, `access`, `system`, `scripting`, and individual actions. |
 | `sigmund prune` | Removes past run data for finished/failed records and unreferenced logs. |
 | `sigmund prune <target>` | Removes exactly one prunable run record and associated log. |
 | `sigmund prune all` | Removes all prunable runs and associated output. |
@@ -383,7 +384,7 @@ flowchart TD
 
 ### Aliases and protected profiles
 
-`sigmund alias <id> <name>` reads the target run's recorded argv and resolves argv[0] to an absolute binary path.
+`sigmund alias <id> <name>` reads the target run's recorded argv and resolves argv[0] to an absolute binary path. Its confirmation is human stderr, not machine stdout; scripts should read alias state through `sigmund aliases` or the managed state files.
 
 For user-local aliases, Sigmund writes the recipe directly to the user's private `aliases.json`:
 
@@ -416,9 +417,10 @@ Child process output is captured:
 
 * child `stdin` is redirected from `/dev/null`;
 * child `stdout` and `stderr` are redirected to the per-run log file;
-* start writes the bare 8-character run ID to stdout and writes the human banner to stderr.
+* start writes the bare 8-character run ID to stdout and writes the human banner to stderr;
+* alias, grant, revoke, stop, kill, and prune confirmations are human stderr.
 
-`sigmund --tail <cmd...>` starts a command and follows its log immediately. `sigmund tail <id>` follows the log of an existing running process, or prints finished/stale/unknown logs from the beginning. Press Ctrl-C to detach from tailing while the background process keeps running.
+`sigmund -f <cmd...>` starts a command and follows its log immediately. `--tail` is kept as a compatibility alias. `sigmund tail <id>` follows the log of an existing running process, or prints finished/stale/unknown logs from the beginning. Press Ctrl-C to detach from tailing while the background process keeps running.
 
 Action-command self-elevation does **not** pipe or capture terminal I/O. The `sudo`/root-Sigmund child inherits the original terminal descriptors so password prompts, diagnostics, Ctrl-C behavior, and root-side output are preserved, while the non-root parent waits and returns the child status.
 

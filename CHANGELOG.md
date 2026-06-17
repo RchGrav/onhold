@@ -28,6 +28,10 @@ material, not normal action targets.
   old standalone signal-command helper.
 - Added root-managed `grant` and `revoke` support for hash-scoped sudoers
   entries covering `start`, `stop`, `kill`, `tail`, `dump`, and `prune`.
+- Added `sigmund help [topic]` plus action `-h` help for the core command
+  surface.
+- Added `-f` as the documented start-and-follow short form while keeping
+  `--tail` as a compatibility spelling.
 - Added macOS arm64 and x86_64 package builds to the multi-arch release
   workflow.
 
@@ -52,6 +56,9 @@ material, not normal action targets.
   `--iso` or `-l` for absolute timestamps.
 - Successful `stop`, `kill`, and `prune` operations now confirm what happened
   on stderr while keeping stdout scriptable.
+- `alias`, `grant`, and `revoke` confirmations now use stderr as human status;
+  alias pinning prints the pinned command instead of making scripts parse a
+  hash-oriented status line.
 - Release/dev artifact fallback versions now use the `0.3.0-<sha>` prefix.
 
 ### Fixed

@@ -139,6 +139,7 @@ alias
 aliases
 grant
 revoke
+help
 ```
 
 For Sigmund-owned commands, invocation switches may appear before or after the command arguments:
@@ -150,6 +151,8 @@ sigmund start "qemu-system-x86_64 -m 4096" --system
 ```
 
 These canonicalize to the same root-side command shape when elevation is required.
+
+`sigmund help [topic]` is a Sigmund-owned documentation command and never starts a child command named `help`.
 
 ## 4. Start behavior
 
@@ -592,6 +595,8 @@ fsync containing directory when possible
 ## 11. Process creation and logging
 
 Sigmund launches the child in a new session / process group. Child `stdin` is redirected from `/dev/null`; child `stdout` and `stderr` are redirected to the per-run log.
+
+Start writes only the bare 8-character run ID to stdout. Human banners and confirmations, including `alias`, `grant`, `revoke`, `stop`, `kill`, and `prune` status lines, go to stderr and are suppressed by `--quiet` where applicable. `sigmund -f <cmd...>` starts and follows the log immediately; `--tail` remains accepted as a compatibility spelling.
 
 An exec-success handshake distinguishes successful `execvp()` from immediate exec failure:
 

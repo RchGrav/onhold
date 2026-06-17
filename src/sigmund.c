@@ -158,6 +158,7 @@ struct public_index {
 static volatile sig_atomic_t g_tail_interrupted = 0;
 static int write_all(int fd, const void *buf, size_t n);
 static void usage(void);
+static int show_help(const char *topic);
 static void format_rfc3339_utc_from_ns(int64_t unix_ns, char *out, size_t n);
 
 static void handle_tail_sigint(int signo) {
@@ -5779,12 +5780,20 @@ static int cmd_alias_action(const struct invocation *inv,
                             const char *program,
                             int argc,
                             char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: sigmund alias <id> <name>\n");
+    if (argc < 2 || argc > 3) {
+        fprintf(stderr, "usage: sigmund alias <id> <name> [-v]\n");
         return 5;
     }
     const char *target_token = argv[0];
     const char *name = argv[1];
+    bool verbose = false;
+    if (argc == 3) {
+        if (strcmp(argv[2], "-v") != 0 && strcmp(argv[2], "--verbose") != 0) {
+            fprintf(stderr, "usage: sigmund alias <id> <name> [-v]\n");
+            return 5;
+        }
+        verbose = true;
+    }
     if (!valid_alias(name)) {
         fprintf(stderr, "sigmund: error: invalid alias '%s'\n", name);
         return 5;
@@ -5837,6 +5846,10 @@ static int cmd_alias_action(const struct invocation *inv,
         rc = 5;
         goto out;
     }
+    char command[256];
+    if (format_argv_human(command, sizeof(command), profile_argc, profile_argv) != 0) {
+        snprintf(command, sizeof(command), "%s", "?");
+    }
     if (target.store.kind == STORE_SYSTEM_MANAGED) {
         profile_hash_for_argv(binary_path, profile_argc, profile_argv, hash);
         if (write_profile_atomic(&target.store, hash, binary_path, profile_argc, profile_argv) != 0) {
@@ -5845,12 +5858,16 @@ static int cmd_alias_action(const struct invocation *inv,
         if (alias_upsert_hash(&target.store, name, hash) != 0) {
             die_errno("sigmund: failed to write alias");
         }
-        printf("sigmund: alias %s -> %s\n", name, hash);
+        if (verbose) {
+            sig_note(inv, "sigmund: pinned '%s' -> %s (hash %s)\n", name, command, hash);
+        } else {
+            sig_note(inv, "sigmund: pinned '%s' -> %s\n", name, command);
+        }
     } else {
         if (alias_upsert_recipe(&target.store, name, binary_path, profile_argc, profile_argv) != 0) {
             die_errno("sigmund: failed to write alias");
         }
-        printf("sigmund: alias %s\n", name);
+        sig_note(inv, "sigmund: pinned '%s' -> %s\n", name, command);
     }
 
 out:
@@ -6353,14 +6370,14 @@ static int cmd_grant_revoke_action(const struct invocation *inv,
             if (unlink_sudoers_template_file(sudoers_path) != 0) {
                 die_errno("sigmund: failed to remove managed sudoers file");
             }
-            printf("sigmund: revoked sudoers entries for %s %s\n", subject, hash);
+            sig_note(inv, "sigmund: revoked sudoers entries for %s %s\n", subject, hash);
             return 0;
         }
         char *existing = NULL;
         bool remaining[GRANT_ACTION_COUNT];
         if (read_owned_file_no_symlink(sudoers_path, &existing) != 0) {
             if (errno == ENOENT) {
-                printf("sigmund: revoked sudoers entries for %s %s\n", subject, hash);
+                sig_note(inv, "sigmund: revoked sudoers entries for %s %s\n", subject, hash);
                 return 0;
             }
             die_errno("sigmund: failed to read managed sudoers file");
@@ -6379,7 +6396,7 @@ static int cmd_grant_revoke_action(const struct invocation *inv,
         } else if (write_sudoers_template_file(sudoers_path, target_label, subject, abs_sigmund, hash, remaining, false) != 0) {
             die_errno("sigmund: failed to update managed sudoers file");
         }
-        printf("sigmund: revoked sudoers entries for %s %s\n", subject, hash);
+        sig_note(inv, "sigmund: revoked sudoers entries for %s %s\n", subject, hash);
         return 0;
     }
 
@@ -6407,45 +6424,168 @@ static int cmd_grant_revoke_action(const struct invocation *inv,
     if (write_sudoers_template_file(sudoers_path, target_label, subject, abs_sigmund, hash, selected, all_scope) != 0) {
         die_errno("sigmund: failed to update managed sudoers file");
     }
-    printf("sigmund: granted sudoers entries for %s %s\n", subject, hash);
+    sig_note(inv, "sigmund: granted sudoers entries for %s %s\n", subject, hash);
     return 0;
 }
 
 static void usage(void) {
     printf("sigmund %s - more than nohup, less than systemd\n\n"
-           "Run a command that outlives your shell, then find it, watch it,\n"
-           "and stop it safely later. No daemon, no config.\n\n"
+           "Run a command that outlives your shell, then find it, watch it, and stop it\n"
+           "safely later. No daemon, no config.\n\n"
            "USAGE\n"
-           "  sigmund <command> [args...]       start a command in the background\n"
-           "  sigmund <action>  [target...]     act on a tracked command\n\n"
+           "  sigmund <command> [args...]      start a command in the background\n"
+           "  sigmund <action>  [target...]    act on a tracked command\n\n"
            "START\n"
-           "  sigmund <command>...              start it; stdout is the 8-hex run id\n"
-           "  sigmund --tail <command>...       start it and stream output\n"
-           "  sigmund start <alias> [--multi [N]]\n\n"
+           "  sigmund <command>...             start it; prints a short run id\n"
+           "  sigmund -f <command>...          start it and stream output\n"
+           "  sigmund start <alias>            start a pinned alias\n\n"
            "MANAGE\n"
-           "  sigmund list [alias] [--iso|-l]   show tracked runs\n"
-           "  sigmund tail   <target>           follow live output or an id's log\n"
-           "  sigmund dump   <target>           print a run's log and exit\n"
-           "  sigmund stop   <target>...        graceful stop (TERM, then KILL)\n"
-           "  sigmund kill   <target>...        force kill now (KILL)\n"
-           "  sigmund prune  [target|all]       clear past run data\n\n"
-           "PROFILES\n"
-           "  sigmund alias   <id> <name>       name the command behind a run\n"
-           "  sigmund aliases [-v]              list aliases\n"
-           "  sigmund grant   <alias> <user> [actions]\n"
-           "  sigmund revoke  <alias> <user> [actions]\n\n"
-           "TARGETS\n"
-           "  target = run id, id prefix, or alias name\n"
-           "  user:<target> and system:<target> force a storage scope\n\n"
-           "SWITCHES\n"
-           "  --system                          use root-managed state via sudo\n"
-           "  --all                             resolve alias ambiguity for stop/kill/prune\n"
-           "  --multi [N]                       start another alias run, or N runs\n"
-           "  --print                           print validated stop/kill shell command\n"
-           "  --quiet                           suppress human status on stderr\n\n"
-           "Use 'sigmund -- <command>...' when the child command name overlaps\n"
-           "with a sigmund action.\n",
+           "  sigmund list   [alias]          show tracked runs (optionally one alias)\n"
+           "  sigmund tail   <target>         follow a run's live output\n"
+           "  sigmund dump   <target>         print a run's log and exit\n"
+           "  sigmund stop   <target>         graceful stop (TERM, then KILL)\n"
+           "  sigmund kill   <target>         force kill now (KILL)\n"
+           "  sigmund prune  [target|all]     clear past run data\n\n"
+           "  target = run id, id prefix, or alias name\n\n"
+           "MORE\n"
+           "  sigmund help profiles           pin a command as a reusable alias\n"
+           "  sigmund help access             give another user scoped access\n"
+           "  sigmund help targets            id, alias, and scope resolution\n"
+           "  sigmund help system             root-managed runs and elevation\n"
+           "  sigmund help scripting          exit codes, --print, --quiet, stdout\n"
+           "  sigmund help console            console status for this build\n"
+           "  sigmund <action> -h             help for one action\n\n"
+           "  sigmund --version\n",
            SIGMUND_VERSION);
+}
+
+static int help_profiles(void) {
+    printf("sigmund help profiles\n\n"
+           "Pin a run's exact command (resolved binary path + argv) under a reusable\n"
+           "name.\n\n"
+           "  sigmund alias <id> <name>       pin the command behind <id> as <name>\n"
+           "  sigmund aliases [-v]            list visible aliases\n"
+           "  sigmund start <name>            start a fresh run under that name\n\n"
+           "The name is also a history label. Runs started as <name> stay grouped under\n"
+           "<name> for list, tail, dump, stop, kill, and prune. If the command behind\n"
+           "<name> is updated later, future starts use the updated command; prior runs\n"
+           "remain under the same recorded alias label.\n");
+    return 0;
+}
+
+static int help_targets(void) {
+    printf("sigmund help targets\n\n"
+           "  <target>          resolve in the current context\n"
+           "  user:<target>     force user-local lookup\n"
+           "  system:<target>   force root-managed lookup\n\n"
+           "target = run id, leading id prefix, or alias name\n\n"
+           "A run id addresses one run directly, always. An alias resolves among runs\n"
+           "recorded under that name, narrowed by the verb: stop/kill/tail look at\n"
+           "running runs, dump looks at logged runs, and prune looks at removable past\n"
+           "run data. One match acts. Several matches exit 6 and print candidates;\n"
+           "--all resolves that ambiguity for stop, kill, and prune. A known alias with\n"
+           "nothing to do exits 0.\n");
+    return 0;
+}
+
+static int help_access(void) {
+    printf("sigmund help access\n\n"
+           "Grant another user permission to act on a specific root-managed alias as\n"
+           "root, without a password, scoped to one immutable protected profile.\n\n"
+           "  sigmund grant  <alias> <user> [actions]\n"
+           "  sigmund revoke <alias> <user> [actions]\n\n"
+           "actions = any of: start,stop,kill,tail,dump,prune   (default: all)\n\n"
+           "The <user> field may be a username, %%group, or all. Sigmund stores one\n"
+           "managed sudoers file per alias/user pair. The file contains the current\n"
+           "protected profile hash for that alias, an anchored action alternation, and\n"
+           "an 8-hex run selector slot. If root updates the alias profile and the hash\n"
+           "changes, grant rewrites the same managed file via temp file, visudo check,\n"
+           "and atomic rename.\n");
+    return 0;
+}
+
+static int help_system(void) {
+    printf("sigmund help system\n\n"
+           "Root, sudo, and --system runs use the root-managed store:\n\n"
+           "  Linux: /var/lib/sigmund\n"
+           "  macOS: /var/db/sigmund\n\n"
+           "Private root records, logs, and profiles stay root-only. Normal users see\n"
+           "only the redacted public index and public alias dictionary. A normal action\n"
+           "on a root-only public target self-elevates through sudo; user-local targets\n"
+           "win over root-public collisions.\n\n"
+           "  sigmund --system <cmd...>       start in root-managed state\n"
+           "  sigmund --system list           list authoritative root records\n");
+    return 0;
+}
+
+static int help_scripting(void) {
+    printf("sigmund help scripting\n\n"
+           "stdout is for machine data. Human banners, confirmations, warnings, and\n"
+           "errors go to stderr; --quiet suppresses normal human status.\n\n"
+           "  id=$(sigmund <cmd...>)          capture the bare 8-hex run id\n"
+           "  sigmund stop --print <id>       print kill -TERM -- -<pgid>\n"
+           "  sigmund kill --print <id>       print kill -KILL -- -<pgid>\n\n"
+           "Exit codes:\n"
+           "  0  success (includes known alias with nothing to do)\n"
+           "  1  usage / generic error\n"
+           "  2  refused for safety\n"
+           "  3  permission denied or storage/security failure\n"
+           "  4  signal delivery failed\n"
+           "  5  target not found or invalid target\n"
+           "  6  must disambiguate\n");
+    return 0;
+}
+
+static int help_console(void) {
+    printf("sigmund help console\n\n"
+           "Console attach support is tracked for the 0.3.0 polish work, but this build\n"
+           "does not expose a console command yet. Current live inspection is:\n\n"
+           "  sigmund tail <id|alias>         follow captured output\n"
+           "  sigmund dump <id|alias>         print captured output and exit\n");
+    return 0;
+}
+
+static int help_action(const char *action) {
+    if (!strcmp(action, "list")) {
+        printf("usage: sigmund list [alias] [--iso|-l]\n\nShow all visible runs, optionally filtered by recorded alias label.\n");
+    } else if (!strcmp(action, "start")) {
+        printf("usage: sigmund start <alias> [--multi [N]]\n       sigmund start <cmd> [args...]\n\nStart an alias recipe, or use explicit start form for a raw command.\n");
+    } else if (!strcmp(action, "stop")) {
+        printf("usage: sigmund stop [--print] [--all] <target>...\n\nGracefully stop matching runs with TERM, then KILL if needed.\n");
+    } else if (!strcmp(action, "kill")) {
+        printf("usage: sigmund kill [--print] [--all] <target>...\n\nForce matching runs down with KILL.\n");
+    } else if (!strcmp(action, "tail")) {
+        printf("usage: sigmund tail <target>\n\nFollow live output for an alias match, or follow an id's log directly.\n");
+    } else if (!strcmp(action, "dump")) {
+        printf("usage: sigmund dump <target>\n\nPrint a run log and exit.\n");
+    } else if (!strcmp(action, "prune")) {
+        printf("usage: sigmund prune [target|all] [--all]\n\nClear removable past run data. Running valid runs are never pruned.\n");
+    } else if (!strcmp(action, "alias")) {
+        printf("usage: sigmund alias <id> <name> [-v]\n\nPin the command behind a run id as a reusable alias.\n");
+    } else if (!strcmp(action, "aliases")) {
+        printf("usage: sigmund aliases [-v]\n\nList visible aliases. User aliases show commands; system commands are redacted.\n");
+    } else if (!strcmp(action, "grant") || !strcmp(action, "revoke")) {
+        printf("usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune]\n\nManage Sigmund-owned sudoers access for a root-managed alias.\n", action);
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
+static int show_help(const char *topic) {
+    if (!topic || !*topic) {
+        usage();
+        return 0;
+    }
+    if (!strcmp(topic, "profiles")) return help_profiles();
+    if (!strcmp(topic, "targets")) return help_targets();
+    if (!strcmp(topic, "access")) return help_access();
+    if (!strcmp(topic, "system")) return help_system();
+    if (!strcmp(topic, "scripting")) return help_scripting();
+    if (!strcmp(topic, "console")) return help_console();
+    if (help_action(topic) == 0) return 0;
+    fprintf(stderr, "sigmund: unknown help topic '%s'\n", topic);
+    return 5;
 }
 
 static bool is_sigmund_owned_command(const char *s) {
@@ -6453,7 +6593,8 @@ static bool is_sigmund_owned_command(const char *s) {
                  !strcmp(s, "tail") || !strcmp(s, "dump") || !strcmp(s, "prune") ||
                  !strcmp(s, "start") ||
                  !strcmp(s, "alias") || !strcmp(s, "aliases") ||
-                 !strcmp(s, "grant") || !strcmp(s, "revoke"));
+                 !strcmp(s, "grant") || !strcmp(s, "revoke") ||
+                 !strcmp(s, "help"));
 }
 
 static bool parse_positive_count(const char *s, int *out) {
@@ -6691,7 +6832,7 @@ int main(int argc, char **argv) {
             argi++;
             continue;
         }
-        if (!strcmp(argv[argi], "--tail")) {
+        if (!strcmp(argv[argi], "--tail") || !strcmp(argv[argi], "-f")) {
             tail = true;
             argi++;
             continue;
@@ -6752,7 +6893,8 @@ int main(int argc, char **argv) {
                 print_cmd = true;
                 continue;
             }
-            if (!literal_owned_arg && !strcmp(command, "start") && !strcmp(argv[i], "--tail")) {
+            if (!literal_owned_arg && !strcmp(command, "start") &&
+                (!strcmp(argv[i], "--tail") || !strcmp(argv[i], "-f"))) {
                 tail = true;
                 continue;
             }
@@ -6797,6 +6939,24 @@ int main(int argc, char **argv) {
     if (!owned && !force_raw && !tail && (!strcmp(argv[argi], "--help") || !strcmp(argv[argi], "-h"))) {
         usage();
         return 0;
+    }
+    if (owned && !strcmp(command, "help")) {
+        int rc = 0;
+        if (cmd_argc > 1) {
+            fprintf(stderr, "usage: sigmund help [topic]\n");
+            rc = 5;
+        } else if (cmd_argc == 1 && (!strcmp(cmd_argv[0], "--help") || !strcmp(cmd_argv[0], "-h"))) {
+            rc = show_help(NULL);
+        } else {
+            rc = show_help(cmd_argc == 1 ? cmd_argv[0] : NULL);
+        }
+        free(cmd_argv);
+        return rc;
+    }
+    if (owned && cmd_argc == 1 && (!strcmp(cmd_argv[0], "--help") || !strcmp(cmd_argv[0], "-h"))) {
+        int rc = show_help(command);
+        free(cmd_argv);
+        return rc;
     }
 
     struct invocation inv;

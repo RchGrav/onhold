@@ -570,6 +570,12 @@ test_argument_edges() {
   set -e
   [ "$rc" -eq 5 ] || return 1
   "$SIGMUND_BIN" --help >/dev/null || return 1
+  "$SIGMUND_BIN" help >/dev/null || return 1
+  "$SIGMUND_BIN" help --help >/dev/null || return 1
+  "$SIGMUND_BIN" help profiles | grep -q 'sigmund alias <id> <name>' || return 1
+  "$SIGMUND_BIN" help targets | grep -q 'run id, leading id prefix, or alias name' || return 1
+  "$SIGMUND_BIN" help scripting | grep -q 'Exit codes:' || return 1
+  "$SIGMUND_BIN" stop -h | grep -q 'usage: sigmund stop' || return 1
   out=$("$SIGMUND_BIN" --version) || return 1
   printf '%s\n' "$out" | grep -Eq '^(dev|[0-9a-f]{7,40}|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
   set +e
@@ -605,6 +611,14 @@ test_log_capture() {
   sleep 0.4
   [ -f "$log" ] || return 1
   grep -q 'out' "$log" && grep -q 'err' "$log"
+}
+
+test_start_follow_short_form() {
+  local out id
+  out=$("$SIGMUND_BIN" -f bash -c 'echo follow-short' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  printf '%s\n' "$out" | grep -q 'follow-short'
 }
 
 
@@ -774,6 +788,11 @@ JSON
   chmod 0644 "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/aliases.json" || return 1
 }
 
+system_alias_hash() {
+  local name="$1"
+  sed -n "s/.*\"$name\": \"\\([0-9a-f]\\{64\\}\\)\".*/\\1/p" "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/aliases.json"
+}
+
 test_alias_profile_map_start_and_stop() {
   local out id out2 id2 pgid2 store
   store="$HOME/.local/state/sigmund"
@@ -781,7 +800,8 @@ test_alias_profile_map_start_and_stop() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   "$SIGMUND_BIN" alias "$id" web-test >"$TEST_ROOT/alias.out" 2>"$TEST_ROOT/alias.err" || return 1
-  grep -qx 'sigmund: alias web-test' "$TEST_ROOT/alias.out" || return 1
+  [ ! -s "$TEST_ROOT/alias.out" ] || return 1
+  grep -qx "sigmund: pinned 'web-test' -> /bin/sh -c 'while :; do sleep 1; done'" "$TEST_ROOT/alias.err" || return 1
   [ -f "$store/aliases.json" ] || return 1
   [ ! -f "$store/profiles.json" ] || return 1
   [ ! -d "$store/profiles" ] || return 1
@@ -871,7 +891,8 @@ test_short_hex_alias_name_allowed() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   "$SIGMUND_BIN" alias "$id" db >"$TEST_ROOT/alias-db.out" 2>"$TEST_ROOT/alias-db.err" || return 1
-  grep -qx 'sigmund: alias db' "$TEST_ROOT/alias-db.out" || return 1
+  [ ! -s "$TEST_ROOT/alias-db.out" ] || return 1
+  grep -qx "sigmund: pinned 'db' -> /bin/sh -c :" "$TEST_ROOT/alias-db.err" || return 1
   "$SIGMUND_BIN" aliases | grep -Eq "^db[[:space:]]+user[[:space:]]+/bin/sh -c :[[:space:]]+-$"
 }
 
@@ -933,7 +954,9 @@ test_grant_revoke_writes_hash_scoped_sudoers() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   as_root "$safe" alias "$id" web-sys >"$TEST_ROOT/root-alias.out" 2>"$TEST_ROOT/root-alias.err" || return 1
-  hash=$(sed -n 's/^sigmund: alias web-sys -> \([0-9a-f]\{64\}\)$/\1/p' "$TEST_ROOT/root-alias.out")
+  [ ! -s "$TEST_ROOT/root-alias.out" ] || return 1
+  grep -qx "sigmund: pinned 'web-sys' -> /bin/sh -c :" "$TEST_ROOT/root-alias.err" || return 1
+  hash=$(system_alias_hash web-sys)
   [ -n "$hash" ] || return 1
   set +e
   as_root "$safe" grant "$hash" "$TEST_USER" start >"$TEST_ROOT/grant-hash.out" 2>"$TEST_ROOT/grant-hash.err"
@@ -971,7 +994,8 @@ test_elevated_capability_start_and_stop_validate_alias_hash() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   as_root "$safe" alias "$id" web-cap >"$TEST_ROOT/cap-alias.out" 2>"$TEST_ROOT/cap-alias.err" || return 1
-  hash=$(sed -n 's/^sigmund: alias web-cap -> \([0-9a-f]\{64\}\)$/\1/p' "$TEST_ROOT/cap-alias.out")
+  [ ! -s "$TEST_ROOT/cap-alias.out" ] || return 1
+  hash=$(system_alias_hash web-cap)
   [ -n "$hash" ] || return 1
   as_root "$safe" stop "$id" >/dev/null || return 1
   as_root "$safe" prune "$id" >/dev/null || return 1
@@ -1282,6 +1306,7 @@ run_test "stop supports multiple IDs in one command" test_stop_multiple_ids
 run_test "argument edge cases" test_argument_edges
 run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture
+run_test "-f starts and follows output" test_start_follow_short_form
 run_test "tail <id> tails an existing run log" test_tail_verb_existing_id
 run_test "persistent stale records remain visible and dumpable" test_persistent_stale_records
 run_test "missing boot source does not force stale" test_boot_unavailable_does_not_force_stale
