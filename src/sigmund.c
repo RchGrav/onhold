@@ -124,6 +124,7 @@ struct invocation {
     bool euid_root;
     bool requested_system;
     bool elevated;
+    bool quiet;
     bool have_sudo_user;
     uid_t invoking_uid;
     gid_t invoking_gid;
@@ -136,9 +137,12 @@ enum resolve_scope { RESOLVE_USER_LOCAL, RESOLVE_SYSTEM_MANAGED, RESOLVE_NOT_FOU
 struct resolved_target {
     enum resolve_scope scope;
     char id[ALIAS_MAX_LEN + 1 + PROFILE_HASH_STR_LEN];
+    char cap_alias[ALIAS_MAX_LEN + 1];
+    char cap_hash[PROFILE_HASH_STR_LEN];
     struct store_paths store;
     bool needs_elevation;
     bool resolved_profile;
+    bool has_capability;
 };
 
 struct public_index {
@@ -820,6 +824,16 @@ static int write_all(int fd, const void *buf, size_t n) {
     return 0;
 }
 
+static void sig_note(const struct invocation *inv, const char *fmt, ...) {
+    if (inv && inv->quiet) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
 static void json_escape(FILE *f, const char *s) {
     for (; *s; s++) {
         if (*s == '"' || *s == '\\') {
@@ -1141,6 +1155,57 @@ static int append_cmd_escaped(char *dst, size_t n, size_t *off, const char *arg)
     }
     dst[(*off)++] = '\'';
     dst[*off] = '\0';
+    return 0;
+}
+
+static bool cmd_arg_needs_quotes(const char *arg) {
+    if (!arg || !*arg) {
+        return true;
+    }
+    for (const unsigned char *p = (const unsigned char *)arg; *p; p++) {
+        if (isspace(*p) || strchr("'\"\\$`!*?[]{}()<>|&;#", (int)*p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int append_cmd_human(char *dst, size_t n, size_t *off, const char *arg) {
+    if (!arg) {
+        arg = "";
+    }
+    if (!cmd_arg_needs_quotes(arg)) {
+        for (const char *p = arg; *p; p++) {
+            if (*off + 1 >= n) {
+                return -1;
+            }
+            dst[(*off)++] = *p;
+        }
+        dst[*off] = '\0';
+        return 0;
+    }
+    return append_cmd_escaped(dst, n, off, arg);
+}
+
+static int format_argv_human(char *dst, size_t n, int argc, char **argv) {
+    if (!dst || n == 0 || argc <= 0 || !argv) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t off = 0;
+    dst[0] = '\0';
+    for (int i = 0; i < argc; i++) {
+        if (i > 0) {
+            if (off + 1 >= n) {
+                return -1;
+            }
+            dst[off++] = ' ';
+            dst[off] = '\0';
+        }
+        if (append_cmd_human(dst, n, &off, argv[i]) != 0) {
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -1810,7 +1875,7 @@ static int json_get_argv_display(const char *j, char *out, size_t n) {
             out[off++] = ' ';
             out[off] = '\0';
         }
-        if (append_cmd_escaped(out, n, &off, arg) != 0) {
+        if (append_cmd_human(out, n, &off, arg) != 0) {
             return -1;
         }
         first = false;
@@ -2776,10 +2841,9 @@ static int load_record(const char *path, struct record *r) {
         free(j);
         return -1;
     }
-    if (json_get_str(j, "cmdline_display", r->cmdline, sizeof(r->cmdline)) != 0) {
-        if (json_get_argv_display(j, r->cmdline, sizeof(r->cmdline)) != 0) {
-            snprintf(r->cmdline, sizeof(r->cmdline), "?");
-        }
+    if (json_get_argv_display(j, r->cmdline, sizeof(r->cmdline)) != 0 &&
+        json_get_str(j, "cmdline_display", r->cmdline, sizeof(r->cmdline)) != 0) {
+        snprintf(r->cmdline, sizeof(r->cmdline), "?");
     }
     free(j);
     return 0;
@@ -3105,7 +3169,11 @@ static int perform_start(const struct invocation *inv,
         while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {
             continue;
         }
-        fprintf(stderr, "sigmund: exec failed: %s\n", strerror(child_errno));
+        if (child_errno == ENOENT) {
+            fprintf(stderr, "sigmund: cannot start '%s': command not found\n", argv[0]);
+        } else {
+            fprintf(stderr, "sigmund: cannot start '%s': %s\n", argv[0], strerror(child_errno));
+        }
         unlink(reserve_path);
         unlink(log_path);
         return 1;
@@ -3171,19 +3239,8 @@ static int perform_start(const struct invocation *inv,
     }
     read_proc_stat_tokens(pid, NULL, &r.proc_starttime_ticks);
     read_proc_exe(pid, &r.exe_dev, &r.exe_ino);
-    size_t off = 0;
-    r.cmdline[0] = '\0';
-    for (int i = 0; i < argc; i++) {
-        if (i > 0) {
-            if (off + 1 >= sizeof(r.cmdline)) {
-                break;
-            }
-            r.cmdline[off++] = ' ';
-            r.cmdline[off] = '\0';
-        }
-        if (append_cmd_escaped(r.cmdline, sizeof(r.cmdline), &off, argv[i]) != 0) {
-            break;
-        }
+    if (format_argv_human(r.cmdline, sizeof(r.cmdline), argc, argv) != 0) {
+        snprintf(r.cmdline, sizeof(r.cmdline), "?");
     }
 
     char record_path[SIGMUND_PATH_MAX] = {0};
@@ -3217,9 +3274,13 @@ static int perform_start(const struct invocation *inv,
                 die_errno("sigmund: failed to write public index");
             }
         }
-        printf("sigmund: id=%s pid=%ld pgid=%ld sid=%ld\n", r.id, (long)r.pid, (long)r.pgid, (long)r.sid);
-        printf("sigmund: log: %s\n", r.log_path);
-        printf("sigmund: stop: sigmund stop %s\n", r.id);
+        printf("%s\n", r.id);
+        sig_note(inv,
+                 "sigmund  started  %s   %s\n"
+                 "         log      %s\n"
+                 "         tail     sigmund tail %s\n"
+                 "         stop     sigmund stop %s\n",
+                 r.id, r.cmdline[0] ? r.cmdline : "?", r.log_path, r.id, r.id);
         fflush(stdout);
 
         if (tail) {
@@ -3280,10 +3341,13 @@ static bool wait_target_group_gone(const struct record *r, int timeout_ms) {
     return false;
 }
 
-static int do_signal_action(const struct store_paths *store, const char *id, int sig, bool graceful) {
+static int do_signal_action(const struct store_paths *store, const char *id, int sig, bool graceful, bool *already_done) {
     struct record r;
     char path[SIGMUND_PATH_MAX], boot[128] = {0};
     bool have_boot = current_boot_id(boot, sizeof(boot));
+    if (already_done) {
+        *already_done = false;
+    }
     if (load_record_by_id(store->record_dir, id, &r, path, sizeof(path)) != 0) {
         return 5;
     }
@@ -3302,6 +3366,9 @@ static int do_signal_action(const struct store_paths *store, const char *id, int
         return 2;
     }
     if (st == STATE_EXITED || st == STATE_FAILED) {
+        if (already_done) {
+            *already_done = true;
+        }
         return 0;
     }
     if (st == STATE_UNKNOWN) {
@@ -3314,6 +3381,9 @@ static int do_signal_action(const struct store_paths *store, const char *id, int
             return 3;
         }
         if (errno == ESRCH) {
+            if (already_done) {
+                *already_done = true;
+            }
             return 0;
         }
         return 4;
@@ -3391,15 +3461,87 @@ static void format_result(const struct record *r, enum run_state st, char *out, 
     }
 }
 
-static void print_list_header(void) {
-    printf("%-10s %-8s %-24s %-14s %s\n", "RUNID", "STATE", "STARTED_AT", "RESULT", "CMD");
+struct list_row {
+    char id[16];
+    char state[16];
+    char started[64];
+    char result[64];
+    char cmd[SIGMUND_PATH_MAX];
+    int64_t start_unix_ns;
+    bool running;
+};
+
+struct list_rows {
+    struct list_row *items;
+    size_t count;
+};
+
+static void free_list_rows(struct list_rows *rows) {
+    free(rows->items);
+    rows->items = NULL;
+    rows->count = 0;
 }
 
-static int cmd_list_private(const struct store_paths *store, bool print_header) {
-    DIR *d = opendir(store->record_dir);
-    if (print_header) {
-        print_list_header();
+static int append_list_row(struct list_rows *rows, const struct list_row *row) {
+    struct list_row *next = realloc(rows->items, (rows->count + 1) * sizeof(*rows->items));
+    if (!next) {
+        return -1;
     }
+    rows->items = next;
+    rows->items[rows->count++] = *row;
+    return 0;
+}
+
+static void format_relative_age(int64_t start_unix_ns, char *out, size_t n) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0 || start_unix_ns <= 0) {
+        snprintf(out, n, "-");
+        return;
+    }
+    int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+    int64_t age_s = (now_ns > start_unix_ns) ? (now_ns - start_unix_ns) / 1000000000LL : 0;
+    if (age_s < 60) {
+        snprintf(out, n, "%" PRId64 "s", age_s);
+    } else if (age_s < 3600) {
+        snprintf(out, n, "%" PRId64 "m", age_s / 60);
+    } else if (age_s < 86400) {
+        snprintf(out, n, "%" PRId64 "h", age_s / 3600);
+    } else {
+        snprintf(out, n, "%" PRId64 "d", age_s / 86400);
+    }
+}
+
+static int compare_list_rows(const void *a, const void *b) {
+    const struct list_row *ra = (const struct list_row *)a;
+    const struct list_row *rb = (const struct list_row *)b;
+    if (ra->running != rb->running) {
+        return ra->running ? -1 : 1;
+    }
+    if (ra->start_unix_ns > rb->start_unix_ns) {
+        return -1;
+    }
+    if (ra->start_unix_ns < rb->start_unix_ns) {
+        return 1;
+    }
+    return strcmp(ra->id, rb->id);
+}
+
+static void print_list_header(bool iso) {
+    printf("%-10s %-8s %-*s %-10s %s\n", "RUNID", "STATE", iso ? 24 : 8, iso ? "STARTED_AT" : "STARTED", "RESULT", "CMD");
+}
+
+static void print_list_row(const struct list_row *row, bool iso) {
+    char cmd[80];
+    const char *src = row->cmd[0] ? row->cmd : "?";
+    snprintf(cmd, sizeof(cmd), "%.72s%s", src, strlen(src) > 72 ? "..." : "");
+    printf("%-10s %-8s %-*s %-10s %s\n", row->id, row->state, iso ? 24 : 8, row->started, row->result, cmd);
+}
+
+static int collect_list_private(const struct store_paths *store,
+                                const char *alias_filter,
+                                bool iso,
+                                struct list_rows *rows) {
+    DIR *d = opendir(store->record_dir);
     if (!d) {
         return 0;
     }
@@ -3423,29 +3565,41 @@ static int cmd_list_private(const struct store_paths *store, bool print_header) 
             fprintf(stderr, "sigmund: warning: skipping corrupt record %s\n", e->d_name);
             continue;
         }
-        enum run_state st = eval_state(&r, have_boot ? boot : NULL);
-        char started_at[64];
-        if (r.has_started_at && r.started_at[0]) {
-            snprintf(started_at, sizeof(started_at), "%s", r.started_at);
-        } else {
-            format_rfc3339_utc_from_ns(r.start_unix_ns, started_at, sizeof(started_at));
+        if (alias_filter && (!r.has_alias || strcmp(r.alias, alias_filter) != 0)) {
+            continue;
         }
-        char result[64];
-        format_result(&r, st, result, sizeof(result));
-        char cmd[64];
-        const char *cmd_src = r.cmdline[0] ? r.cmdline : "?";
-        snprintf(cmd, sizeof(cmd), "%.48s%s", cmd_src, strlen(cmd_src) > 48 ? "..." : "");
-        printf("%-10s %-8s %-24s %-14s %s\n", r.id, state_str(st), started_at, result, cmd);
+        enum run_state st = eval_state(&r, have_boot ? boot : NULL);
+        struct list_row row;
+        memset(&row, 0, sizeof(row));
+        snprintf(row.id, sizeof(row.id), "%s", r.id);
+        snprintf(row.state, sizeof(row.state), "%s", state_str(st));
+        row.start_unix_ns = r.start_unix_ns;
+        row.running = st == STATE_RUNNING;
+        if (iso) {
+            if (r.has_started_at && r.started_at[0]) {
+                snprintf(row.started, sizeof(row.started), "%s", r.started_at);
+            } else {
+                format_rfc3339_utc_from_ns(r.start_unix_ns, row.started, sizeof(row.started));
+            }
+        } else {
+            format_relative_age(r.start_unix_ns, row.started, sizeof(row.started));
+        }
+        format_result(&r, st, row.result, sizeof(row.result));
+        snprintf(row.cmd, sizeof(row.cmd), "%s", r.cmdline[0] ? r.cmdline : "?");
+        if (append_list_row(rows, &row) != 0) {
+            closedir(d);
+            return -1;
+        }
     }
     closedir(d);
     return 0;
 }
 
-static int cmd_list_public(const struct store_paths *store, bool print_header) {
+static int collect_list_public(const struct store_paths *store,
+                               const char *alias_filter,
+                               bool iso,
+                               struct list_rows *rows) {
     DIR *d = opendir(store->public_dir);
-    if (print_header) {
-        print_list_header();
-    }
     if (!d) {
         return 0;
     }
@@ -3472,27 +3626,70 @@ static int cmd_list_public(const struct store_paths *store, bool print_header) {
         if (load_public_index(path, &pi) != 0 || strcmp(pi.id, file_id) != 0) {
             continue;
         }
-        char state[16];
-        snprintf(state, sizeof(state), "%s", "unknown");
-        char started[64];
-        if (checked_snprintf(started, sizeof(started), "%s", pi.started_at[0] ? pi.started_at : "-") != 0) {
-            snprintf(started, sizeof(started), "%s", "-");
+        if (alias_filter && (!pi.has_alias || strcmp(pi.alias, alias_filter) != 0)) {
+            continue;
         }
-        printf("%-10s %-8s %-24s %-14s %s\n", pi.id, state, started, "-", "<root-managed>");
+        struct list_row row;
+        memset(&row, 0, sizeof(row));
+        snprintf(row.id, sizeof(row.id), "%s", pi.id);
+        snprintf(row.state, sizeof(row.state), "%s", "unknown");
+        row.running = false;
+        row.start_unix_ns = 0;
+        if (iso) {
+            snprintf(row.started, sizeof(row.started), "%s", pi.started_at[0] ? pi.started_at : "-");
+        } else {
+            snprintf(row.started, sizeof(row.started), "%s", "-");
+        }
+        snprintf(row.result, sizeof(row.result), "%s", "-");
+        snprintf(row.cmd, sizeof(row.cmd), "%s", "<root-managed>");
+        if (append_list_row(rows, &row) != 0) {
+            closedir(d);
+            return -1;
+        }
     }
     closedir(d);
     return 0;
 }
 
-static int cmd_list_normal(const struct store_paths *user_store, const struct store_paths *system_store) {
-    print_list_header();
-    cmd_list_private(user_store, false);
-    cmd_list_public(system_store, false);
+static int print_collected_list(struct list_rows *rows, bool iso) {
+    if (rows->count > 1) {
+        qsort(rows->items, rows->count, sizeof(rows->items[0]), compare_list_rows);
+    }
+    print_list_header(iso);
+    for (size_t i = 0; i < rows->count; i++) {
+        print_list_row(&rows->items[i], iso);
+    }
     return 0;
 }
 
-static int cmd_list_system(const struct store_paths *system_store) {
-    return cmd_list_private(system_store, true);
+static int cmd_list_normal(const struct store_paths *user_store,
+                           const struct store_paths *system_store,
+                           const char *alias_filter,
+                           bool iso) {
+    struct list_rows rows = {0};
+    int rc = 0;
+    if (collect_list_private(user_store, alias_filter, iso, &rows) != 0 ||
+        collect_list_public(system_store, alias_filter, iso, &rows) != 0) {
+        rc = 3;
+    } else {
+        rc = print_collected_list(&rows, iso);
+    }
+    free_list_rows(&rows);
+    return rc;
+}
+
+static int cmd_list_system(const struct store_paths *system_store,
+                           const char *alias_filter,
+                           bool iso) {
+    struct list_rows rows = {0};
+    int rc = 0;
+    if (collect_list_private(system_store, alias_filter, iso, &rows) != 0) {
+        rc = 3;
+    } else {
+        rc = print_collected_list(&rows, iso);
+    }
+    free_list_rows(&rows);
+    return rc;
 }
 
 static int resolve_run_id(const char *dir, const char *input, char *resolved, size_t n) {
@@ -3574,7 +3771,10 @@ static int prune_one_run(const struct store_paths *store, const char *id, const 
     return 0;
 }
 
-static int cmd_prune_store_all(const struct store_paths *store, bool include_stale) {
+static int cmd_prune_store_all(const struct store_paths *store, bool include_stale, int *removed_count) {
+    if (removed_count) {
+        *removed_count = 0;
+    }
     DIR *d = opendir(store->record_dir);
     if (!d) {
         return 0;
@@ -3607,6 +3807,9 @@ static int cmd_prune_store_all(const struct store_paths *store, bool include_sta
                 unlink(r.log_path);
             }
             unlink_public_index(store, r.id);
+            if (removed_count) {
+                (*removed_count)++;
+            }
         }
     }
     closedir(d);
@@ -3642,6 +3845,9 @@ static int cmd_prune_store_all(const struct store_paths *store, bool include_sta
         }
         if (access(json_path, F_OK) != 0) {
             unlink(log_path);
+            if (removed_count) {
+                (*removed_count)++;
+            }
         }
     }
     closedir(d);
@@ -3700,6 +3906,23 @@ static int verify_system_alias_cap(const struct store_paths *system_store,
         return -1;
     }
     free_profile(&p);
+    return 0;
+}
+
+static bool valid_runid_selector(const char *sel) {
+    return sel && (valid_id(sel) || strcmp(sel, "00000000") == 0 || strcmp(sel, "ffffffff") == 0);
+}
+
+static int ensure_run_recorded_under_alias(const struct store_paths *store, const char *id, const char *alias) {
+    struct record r;
+    char path[SIGMUND_PATH_MAX];
+    if (load_record_by_id(store->record_dir, id, &r, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    if (!r.has_alias || strcmp(r.alias, alias) != 0) {
+        errno = EPERM;
+        return -1;
+    }
     return 0;
 }
 
@@ -3848,11 +4071,25 @@ static void fill_target(struct resolved_target *out,
                         const char *id,
                         bool needs_elevation,
                         bool resolved_profile) {
+    memset(out, 0, sizeof(*out));
     out->scope = scope;
     out->store = *store;
     out->needs_elevation = needs_elevation;
     out->resolved_profile = resolved_profile;
     checked_snprintf(out->id, sizeof(out->id), "%s", id);
+}
+
+static int set_target_capability(struct resolved_target *target, const char *alias, const char *hash) {
+    if (!target || !valid_alias(alias) || !valid_profile_hash(hash)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (checked_snprintf(target->cap_alias, sizeof(target->cap_alias), "%s", alias) != 0 ||
+        checked_snprintf(target->cap_hash, sizeof(target->cap_hash), "%s", hash) != 0) {
+        return -1;
+    }
+    target->has_capability = true;
+    return 0;
 }
 
 struct alias_match {
@@ -4054,6 +4291,21 @@ static int append_resolved_target(struct resolved_target **targets,
     return 0;
 }
 
+static int append_capability_target(struct resolved_target **targets,
+                                    int *count,
+                                    const struct store_paths *store,
+                                    const char *runid_sel,
+                                    const char *alias,
+                                    const char *hash) {
+    if (append_resolved_target(targets, count, RESOLVE_SYSTEM_MANAGED, store, runid_sel, true, false) != 0) {
+        return -1;
+    }
+    if (set_target_capability(&(*targets)[*count - 1], alias, hash) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int append_private_alias_targets(struct resolved_target **targets,
                                         int *count,
                                         enum resolve_scope scope,
@@ -4084,22 +4336,90 @@ static int append_private_alias_targets(struct resolved_target **targets,
     return 1;
 }
 
+static int collect_public_alias_matches(const struct store_paths *store,
+                                        const char *alias,
+                                        struct alias_match_list *list) {
+    memset(list, 0, sizeof(*list));
+    if (!valid_alias(alias)) {
+        errno = EINVAL;
+        return -1;
+    }
+    list->alias_known = alias_exists_in_store(store, alias);
+    DIR *d = opendir(store->public_dir);
+    if (!d) {
+        return 0;
+    }
+    const struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!has_suffix(e->d_name, ".json")) {
+            continue;
+        }
+        size_t len = strlen(e->d_name);
+        if (len <= 5 || len - 5 >= 16) {
+            continue;
+        }
+        char id[16];
+        memcpy(id, e->d_name, len - 5);
+        id[len - 5] = '\0';
+        if (!valid_id(id)) {
+            continue;
+        }
+        struct public_index pi;
+        if (load_public_index_by_id(store, id, &pi) != 0 ||
+            !pi.has_alias || strcmp(pi.alias, alias) != 0) {
+            continue;
+        }
+        list->alias_known = true;
+        struct record pseudo;
+        memset(&pseudo, 0, sizeof(pseudo));
+        snprintf(pseudo.id, sizeof(pseudo.id), "%s", id);
+        if (append_alias_match(list, &pseudo, STATE_UNKNOWN, pi.started_at[0] ? pi.started_at : "-") != 0) {
+            closedir(d);
+            return -1;
+        }
+    }
+    closedir(d);
+    return 0;
+}
+
 static int append_public_alias_elevation_target(struct resolved_target **targets,
                                                 int *count,
                                                 const struct store_paths *system_store,
-                                                const char *alias) {
+                                                const char *alias,
+                                                const char *command,
+                                                bool all) {
     char hash[PROFILE_HASH_STR_LEN];
-    char cap[ALIAS_MAX_LEN + 1 + PROFILE_HASH_STR_LEN];
-    if (alias_lookup_hash(system_store, alias, hash) == 0) {
-        if (checked_snprintf(cap, sizeof(cap), "%s@%s", alias, hash) != 0) {
-            return -1;
+    if (alias_lookup_hash(system_store, alias, hash) != 0) {
+        if (!public_alias_visible(system_store, alias)) {
+            return 0;
         }
-        return append_resolved_target(targets, count, RESOLVE_SYSTEM_MANAGED, system_store, cap, true, false) == 0 ? 1 : -1;
+        return 1;
     }
-    if (!public_alias_visible(system_store, alias)) {
+    struct alias_match_list matches;
+    if (collect_public_alias_matches(system_store, alias, &matches) != 0) {
+        return -1;
+    }
+    if (!matches.alias_known) {
+        free_alias_match_list(&matches);
         return 0;
     }
-    return append_resolved_target(targets, count, RESOLVE_SYSTEM_MANAGED, system_store, alias, true, false) == 0 ? 1 : -1;
+    if (matches.count == 0) {
+        free_alias_match_list(&matches);
+        return 1;
+    }
+    if (matches.count > 1) {
+        if (!all || !command_all_allowed(command)) {
+            report_alias_ambiguity(command, alias, &matches);
+            free_alias_match_list(&matches);
+            return -2;
+        }
+        int rc = append_capability_target(targets, count, system_store, "ffffffff", alias, hash) == 0 ? 1 : -1;
+        free_alias_match_list(&matches);
+        return rc;
+    }
+    int rc = append_capability_target(targets, count, system_store, matches.items[0].id, alias, hash) == 0 ? 1 : -1;
+    free_alias_match_list(&matches);
+    return rc;
 }
 
 static int resolve_target(const struct invocation *inv,
@@ -4399,8 +4719,9 @@ static int resolve_action_token(const struct invocation *inv,
     }
 
     if (scope == ID_TOKEN_SYSTEM || scope == ID_TOKEN_PLAIN) {
-        rc = append_public_alias_elevation_target(targets_out, count_out, system_store, atom);
+        rc = append_public_alias_elevation_target(targets_out, count_out, system_store, atom, command, all);
         if (rc == 1) return 0;
+        if (rc == -2) return 6;
         if (rc < 0) return 3;
     }
     return report_not_found(token);
@@ -4541,6 +4862,7 @@ static int elevate_with_sudo_parsed(const char *program,
                                     const char *command,
                                     bool tail,
                                     bool all,
+                                    bool print_cmd,
                                     bool multi,
                                     int multi_count,
                                     bool force_raw,
@@ -4553,6 +4875,9 @@ static int elevate_with_sudo_parsed(const char *program,
             extra += 1;
         }
         if (all) {
+            extra += 1;
+        }
+        if (print_cmd) {
             extra += 1;
         }
         if (!strcmp(command, "start") && multi) {
@@ -4580,6 +4905,9 @@ static int elevate_with_sudo_parsed(const char *program,
         }
         if (all) {
             canon[n++] = "--all";
+        }
+        if (print_cmd) {
+            canon[n++] = "--print";
         }
         if (!strcmp(command, "start") && multi) {
             canon[n++] = "--multi";
@@ -4609,8 +4937,19 @@ static int elevate_with_sudo_targets(const char *program,
                                char **original_tokens,
                                const struct resolved_target *targets,
                                int ntargets,
-                               bool all) {
-    int canonical_argc = 1 + (all ? 1 : 0) + ntargets;
+                               bool all,
+                               bool print_cmd) {
+    int target_argc = 0;
+    bool has_capability = false;
+    for (int i = 0; i < ntargets; i++) {
+        if (targets[i].has_capability) {
+            target_argc += 3;
+            has_capability = true;
+        } else {
+            target_argc += 1;
+        }
+    }
+    int canonical_argc = 1 + ((!has_capability && all) ? 1 : 0) + (print_cmd ? 1 : 0) + target_argc;
     char **canon = calloc((size_t)canonical_argc, sizeof(char *));
     char **tokens = calloc((size_t)ntargets, sizeof(char *));
     if (!canon || !tokens) {
@@ -4621,10 +4960,19 @@ static int elevate_with_sudo_targets(const char *program,
 
     int n = 0;
     canon[n++] = (char *)command;
-    if (all) {
+    if (!has_capability && all) {
         canon[n++] = "--all";
     }
+    if (print_cmd) {
+        canon[n++] = "--print";
+    }
     for (int i = 0; i < ntargets; i++) {
+        if (targets[i].has_capability) {
+            canon[n++] = (char *)targets[i].id;
+            canon[n++] = (char *)targets[i].cap_alias;
+            canon[n++] = (char *)targets[i].cap_hash;
+            continue;
+        }
         const char *orig_id = NULL;
         enum id_token_scope orig_scope = parse_id_token(original_tokens ? original_tokens[i] : NULL, &orig_id);
         const char *prefix = "";
@@ -4653,6 +5001,34 @@ static int elevate_with_sudo_targets(const char *program,
     return rc;
 }
 
+static int do_print_signal_command(const struct store_paths *store, const char *id, int sig) {
+    struct record r;
+    char path[SIGMUND_PATH_MAX], boot[128] = {0};
+    bool have_boot = current_boot_id(boot, sizeof(boot));
+    if (load_record_by_id(store->record_dir, id, &r, path, sizeof(path)) != 0) {
+        return 5;
+    }
+    if (r.pgid <= 1) {
+        fprintf(stderr, "sigmund: error: invalid pgid %ld in record file\n", (long)r.pgid);
+        return 5;
+    }
+    enum run_state st = eval_state(&r, have_boot ? boot : NULL);
+    if (r.has_boot && have_boot && strcmp(r.boot_id, boot) != 0) {
+        fprintf(stderr, "sigmund: error: run %s is stale and cannot be signaled\n", id);
+        return 2;
+    }
+    if (st == STATE_STALE) {
+        fprintf(stderr, "sigmund: error: run %s is stale and cannot be signaled\n", id);
+        return 2;
+    }
+    if (st == STATE_UNKNOWN) {
+        fprintf(stderr, "sigmund: error: run %s could not be validated and cannot be signaled\n", id);
+        return 2;
+    }
+    printf("kill -%s -- -%ld\n", sig == SIGKILL ? "KILL" : "TERM", (long)r.pgid);
+    return 0;
+}
+
 static int cmd_signal_action(const struct invocation *inv,
                              const struct store_paths *user_store,
                              const struct store_paths *system_store,
@@ -4662,7 +5038,8 @@ static int cmd_signal_action(const struct invocation *inv,
                              char **argv,
                              int sig,
                              bool graceful,
-                             bool all) {
+                             bool all,
+                             bool print_cmd) {
     if (argc <= 0) {
         fprintf(stderr, "usage: sigmund %s <target>...\n", command);
         return 5;
@@ -4693,6 +5070,7 @@ static int cmd_signal_action(const struct invocation *inv,
     }
     if (ntargets == 0) {
         free(targets);
+        sig_note(inv, "sigmund: nothing to %s\n", command);
         return 0;
     }
     bool need_elevation = false;
@@ -4700,13 +5078,22 @@ static int cmd_signal_action(const struct invocation *inv,
         need_elevation = need_elevation || targets[i].needs_elevation;
     }
     if (need_elevation) {
-        int rc = elevate_with_sudo_targets(program, command, NULL, targets, ntargets, all);
+        int rc = elevate_with_sudo_targets(program, command, NULL, targets, ntargets, all, print_cmd);
         free(targets);
         return rc;
     }
     int worst = 0;
     for (int i = 0; i < ntargets; i++) {
-        int rc = do_signal_action(&targets[i].store, targets[i].id, sig, graceful);
+        bool already_done = false;
+        int rc = print_cmd ? do_print_signal_command(&targets[i].store, targets[i].id, sig)
+                           : do_signal_action(&targets[i].store, targets[i].id, sig, graceful, &already_done);
+        if (!print_cmd && rc == 0) {
+            if (already_done) {
+                sig_note(inv, "sigmund: %s already exited\n", targets[i].id);
+            } else {
+                sig_note(inv, "sigmund: %s %s\n", !strcmp(command, "kill") ? "killed" : "stopped", targets[i].id);
+            }
+        }
         if (rc > worst) {
             worst = rc;
         }
@@ -4729,11 +5116,12 @@ static int cmd_tail_action(const struct invocation *inv,
     }
     if (ntargets == 0) {
         free(targets);
+        sig_note(inv, "sigmund: nothing to tail\n");
         return 0;
     }
     struct resolved_target target = targets[0];
     if (target.needs_elevation) {
-        rc = elevate_with_sudo_targets(program, "tail", NULL, &target, 1, false);
+        rc = elevate_with_sudo_targets(program, "tail", NULL, &target, 1, false, false);
         free(targets);
         return rc;
     }
@@ -4770,11 +5158,12 @@ static int cmd_dump_action(const struct invocation *inv,
     }
     if (ntargets == 0) {
         free(targets);
+        sig_note(inv, "sigmund: nothing to dump\n");
         return 0;
     }
     struct resolved_target target = targets[0];
     if (target.needs_elevation) {
-        rc = elevate_with_sudo_targets(program, "dump", NULL, &target, 1, false);
+        rc = elevate_with_sudo_targets(program, "dump", NULL, &target, 1, false, false);
         free(targets);
         return rc;
     }
@@ -4825,7 +5214,16 @@ static int cmd_prune_action(const struct invocation *inv,
                             bool all) {
     if (!target_token || strcmp(target_token, "all") == 0) {
         const struct store_paths *store = inv->euid_root ? system_store : user_store;
-        return cmd_prune_store_all(store, target_token && strcmp(target_token, "all") == 0);
+        int removed = 0;
+        int rc = cmd_prune_store_all(store, target_token && strcmp(target_token, "all") == 0, &removed);
+        if (rc == 0) {
+            if (removed > 0) {
+                sig_note(inv, "sigmund: pruned %d past run%s\n", removed, removed == 1 ? "" : "s");
+            } else {
+                sig_note(inv, "sigmund: nothing to prune\n");
+            }
+        }
+        return rc;
     }
     struct resolved_target *targets = NULL;
     int ntargets = 0;
@@ -4836,6 +5234,7 @@ static int cmd_prune_action(const struct invocation *inv,
     }
     if (ntargets == 0) {
         free(targets);
+        sig_note(inv, "sigmund: nothing to prune\n");
         return 0;
     }
     bool need_elevation = false;
@@ -4843,18 +5242,38 @@ static int cmd_prune_action(const struct invocation *inv,
         need_elevation = need_elevation || targets[i].needs_elevation;
     }
     if (need_elevation) {
-        rc = elevate_with_sudo_targets(program, "prune", NULL, targets, ntargets, all);
+        rc = elevate_with_sudo_targets(program, "prune", NULL, targets, ntargets, all, false);
         free(targets);
         return rc;
     }
     char boot[128] = {0};
     bool have_boot = current_boot_id(boot, sizeof(boot));
     int worst = 0;
+    int removed_count = 0;
     for (int i = 0; i < ntargets; i++) {
         bool removed = false;
         rc = prune_one_run(&targets[i].store, targets[i].id, have_boot ? boot : NULL, true, &removed);
+        if (removed) {
+            removed_count++;
+        }
         if (rc > worst) {
             worst = rc;
+        }
+    }
+    if (worst == 0) {
+        if (removed_count > 0) {
+            const char *atom = NULL;
+            enum id_token_scope token_scope = parse_id_token(target_token, &atom);
+            bool target_looks_like_alias = (token_scope != ID_TOKEN_INVALID && atom &&
+                                            valid_alias(atom) && !valid_id_prefix(atom));
+            if (target_looks_like_alias) {
+                sig_note(inv, "sigmund: pruned %d past run%s for '%s'\n",
+                         removed_count, removed_count == 1 ? "" : "s", atom);
+            } else {
+                sig_note(inv, "sigmund: pruned %d past run%s\n", removed_count, removed_count == 1 ? "" : "s");
+            }
+        } else {
+            sig_note(inv, "sigmund: nothing to prune\n");
         }
     }
     free(targets);
@@ -5111,19 +5530,20 @@ static int elevate_start_token(const char *program,
                                bool multi,
                                int multi_count) {
     char token[8 + ALIAS_MAX_LEN + 1 + PROFILE_HASH_STR_LEN];
-    if (hash && valid_alias(token_atom) && valid_profile_hash(hash)) {
-        if (checked_snprintf(token, sizeof(token), "system:%s@%s", token_atom, hash) != 0) {
-            return 3;
-        }
-    } else if (checked_snprintf(token, sizeof(token), "system:%s", token_atom) != 0) {
-        return 3;
-    }
     char count_buf[32];
-    char *canon[5];
+    char *canon[6];
     int n = 0;
     canon[n++] = "start";
     if (tail) {
         canon[n++] = "--tail";
+    }
+    if (hash && valid_alias(token_atom) && valid_profile_hash(hash)) {
+        canon[n++] = "00000000";
+        canon[n++] = (char *)token_atom;
+        canon[n++] = (char *)hash;
+        return elevate_with_sudo_canonical(program, n, canon);
+    } else if (checked_snprintf(token, sizeof(token), "system:%s", token_atom) != 0) {
+        return 3;
     }
     canon[n++] = token;
     if (multi) {
@@ -5182,12 +5602,18 @@ static int cmd_start_action(const struct invocation *inv,
                 return 5;
             }
             if (target.needs_elevation) {
-                start_rc = elevate_start_token(program,
-                                               tail,
-                                               target.has_alias ? target.alias : target.hash,
-                                               target.has_alias ? target.hash : NULL,
-                                               multi,
-                                               starts);
+                start_rc = 0;
+                for (int i = 0; i < starts; i++) {
+                    start_rc = elevate_start_token(program,
+                                                   tail,
+                                                   target.has_alias ? target.alias : target.hash,
+                                                   target.has_alias ? target.hash : NULL,
+                                                   false,
+                                                   1);
+                    if (start_rc != 0) {
+                        break;
+                    }
+                }
             } else {
                 if (target.has_alias && !multi) {
                     size_t running = 0;
@@ -5241,7 +5667,7 @@ static int cmd_start_action(const struct invocation *inv,
 static bool command_accepts_target_tokens(const char *command) {
     return command && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                        !strcmp(command, "tail") || !strcmp(command, "dump") ||
-                       !strcmp(command, "prune") || !strcmp(command, "killcmd"));
+                       !strcmp(command, "prune"));
 }
 
 static int maybe_elevate_requested_system_targets(const char *program,
@@ -5257,8 +5683,8 @@ static int maybe_elevate_requested_system_targets(const char *program,
     if (init_system_store(&system_store) != 0) {
         return 0;
     }
-    char **canon = calloc((size_t)argc + 2, sizeof(char *));
-    char **owned_tokens = calloc((size_t)argc, sizeof(char *));
+    char **canon = calloc((size_t)argc * 3 + 3, sizeof(char *));
+    char **owned_tokens = calloc((size_t)argc * 3, sizeof(char *));
     if (!canon || !owned_tokens) {
         free(canon);
         free(owned_tokens);
@@ -5268,9 +5694,6 @@ static int maybe_elevate_requested_system_targets(const char *program,
     bool changed = false;
     int n = 0;
     canon[n++] = (char *)command;
-    if (all) {
-        canon[n++] = "--all";
-    }
     for (int i = 0; i < argc; i++) {
         const char *token = argv[i];
         const char *atom = NULL;
@@ -5282,17 +5705,54 @@ static int maybe_elevate_requested_system_targets(const char *program,
         if ((scope == ID_TOKEN_PLAIN || scope == ID_TOKEN_SYSTEM) && atom && valid_alias(atom)) {
             char hash[PROFILE_HASH_STR_LEN];
             if (alias_lookup_hash(&system_store, atom, hash) == 0) {
-                size_t need = strlen("system:") + strlen(atom) + strlen("@") + strlen(hash) + 1;
-                owned_tokens[i] = malloc(need);
-                if (!owned_tokens[i]) {
-                    for (int j = 0; j < i; j++) free(owned_tokens[j]);
+                struct alias_match_list matches;
+                if (collect_public_alias_matches(&system_store, atom, &matches) != 0) {
+                    for (int j = 0; j < argc * 3; j++) free(owned_tokens[j]);
                     free(owned_tokens);
                     free(canon);
                     *rc_out = 3;
                     return 1;
                 }
-                snprintf(owned_tokens[i], need, "system:%s@%s", atom, hash);
-                canon[n++] = owned_tokens[i];
+                const char *selector = NULL;
+                char selector_buf[16];
+                if (matches.count == 0) {
+                    free_alias_match_list(&matches);
+                    *rc_out = 0;
+                    for (int j = 0; j < argc * 3; j++) free(owned_tokens[j]);
+                    free(owned_tokens);
+                    free(canon);
+                    return 1;
+                }
+                if (matches.count > 1) {
+                    if (!all || !command_all_allowed(command)) {
+                        report_alias_ambiguity(command, atom, &matches);
+                        free_alias_match_list(&matches);
+                        *rc_out = 6;
+                        for (int j = 0; j < argc * 3; j++) free(owned_tokens[j]);
+                        free(owned_tokens);
+                        free(canon);
+                        return 1;
+                    }
+                    selector = "ffffffff";
+                } else {
+                    snprintf(selector_buf, sizeof(selector_buf), "%s", matches.items[0].id);
+                    selector = selector_buf;
+                }
+                size_t slot = (size_t)i * 3;
+                owned_tokens[slot] = strdup(selector);
+                owned_tokens[slot + 1] = strdup(atom);
+                owned_tokens[slot + 2] = strdup(hash);
+                free_alias_match_list(&matches);
+                if (!owned_tokens[slot] || !owned_tokens[slot + 1] || !owned_tokens[slot + 2]) {
+                    for (int j = 0; j < argc * 3; j++) free(owned_tokens[j]);
+                    free(owned_tokens);
+                    free(canon);
+                    *rc_out = 3;
+                    return 1;
+                }
+                canon[n++] = owned_tokens[slot];
+                canon[n++] = owned_tokens[slot + 1];
+                canon[n++] = owned_tokens[slot + 2];
                 changed = true;
                 continue;
             }
@@ -5305,7 +5765,7 @@ static int maybe_elevate_requested_system_targets(const char *program,
         return 0;
     }
     *rc_out = elevate_with_sudo_canonical(program, n, canon);
-    for (int i = 0; i < argc; i++) {
+    for (int i = 0; i < argc * 3; i++) {
         free(owned_tokens[i]);
     }
     free(owned_tokens);
@@ -5399,7 +5859,7 @@ out:
     return rc;
 }
 
-static int print_aliases_for_store(const char *scope, const struct store_paths *store) {
+static int print_aliases_for_store(const char *scope, const struct store_paths *store, bool verbose) {
     struct alias_entry *entries = NULL;
     size_t count = 0;
     if (load_aliases(store, &entries, &count) != 0) {
@@ -5407,7 +5867,25 @@ static int print_aliases_for_store(const char *scope, const struct store_paths *
         return 5;
     }
     for (size_t i = 0; i < count; i++) {
-        printf("%-8s %-64s %s\n", scope, entries[i].has_hash ? entries[i].hash : "-", entries[i].name);
+        char command[96];
+        char hash_display[PROFILE_HASH_STR_LEN];
+        if (entries[i].has_recipe) {
+            if (format_argv_human(command, sizeof(command), entries[i].argc, entries[i].argv) != 0) {
+                snprintf(command, sizeof(command), "%s", "?");
+            }
+        } else {
+            snprintf(command, sizeof(command), "%s", "<root-managed>");
+        }
+        if (entries[i].has_hash) {
+            if (verbose) {
+                snprintf(hash_display, sizeof(hash_display), "%s", entries[i].hash);
+            } else {
+                snprintf(hash_display, sizeof(hash_display), "%.12s...", entries[i].hash);
+            }
+        } else {
+            snprintf(hash_display, sizeof(hash_display), "%s", "-");
+        }
+        printf("%-12s %-6s %-40.40s %s\n", entries[i].name, scope, command, hash_display);
     }
     free_aliases(entries, count);
     return 0;
@@ -5415,26 +5893,27 @@ static int print_aliases_for_store(const char *scope, const struct store_paths *
 
 static int cmd_aliases_action(const struct invocation *inv,
                               const struct store_paths *user_store,
-                              const struct store_paths *system_store) {
-    printf("%-8s %-64s %s\n", "SCOPE", "HASH", "ALIAS");
+                              const struct store_paths *system_store,
+                              bool verbose) {
+    printf("%-12s %-6s %-40s %s\n", "NAME", "SCOPE", "COMMAND", "HASH");
     int rc = 0;
     if (inv->euid_root) {
-        if (print_aliases_for_store("system", system_store) != 0) {
+        if (print_aliases_for_store("system", system_store, verbose) != 0) {
             rc = 5;
         }
         if (!inv->requested_system && inv->have_sudo_user) {
             struct store_paths sudo_user_store;
             if (init_invoking_user_store(inv, &sudo_user_store) == 0 &&
-                print_aliases_for_store("user", &sudo_user_store) != 0) {
+                print_aliases_for_store("user", &sudo_user_store, verbose) != 0) {
                 rc = 5;
             }
         }
         return rc;
     }
-    if (print_aliases_for_store("user", user_store) != 0) {
+    if (print_aliases_for_store("user", user_store, verbose) != 0) {
         rc = 5;
     }
-    if (print_aliases_for_store("system", system_store) != 0) {
+    if (print_aliases_for_store("system", system_store, verbose) != 0) {
         rc = 5;
     }
     return rc;
@@ -5559,16 +6038,74 @@ static int resolve_system_alias_hash_for_grant(const struct store_paths *system_
     return profile_exists_in_store(system_store, hash);
 }
 
+static int build_action_alternation(const bool selected[GRANT_ACTION_COUNT], char *out, size_t n) {
+    size_t off = 0;
+    out[0] = '\0';
+    bool first = true;
+    for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+        if (!selected[i]) {
+            continue;
+        }
+        const char *name = grant_action_names[i];
+        size_t need = strlen(name) + (first ? 0 : 1);
+        if (off + need + 3 >= n) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (!first) {
+            out[off++] = '|';
+        }
+        memcpy(out + off, name, strlen(name));
+        off += strlen(name);
+        out[off] = '\0';
+        first = false;
+    }
+    if (first) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static int build_actions_csv(const bool selected[GRANT_ACTION_COUNT], char *out, size_t n) {
+    size_t off = 0;
+    out[0] = '\0';
+    bool first = true;
+    for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+        if (!selected[i]) {
+            continue;
+        }
+        const char *name = grant_action_names[i];
+        size_t need = strlen(name) + (first ? 0 : 1);
+        if (off + need + 1 >= n) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (!first) {
+            out[off++] = ',';
+        }
+        memcpy(out + off, name, strlen(name));
+        off += strlen(name);
+        out[off] = '\0';
+        first = false;
+    }
+    return first ? -1 : 0;
+}
+
 static int build_sudoers_line(char *out,
                               size_t n,
                               const char *subject,
                               const char *abs_sigmund,
-                              const char *action,
+                              const bool selected[GRANT_ACTION_COUNT],
                               const char *alias,
                               const char *hash) {
+    char verb_alt[128];
+    if (build_action_alternation(selected, verb_alt, sizeof(verb_alt)) != 0) {
+        return -1;
+    }
     return checked_snprintf(out, n,
-                            "%s ALL=(root) NOPASSWD: %s --system --elevated %s system\\:%s@%s",
-                            subject, abs_sigmund, action, alias, hash);
+                            "%s ALL=(root) NOPASSWD: %s ^--system --elevated (%s) [0-9a-f]{8} %s %s$",
+                            subject, abs_sigmund, verb_alt, alias, hash);
 }
 
 static bool any_grant_action_selected(const bool selected[GRANT_ACTION_COUNT]) {
@@ -5576,20 +6113,6 @@ static bool any_grant_action_selected(const bool selected[GRANT_ACTION_COUNT]) {
         if (selected[i]) {
             return true;
         }
-    }
-    return false;
-}
-
-static bool text_contains_exact_line(const char *text, const char *line) {
-    size_t line_len = strlen(line);
-    const char *p = text;
-    while (p && *p) {
-        const char *end = strchr(p, '\n');
-        size_t len = end ? (size_t)(end - p) : strlen(p);
-        if (len == line_len && strncmp(p, line, line_len) == 0) {
-            return true;
-        }
-        p = end ? end + 1 : NULL;
     }
     return false;
 }
@@ -5647,12 +6170,39 @@ static void actions_from_existing_sudoers(const char *existing,
                                           const char *alias,
                                           const char *hash,
                                           bool selected[GRANT_ACTION_COUNT]) {
+    (void)subject;
+    (void)abs_sigmund;
+    (void)alias;
+    (void)hash;
     for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
         selected[i] = false;
-        char line[SIGMUND_PATH_MAX + 256];
-        if (build_sudoers_line(line, sizeof(line), subject, abs_sigmund, grant_action_names[i], alias, hash) == 0 &&
-            existing && text_contains_exact_line(existing, line)) {
-            selected[i] = true;
+    }
+    if (!existing) {
+        return;
+    }
+    const char *p = strstr(existing, "# actions-list:");
+    if (!p) {
+        return;
+    }
+    p += strlen("# actions-list:");
+    p = skip_ws(p);
+    char buf[256];
+    size_t len = 0;
+    while (p[len] && p[len] != '\n' && len + 1 < sizeof(buf)) {
+        buf[len] = p[len];
+        len++;
+    }
+    buf[len] = '\0';
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        tok = (char *)skip_ws(tok);
+        char *end = tok + strlen(tok);
+        while (end > tok && isspace((unsigned char)end[-1])) {
+            *--end = '\0';
+        }
+        int idx = grant_action_index(tok);
+        if (idx >= 0) {
+            selected[idx] = true;
         }
     }
 }
@@ -5699,18 +6249,21 @@ static int write_sudoers_template_file(const char *sudoers_path,
     json_escape(f, hash);
     fputc('\n', f);
     fprintf(f, "# actions: %s\n", all_scope ? "ALL" : "explicit");
-    for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
-        if (selected[i]) {
-            char line[SIGMUND_PATH_MAX + 256];
-            if (build_sudoers_line(line, sizeof(line), subject, abs_sigmund, grant_action_names[i], target_label, hash) != 0) {
-                fclose(f);
-                unlink(tmp);
-                return -1;
-            }
-            fputs(line, f);
-            fputc('\n', f);
-        }
+    char actions_csv[256];
+    if (build_actions_csv(selected, actions_csv, sizeof(actions_csv)) != 0) {
+        fclose(f);
+        unlink(tmp);
+        return -1;
     }
+    fprintf(f, "# actions-list: %s\n", actions_csv);
+    char line[SIGMUND_PATH_MAX + 256];
+    if (build_sudoers_line(line, sizeof(line), subject, abs_sigmund, selected, target_label, hash) != 0) {
+        fclose(f);
+        unlink(tmp);
+        return -1;
+    }
+    fputs(line, f);
+    fputc('\n', f);
     if (ferror(f) || fflush(f) != 0 || fsync(fd) != 0) {
         fclose(f);
         unlink(tmp);
@@ -5830,6 +6383,27 @@ static int cmd_grant_revoke_action(const struct invocation *inv,
         return 0;
     }
 
+    if (!all_scope) {
+        char *existing = NULL;
+        bool merged[GRANT_ACTION_COUNT];
+        for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+            merged[i] = selected[i];
+        }
+        if (read_owned_file_no_symlink(sudoers_path, &existing) == 0) {
+            bool existing_actions[GRANT_ACTION_COUNT];
+            actions_from_existing_sudoers(existing, subject, abs_sigmund, target_label, hash, existing_actions);
+            for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+                merged[i] = merged[i] || existing_actions[i];
+            }
+            free(existing);
+        } else if (errno != ENOENT) {
+            die_errno("sigmund: failed to read managed sudoers file");
+        }
+        for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+            selected[i] = merged[i];
+        }
+    }
+
     if (write_sudoers_template_file(sudoers_path, target_label, subject, abs_sigmund, hash, selected, all_scope) != 0) {
         die_errno("sigmund: failed to update managed sudoers file");
     }
@@ -5838,53 +6412,46 @@ static int cmd_grant_revoke_action(const struct invocation *inv,
 }
 
 static void usage(void) {
-    printf("sigmund %s — More than nohup, less than systemd.\n\n"
-           "start forms:\n"
-           "  sigmund <cmd...>                  launch command in user-local state\n"
-           "  sudo sigmund <cmd...>             launch command in root-managed state\n"
-           "  sigmund --system <cmd...>         launch command in root-managed state via sudo\n"
-           "  sigmund --tail <cmd...>           launch command and stream log output\n"
-           "  sigmund start \"<cmd>\" --system  explicit system/root-managed start\n"
-           "  sigmund start <alias> [--multi [N]]\n"
-           "\n"
-           "commands:\n"
-           "  sigmund list                      list user-local and public root-managed runs\n"
-           "  sigmund tail <target>             follow existing log output\n"
-           "  sigmund dump <target>             print saved log output and exit\n"
-           "  sigmund stop <target>...          graceful stop (SIGTERM → SIGKILL)\n"
-           "  sigmund kill <target>...          immediate kill (SIGKILL)\n"
-           "  sigmund killcmd <id>...           print kill command for scripting\n"
-           "  sigmund alias <id> <name>         create/update an alias from a run\n"
-           "  sigmund aliases                   list visible aliases and protected hashes\n"
-           "  sigmund grant <alias> <user> [actions]\n"
-           "  sigmund revoke <alias> <user> [actions]\n"
-           "  sigmund prune                     remove exited/failed records and orphan logs\n"
-           "  sigmund prune <target>            remove one prunable run and its log\n"
-           "  sigmund prune all                 remove all prunable runs (stale+exited+failed)\n"
-           "\n"
-           "target forms:\n"
-           "  <target>                          normal invocation-context resolution\n"
-           "  user:<target>                     force user-local lookup\n"
-           "  system:<target>                   force root-managed lookup\n"
-           "  target = run ID/prefix or alias\n"
-           "\n"
-           "switches:\n"
-           "  --system                          run this invocation with root-managed authority\n"
-           "  --tail                            start-mode switch (use with <cmd...>)\n"
-           "  --multi [N]                       start alias N times or bypass one-running guard\n"
+    printf("sigmund %s - more than nohup, less than systemd\n\n"
+           "Run a command that outlives your shell, then find it, watch it,\n"
+           "and stop it safely later. No daemon, no config.\n\n"
+           "USAGE\n"
+           "  sigmund <command> [args...]       start a command in the background\n"
+           "  sigmund <action>  [target...]     act on a tracked command\n\n"
+           "START\n"
+           "  sigmund <command>...              start it; stdout is the 8-hex run id\n"
+           "  sigmund --tail <command>...       start it and stream output\n"
+           "  sigmund start <alias> [--multi [N]]\n\n"
+           "MANAGE\n"
+           "  sigmund list [alias] [--iso|-l]   show tracked runs\n"
+           "  sigmund tail   <target>           follow live output or an id's log\n"
+           "  sigmund dump   <target>           print a run's log and exit\n"
+           "  sigmund stop   <target>...        graceful stop (TERM, then KILL)\n"
+           "  sigmund kill   <target>...        force kill now (KILL)\n"
+           "  sigmund prune  [target|all]       clear past run data\n\n"
+           "PROFILES\n"
+           "  sigmund alias   <id> <name>       name the command behind a run\n"
+           "  sigmund aliases [-v]              list aliases\n"
+           "  sigmund grant   <alias> <user> [actions]\n"
+           "  sigmund revoke  <alias> <user> [actions]\n\n"
+           "TARGETS\n"
+           "  target = run id, id prefix, or alias name\n"
+           "  user:<target> and system:<target> force a storage scope\n\n"
+           "SWITCHES\n"
+           "  --system                          use root-managed state via sudo\n"
            "  --all                             resolve alias ambiguity for stop/kill/prune\n"
-           "\n"
-           "note:\n"
-           "  In raw start form, switches after the child command belong to the child.\n"
-           "  Use 'sigmund -- <cmd...>' to run a command whose name overlaps\n"
-           "  with a sigmund command (for example: sigmund -- list).\n",
+           "  --multi [N]                       start another alias run, or N runs\n"
+           "  --print                           print validated stop/kill shell command\n"
+           "  --quiet                           suppress human status on stderr\n\n"
+           "Use 'sigmund -- <command>...' when the child command name overlaps\n"
+           "with a sigmund action.\n",
            SIGMUND_VERSION);
 }
 
 static bool is_sigmund_owned_command(const char *s) {
     return s && (!strcmp(s, "list") || !strcmp(s, "stop") || !strcmp(s, "kill") ||
                  !strcmp(s, "tail") || !strcmp(s, "dump") || !strcmp(s, "prune") ||
-                 !strcmp(s, "start") || !strcmp(s, "killcmd") ||
+                 !strcmp(s, "start") ||
                  !strcmp(s, "alias") || !strcmp(s, "aliases") ||
                  !strcmp(s, "grant") || !strcmp(s, "revoke"));
 }
@@ -5923,6 +6490,177 @@ static int perform_explicit_start(const struct invocation *inv,
     return perform_start(inv, store, tail, argc, argv, NULL, NULL, NULL);
 }
 
+static int cmd_elevated_capability_action(const struct invocation *inv,
+                                          const struct store_paths *system_store,
+                                          const char *command,
+                                          bool tail,
+                                          int sig,
+                                          bool graceful,
+                                          int argc,
+                                          char **argv) {
+    if (!inv->euid_root || argc != 3) {
+        return -1;
+    }
+    const char *runid_sel = argv[0];
+    const char *alias = argv[1];
+    const char *hash = argv[2];
+    if (!valid_runid_selector(runid_sel) || !valid_alias(alias) || !valid_profile_hash(hash)) {
+        return -1;
+    }
+    if (verify_system_alias_cap(system_store, alias, hash) != 0) {
+        fprintf(stderr, "sigmund: error: capability for '%s' is no longer valid\n", alias);
+        return 3;
+    }
+
+    if (!strcmp(command, "start")) {
+        if (strcmp(runid_sel, "00000000") != 0) {
+            fprintf(stderr, "sigmund: error: start capability requires selector 00000000\n");
+            return 5;
+        }
+        return perform_profile_start(inv, system_store, tail, hash, alias);
+    }
+
+    if (strcmp(runid_sel, "00000000") == 0) {
+        fprintf(stderr, "sigmund: error: selector 00000000 is only valid for start\n");
+        return 5;
+    }
+
+    if (strcmp(runid_sel, "ffffffff") == 0) {
+        if (!command_all_allowed(command)) {
+            fprintf(stderr, "sigmund: error: selector ffffffff is not valid for %s\n", command);
+            return 5;
+        }
+        struct alias_match_list matches;
+        if (collect_private_alias_matches(system_store, alias, command, &matches) != 0) {
+            return 3;
+        }
+        int worst = 0;
+        int acted = 0;
+        char boot[128] = {0};
+        bool have_boot = current_boot_id(boot, sizeof(boot));
+        for (size_t i = 0; i < matches.count; i++) {
+            int rc = 0;
+            if (!strcmp(command, "stop") || !strcmp(command, "kill")) {
+                bool already_done = false;
+                rc = do_signal_action(system_store,
+                                      matches.items[i].id,
+                                      sig,
+                                      graceful,
+                                      &already_done);
+                if (rc == 0) {
+                    sig_note(inv,
+                             "sigmund: %s %s\n",
+                             already_done ? matches.items[i].id : (!strcmp(command, "kill") ? "killed" : "stopped"),
+                             already_done ? "already exited" : matches.items[i].id);
+                }
+            } else if (!strcmp(command, "prune")) {
+                bool removed = false;
+                rc = prune_one_run(system_store, matches.items[i].id, have_boot ? boot : NULL, true, &removed);
+                if (removed) {
+                    acted++;
+                }
+            }
+            if (rc == 0 && strcmp(command, "prune") != 0) {
+                acted++;
+            }
+            if (rc > worst) {
+                worst = rc;
+            }
+        }
+        if (!strcmp(command, "prune") && worst == 0) {
+            if (acted > 0) {
+                sig_note(inv, "sigmund: pruned %d past run%s for '%s'\n", acted, acted == 1 ? "" : "s", alias);
+            } else {
+                sig_note(inv, "sigmund: nothing to prune\n");
+            }
+        } else if (acted == 0 && worst == 0) {
+            sig_note(inv, "sigmund: nothing to %s\n", command);
+        }
+        free_alias_match_list(&matches);
+        return worst;
+    }
+
+    if (ensure_run_recorded_under_alias(system_store, runid_sel, alias) != 0) {
+        fprintf(stderr, "sigmund: error: run %s is not recorded under alias '%s'\n", runid_sel, alias);
+        return 3;
+    }
+
+    struct record selected_record;
+    char selected_path[SIGMUND_PATH_MAX];
+    if (load_record_by_id(system_store->record_dir, runid_sel, &selected_record, selected_path, sizeof(selected_path)) != 0) {
+        return 5;
+    }
+    char selected_boot[128] = {0};
+    bool have_selected_boot = current_boot_id(selected_boot, sizeof(selected_boot));
+    enum run_state selected_state = eval_state(&selected_record, have_selected_boot ? selected_boot : NULL);
+    if (!record_matches_alias_intent(command, &selected_record, selected_state)) {
+        sig_note(inv, "sigmund: nothing to %s\n", command);
+        return 0;
+    }
+
+    if (!strcmp(command, "stop") || !strcmp(command, "kill")) {
+        bool already_done = false;
+        int rc = do_signal_action(system_store, runid_sel, sig, graceful, &already_done);
+        if (rc == 0) {
+            if (already_done) {
+                sig_note(inv, "sigmund: %s already exited\n", runid_sel);
+            } else {
+                sig_note(inv, "sigmund: %s %s\n", !strcmp(command, "kill") ? "killed" : "stopped", runid_sel);
+            }
+        }
+        return rc;
+    }
+    if (!strcmp(command, "prune")) {
+        char boot[128] = {0};
+        bool have_boot = current_boot_id(boot, sizeof(boot));
+        bool removed = false;
+        int rc = prune_one_run(system_store, runid_sel, have_boot ? boot : NULL, true, &removed);
+        if (rc == 0) {
+            sig_note(inv, removed ? "sigmund: pruned 1 past run for '%s'\n" : "sigmund: nothing to prune\n", alias);
+        }
+        return rc;
+    }
+    if (!strcmp(command, "tail") || !strcmp(command, "dump")) {
+        struct record r;
+        char path[SIGMUND_PATH_MAX];
+        if (load_record_by_id(system_store->record_dir, runid_sel, &r, path, sizeof(path)) != 0 || !r.has_log) {
+            return 5;
+        }
+        if (!strcmp(command, "tail")) {
+            char boot[128] = {0};
+            bool have_boot = current_boot_id(boot, sizeof(boot));
+            enum run_state st = eval_state(&r, have_boot ? boot : NULL);
+            return tail_log_until_exit(&r, st == STATE_RUNNING, st == STATE_RUNNING);
+        }
+        int fd = open(r.log_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd < 0) {
+            die_errno("sigmund: failed to open log for dump");
+        }
+        char buf[4096];
+        while (1) {
+            ssize_t nr = read(fd, buf, sizeof(buf));
+            if (nr == 0) {
+                break;
+            }
+            if (nr < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                close(fd);
+                die_errno("sigmund: failed while dumping log");
+            }
+            if (write_all(STDOUT_FILENO, buf, (size_t)nr) != 0) {
+                close(fd);
+                die_errno("sigmund: failed writing dumped output");
+            }
+        }
+        close(fd);
+        return 0;
+    }
+
+    return -1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         usage();
@@ -5936,6 +6674,9 @@ int main(int argc, char **argv) {
     bool force_raw = false;
     bool all = false;
     bool multi = false;
+    bool quiet = false;
+    bool print_cmd = false;
+    bool list_iso = false;
     int multi_count = 1;
 
     while (argi < argc) {
@@ -5952,6 +6693,11 @@ int main(int argc, char **argv) {
         }
         if (!strcmp(argv[argi], "--tail")) {
             tail = true;
+            argi++;
+            continue;
+        }
+        if (!strcmp(argv[argi], "--quiet")) {
+            quiet = true;
             argi++;
             continue;
         }
@@ -5993,12 +6739,26 @@ int main(int argc, char **argv) {
                 requested_system = true;
                 continue;
             }
+            if (!literal_owned_arg && !strcmp(argv[i], "--quiet")) {
+                quiet = true;
+                continue;
+            }
             if (!literal_owned_arg && command_accepts_target_tokens(command) && !strcmp(argv[i], "--all")) {
                 all = true;
                 continue;
             }
+            if (!literal_owned_arg && (!strcmp(command, "stop") || !strcmp(command, "kill")) &&
+                !strcmp(argv[i], "--print")) {
+                print_cmd = true;
+                continue;
+            }
             if (!literal_owned_arg && !strcmp(command, "start") && !strcmp(argv[i], "--tail")) {
                 tail = true;
+                continue;
+            }
+            if (!literal_owned_arg && !strcmp(command, "list") &&
+                (!strcmp(argv[i], "--iso") || !strcmp(argv[i], "-l"))) {
+                list_iso = true;
                 continue;
             }
             if (!literal_owned_arg && !strcmp(command, "start") && !strcmp(argv[i], "--multi")) {
@@ -6030,12 +6790,6 @@ int main(int argc, char **argv) {
         cmd_argv = argv + argi;
     }
 
-    if (owned && !strcmp(command, "--version")) {
-        puts(SIGMUND_VERSION);
-        free(cmd_argv);
-        return 0;
-    }
-
     if (!owned && !force_raw && !tail && !strcmp(argv[argi], "--version")) {
         puts(SIGMUND_VERSION);
         return 0;
@@ -6049,6 +6803,7 @@ int main(int argc, char **argv) {
     if (detect_invocation(&inv, requested_system, elevated) != 0) {
         die_errno("sigmund: failed to resolve invocation context");
     }
+    inv.quiet = quiet;
     if (inv.elevated && !inv.euid_root) {
         fprintf(stderr, "sigmund: internal error: --elevated without root authority\n");
         if (owned) {
@@ -6067,12 +6822,19 @@ int main(int argc, char **argv) {
                 (valid_profile_hash(atom) || valid_alias(atom))) {
                 char hash[PROFILE_HASH_STR_LEN];
                 if (resolve_public_profile_token(&pre_system_store, atom, hash) == 1) {
-                    int rc = elevate_start_token(argv[0],
+                    int rc = 0;
+                    int starts = multi ? multi_count : 1;
+                    for (int i = 0; i < starts; i++) {
+                        rc = elevate_start_token(argv[0],
                                                  tail,
                                                  valid_alias(atom) ? atom : hash,
                                                  valid_alias(atom) ? hash : NULL,
-                                                 multi,
-                                                 multi_count);
+                                                 false,
+                                                 1);
+                        if (rc != 0) {
+                            break;
+                        }
+                    }
                     free(cmd_argv);
                     return rc;
                 }
@@ -6085,7 +6847,7 @@ int main(int argc, char **argv) {
             free(cmd_argv);
             return canonical_rc;
         }
-        int rc = elevate_with_sudo_parsed(argv[0], owned, command, tail, all, multi, multi_count, force_raw, cmd_argc, cmd_argv);
+        int rc = elevate_with_sudo_parsed(argv[0], owned, command, tail, all, print_cmd, multi, multi_count, force_raw, cmd_argc, cmd_argv);
         if (owned) {
             free(cmd_argv);
         }
@@ -6101,11 +6863,23 @@ int main(int argc, char **argv) {
 
     if (!inv.euid_root || is_list || (owned && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                                                !strcmp(command, "tail") || !strcmp(command, "dump") ||
-                                               !strcmp(command, "prune") || !strcmp(command, "killcmd")))) {
+                                               !strcmp(command, "prune")))) {
         if (!inv.euid_root) {
             if (ensure_user_store_for_current_user(&user_store) != 0) {
                 die_errno("sigmund: failed to init user storage");
             }
+        }
+    }
+
+    if (inv.elevated && inv.euid_root && owned && cmd_argc == 3 &&
+        (!strcmp(command, "start") || !strcmp(command, "stop") || !strcmp(command, "kill") ||
+         !strcmp(command, "tail") || !strcmp(command, "dump") || !strcmp(command, "prune"))) {
+        int sig = !strcmp(command, "kill") ? SIGKILL : SIGTERM;
+        bool graceful = !strcmp(command, "stop");
+        int rc = cmd_elevated_capability_action(&inv, &system_store, command, tail, sig, graceful, cmd_argc, cmd_argv);
+        if (rc >= 0) {
+            free(cmd_argv);
+            return rc;
         }
     }
 
@@ -6141,12 +6915,21 @@ int main(int argc, char **argv) {
 
     if (!strcmp(command, "list")) {
         int rc;
-        if (inv.euid_root && requested_system) {
-            rc = cmd_list_system(&system_store);
-        } else if (inv.euid_root && !requested_system) {
-            rc = cmd_list_system(&system_store);
+        if (cmd_argc > 1) {
+            fprintf(stderr, "usage: sigmund list [alias]\n");
+            free(cmd_argv);
+            return 5;
+        }
+        const char *alias_filter = cmd_argc == 1 ? cmd_argv[0] : NULL;
+        if (alias_filter && !valid_alias(alias_filter)) {
+            fprintf(stderr, "sigmund: error: invalid alias '%s'\n", alias_filter);
+            free(cmd_argv);
+            return 5;
+        }
+        if (inv.euid_root) {
+            rc = cmd_list_system(&system_store, alias_filter, list_iso);
         } else {
-            rc = cmd_list_normal(&user_store, &system_store);
+            rc = cmd_list_normal(&user_store, &system_store, alias_filter, list_iso);
         }
         free(cmd_argv);
         return rc;
@@ -6184,12 +6967,15 @@ int main(int argc, char **argv) {
         return rc;
     }
     if (!strcmp(command, "aliases")) {
-        if (cmd_argc != 0) {
-            fprintf(stderr, "usage: sigmund aliases\n");
+        bool aliases_verbose = false;
+        if (cmd_argc == 1 && (!strcmp(cmd_argv[0], "-v") || !strcmp(cmd_argv[0], "--verbose"))) {
+            aliases_verbose = true;
+        } else if (cmd_argc != 0) {
+            fprintf(stderr, "usage: sigmund aliases [-v]\n");
             free(cmd_argv);
             return 5;
         }
-        int rc = cmd_aliases_action(&inv, &user_store, &system_store);
+        int rc = cmd_aliases_action(&inv, &user_store, &system_store, aliases_verbose);
         free(cmd_argv);
         return rc;
     }
@@ -6210,57 +6996,14 @@ int main(int argc, char **argv) {
         return rc;
     }
     if (!strcmp(command, "stop")) {
-        int rc = cmd_signal_action(&inv, &user_store, &system_store, argv[0], "stop", cmd_argc, cmd_argv, SIGTERM, true, all);
+        int rc = cmd_signal_action(&inv, &user_store, &system_store, argv[0], "stop", cmd_argc, cmd_argv, SIGTERM, true, all, print_cmd);
         free(cmd_argv);
         return rc;
     }
     if (!strcmp(command, "kill")) {
-        int rc = cmd_signal_action(&inv, &user_store, &system_store, argv[0], "kill", cmd_argc, cmd_argv, SIGKILL, false, all);
+        int rc = cmd_signal_action(&inv, &user_store, &system_store, argv[0], "kill", cmd_argc, cmd_argv, SIGKILL, false, all, print_cmd);
         free(cmd_argv);
         return rc;
-    }
-    if (!strcmp(command, "killcmd")) {
-        if (cmd_argc < 1) {
-            fprintf(stderr, "usage: sigmund killcmd <id>...\n");
-            free(cmd_argv);
-            return 5;
-        }
-        int worst = 0;
-        const struct store_paths *store = inv.euid_root ? &system_store : &user_store;
-        for (int i = 0; i < cmd_argc; i++) {
-            struct record r;
-            char path[SIGMUND_PATH_MAX];
-            int rc = 0;
-            char resolved[16];
-            if (resolve_run_id(store->record_dir, cmd_argv[i], resolved, sizeof(resolved)) != 0 ||
-                load_record_by_id(store->record_dir, resolved, &r, path, sizeof(path)) != 0) {
-                rc = 5;
-            } else if (r.pgid <= 1) {
-                fprintf(stderr, "sigmund: error: invalid pgid %ld in record file\n", (long)r.pgid);
-                rc = 5;
-            } else {
-                char boot[128] = {0};
-                bool have_boot = current_boot_id(boot, sizeof(boot));
-                enum run_state st = eval_state(&r, have_boot ? boot : NULL);
-                if (r.has_boot && have_boot && strcmp(r.boot_id, boot) != 0) {
-                    fprintf(stderr, "sigmund: error: run %s is stale and cannot be signaled\n", cmd_argv[i]);
-                    rc = 2;
-                } else if (st == STATE_STALE) {
-                    fprintf(stderr, "sigmund: error: run %s is stale and cannot be signaled\n", cmd_argv[i]);
-                    rc = 2;
-                } else if (st == STATE_UNKNOWN) {
-                    fprintf(stderr, "sigmund: error: run %s could not be validated and cannot be signaled\n", cmd_argv[i]);
-                    rc = 2;
-                } else {
-                    printf("kill -TERM -- -%ld\n", (long)r.pgid);
-                }
-            }
-            if (rc > worst) {
-                worst = rc;
-            }
-        }
-        free(cmd_argv);
-        return worst;
     }
 
     free(cmd_argv);

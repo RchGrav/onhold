@@ -325,7 +325,12 @@ run_test() {
 setup_suite_actors
 
 extract_id() {
-  sed -n 's/^sigmund: id=\([0-9a-f][0-9a-f]*\).*/\1/p' | head -n1
+  sed -n -e '/^[0-9a-f]\{8\}$/p' -e 's/^sigmund: id=\([0-9a-f][0-9a-f]*\).*/\1/p' | head -n1
+}
+
+record_pgid() {
+  local id="$1" store="${2:-$HOME/.local/state/sigmund}"
+  sed -n 's/.*"pgid":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$store/$id.json" | head -n1
 }
 
 
@@ -358,9 +363,9 @@ test_lifecycle() {
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
-  printf '%s\n' "$out" | grep -Eq 'pid=[0-9]+ pgid=[0-9]+ sid=[0-9]+'
-  printf '%s\n' "$out" | grep -Eq '^sigmund: log: .+/.+\.log$'
-  printf '%s\n' "$out" | grep -Eq "^sigmund: stop: sigmund stop $id$"
+  printf '%s\n' "$out" | grep -Eq "^sigmund  started  $id[[:space:]]+sleep 300$"
+  printf '%s\n' "$out" | grep -Eq '^         log      .+/.+\.log$'
+  printf '%s\n' "$out" | grep -Eq "^         stop     sigmund stop $id$"
   "$SIGMUND_BIN" list | grep -Eq "^$id[[:space:]].*running"
   "$SIGMUND_BIN" stop "$id" >/dev/null
   "$SIGMUND_BIN" list | grep -Eq "^$id[[:space:]].*exited"
@@ -375,14 +380,14 @@ test_start_output_stop_hint() {
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
-  printf '%s\n' "$out" | grep -Eq "^sigmund: stop: sigmund stop $id$"
+  printf '%s\n' "$out" | grep -Eq "^         stop     sigmund stop $id$"
 }
 test_kill_subcommand() {
   local out id pgid
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
-  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  pgid=$(record_pgid "$id")
   [ -n "$pgid" ] || return 1
   "$SIGMUND_BIN" kill "$id" >/dev/null || return 1
   pgid_terminated "$pgid"
@@ -392,7 +397,7 @@ test_group_kill_children() {
   local out id pgid children
   out=$("$SIGMUND_BIN" bash -c 'sleep 600 & sleep 601 & wait' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
-  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  pgid=$(record_pgid "$id")
   [ -n "$id" ] && [ -n "$pgid" ] || return 1
   sleep 0.2
   children=$(ps -eo pid=,pgid=,args= | awk -v g="$pgid" '$2==g && $1!=g && $3 ~ /^sleep$/ {print $1}')
@@ -431,7 +436,7 @@ test_exec_replacement_remains_controllable() {
   local out id pgid
   out=$("$SIGMUND_BIN" bash -c 'exec sleep 300' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
-  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  pgid=$(record_pgid "$id")
   [ -n "$id" ] && [ -n "$pgid" ] || return 1
   "$SIGMUND_BIN" list | grep -Eq "^$id[[:space:]].*running" || return 1
   "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
@@ -522,14 +527,16 @@ test_id_sanitization() {
   done
 }
 
-test_killcmd_output() {
+test_print_signal_output() {
   local out id pgid got
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
-  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  pgid=$(record_pgid "$id")
   [ -n "$id" ] && [ -n "$pgid" ] || return 1
-  got=$("$SIGMUND_BIN" killcmd "$id") || return 1
+  got=$("$SIGMUND_BIN" stop --print "$id") || return 1
   [ "$got" = "kill -TERM -- -$pgid" ]
+  got=$("$SIGMUND_BIN" kill --print "$id") || return 1
+  [ "$got" = "kill -KILL -- -$pgid" ]
 }
 
 test_stop_multiple_ids() {
@@ -538,8 +545,8 @@ test_stop_multiple_ids() {
   out2=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id1=$(printf '%s\n' "$out1" | extract_id)
   id2=$(printf '%s\n' "$out2" | extract_id)
-  pgid1=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out1" | head -n1)
-  pgid2=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out2" | head -n1)
+  pgid1=$(record_pgid "$id1")
+  pgid2=$(record_pgid "$id2")
   [ -n "$id1" ] && [ -n "$id2" ] && [ -n "$pgid1" ] && [ -n "$pgid2" ] || return 1
   set +e
   "$SIGMUND_BIN" stop "$id1" "$id2" >/dev/null
@@ -630,12 +637,12 @@ test_persistent_stale_records() {
   [ "$?" -eq 2 ] || return 1
   SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" kill "$id" >/dev/null 2>"$TEST_ROOT/kill.err"
   [ "$?" -eq 2 ] || return 1
-  SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" killcmd "$id" >/dev/null 2>"$TEST_ROOT/killcmd.err"
+  SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" stop --print "$id" >/dev/null 2>"$TEST_ROOT/print.err"
   [ "$?" -eq 2 ] || return 1
   set -e
   grep -q 'stale' "$TEST_ROOT/stop.err"
   grep -q 'stale' "$TEST_ROOT/kill.err"
-  grep -q 'stale' "$TEST_ROOT/killcmd.err"
+  grep -q 'stale' "$TEST_ROOT/print.err"
   SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" tail "$id" >"$TEST_ROOT/tail.out" 2>&1 || return 1
   grep -q 'stale-line' "$TEST_ROOT/tail.out"
   SIGMUND_BOOT_ID_PATH="$bootfile" "$SIGMUND_BIN" dump "$id" >"$TEST_ROOT/dump.out" 2>&1 || return 1
@@ -742,11 +749,15 @@ SH
 }
 
 write_public_index_fixture() {
-  local id="$1" state="${2:-running}" started="${3:-2026-06-15T18:42:11Z}"
+  local id="$1" state="${2:-running}" started="${3:-2026-06-15T18:42:11Z}" alias="${4:-}"
   mkdir -p "$SIGMUND_TEST_SYSTEM_STATE_DIR/public" || return 1
   chmod 755 "$SIGMUND_TEST_SYSTEM_STATE_DIR" "$SIGMUND_TEST_SYSTEM_STATE_DIR/public" || return 1
+  local alias_json=""
+  if [ -n "$alias" ]; then
+    alias_json="\"alias\":\"$alias\","
+  fi
   cat > "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" <<JSON
-{"id":"$id","root_managed":true,"requires_elevation":true,"state_hint":"$state","started_at":"$started","argv":["secret"],"cmdline_display":"secret command"}
+{"id":"$id","root_managed":true,"requires_elevation":true,${alias_json}"state_hint":"$state","started_at":"$started","argv":["secret"],"cmdline_display":"secret command"}
 JSON
   chmod 0644 "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" || return 1
 }
@@ -776,13 +787,13 @@ test_alias_profile_map_start_and_stop() {
   [ ! -d "$store/profiles" ] || return 1
   grep -q '"web-test": {"bin": "' "$store/aliases.json" || return 1
   grep -q '"args": \["/bin/sh", "-c", "while :; do sleep 1; done"\]' "$store/aliases.json" || return 1
-  "$SIGMUND_BIN" aliases | grep -Eq "^user[[:space:]]+-[[:space:]]+web-test$" || return 1
+  "$SIGMUND_BIN" aliases | grep -Eq "^web-test[[:space:]]+user[[:space:]]+/bin/sh -c 'while :; do sleep 1; done'[[:space:]]+-$" || return 1
   "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
   "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
 
   out2=$("$SIGMUND_BIN" start web-test 2>&1) || return 1
   id2=$(printf '%s\n' "$out2" | extract_id)
-  pgid2=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out2" | head -n1)
+  pgid2=$(record_pgid "$id2")
   [ -n "$id2" ] && [ -n "$pgid2" ] || return 1
   grep -q '"alias": "web-test"' "$store/$id2.json" || return 1
   ! grep -q '"profile_hash":' "$store/$id2.json" || return 1
@@ -791,7 +802,7 @@ test_alias_profile_map_start_and_stop() {
 }
 
 test_alias_multi_gate_and_all_stop() {
-  local out id out1 out2 rc pgid1 pgid2
+  local out id id1 id2 out1 out2 rc pgid1 pgid2
   out=$("$SIGMUND_BIN" sleep 60 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
@@ -800,7 +811,8 @@ test_alias_multi_gate_and_all_stop() {
   "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
 
   out1=$("$SIGMUND_BIN" start web-multi 2>&1) || return 1
-  pgid1=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out1" | head -n1)
+  id1=$(printf '%s\n' "$out1" | extract_id)
+  pgid1=$(record_pgid "$id1")
   [ -n "$pgid1" ] || return 1
   set +e
   "$SIGMUND_BIN" start web-multi >"$TEST_ROOT/multi-refuse.out" 2>"$TEST_ROOT/multi-refuse.err"
@@ -810,7 +822,8 @@ test_alias_multi_gate_and_all_stop() {
   grep -q -- '--multi' "$TEST_ROOT/multi-refuse.err" || return 1
 
   out2=$("$SIGMUND_BIN" start web-multi --multi 2>&1) || return 1
-  pgid2=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out2" | head -n1)
+  id2=$(printf '%s\n' "$out2" | extract_id)
+  pgid2=$(record_pgid "$id2")
   [ -n "$pgid2" ] || return 1
   set +e
   "$SIGMUND_BIN" stop web-multi >"$TEST_ROOT/alias-ambig.out" 2>"$TEST_ROOT/alias-ambig.err"
@@ -859,13 +872,14 @@ test_short_hex_alias_name_allowed() {
   [ -n "$id" ] || return 1
   "$SIGMUND_BIN" alias "$id" db >"$TEST_ROOT/alias-db.out" 2>"$TEST_ROOT/alias-db.err" || return 1
   grep -qx 'sigmund: alias db' "$TEST_ROOT/alias-db.out" || return 1
-  "$SIGMUND_BIN" aliases | grep -Eq "^user[[:space:]]+-[[:space:]]+db$"
+  "$SIGMUND_BIN" aliases | grep -Eq "^db[[:space:]]+user[[:space:]]+/bin/sh -c :[[:space:]]+-$"
 }
 
 test_system_alias_action_self_elevates_alias() {
   local hash rc
   hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   write_public_alias_fixture web-test "$hash" || return 1
+  write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z web-test || return 1
   make_fake_sudo || return 1
   set +e
   "$SIGMUND_BIN" stop web-test >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
@@ -875,7 +889,9 @@ test_system_alias_action_self_elevates_alias() {
   args=()
   while IFS= read -r line; do args+=("$line"); done < "$SIGMUND_FAKE_SUDO_ARGV"
   [ "${args[4]}" = "stop" ] || return 1
-  [ "${args[5]}" = "system:web-test@$hash" ] || return 1
+  [ "${args[5]}" = "abc12345" ] || return 1
+  [ "${args[6]}" = "web-test" ] || return 1
+  [ "${args[7]}" = "$hash" ] || return 1
 }
 
 test_system_alias_start_self_elevates_alias() {
@@ -891,7 +907,9 @@ test_system_alias_start_self_elevates_alias() {
   args=()
   while IFS= read -r line; do args+=("$line"); done < "$SIGMUND_FAKE_SUDO_ARGV"
   [ "${args[4]}" = "start" ] || return 1
-  [ "${args[5]}" = "system:web-test@$hash" ] || return 1
+  [ "${args[5]}" = "00000000" ] || return 1
+  [ "${args[6]}" = "web-test" ] || return 1
+  [ "${args[7]}" = "$hash" ] || return 1
 }
 
 test_grant_revoke_writes_hash_scoped_sudoers() {
@@ -926,19 +944,51 @@ test_grant_revoke_writes_hash_scoped_sudoers() {
   as_root "$safe" grant web-sys "$TEST_USER" start,stop >"$TEST_ROOT/grant.out" 2>"$TEST_ROOT/grant.err" || { cat "$TEST_ROOT/grant.out" "$TEST_ROOT/grant.err" >&2; return 1; }
   sudoers_file="$sudoers_dir/sigmund_web-sys_$TEST_USER"
   root_file_exists "$sudoers_file" || { echo "missing $sudoers_file" >&2; cat "$TEST_ROOT/grant.err" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated start system\\:web-sys@$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated stop system\\:web-sys@$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep '# actions-list: start,stop' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^--system --elevated (start|stop) [0-9a-f]{8} web-sys $hash$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
 
   as_root "$safe" revoke web-sys "$TEST_USER" start >"$TEST_ROOT/revoke.out" 2>"$TEST_ROOT/revoke.err" || { cat "$TEST_ROOT/revoke.out" "$TEST_ROOT/revoke.err" >&2; return 1; }
-  as_root sh -c '! grep -F -q -- "$1" "$2"' sh "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated start system\\:web-sys@$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated stop system\\:web-sys@$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep '# actions-list: stop' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^--system --elevated (stop) [0-9a-f]{8} web-sys $hash$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
 
   as_root "$safe" grant web-sys "$TEST_USER" >"$TEST_ROOT/grant-all.out" 2>"$TEST_ROOT/grant-all.err" || { cat "$TEST_ROOT/grant-all.out" "$TEST_ROOT/grant-all.err" >&2; return 1; }
   root_grep '# actions: ALL' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated start system\\:web-sys@$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated prune system\\:web-sys@$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep '# actions-list: start,stop,kill,tail,dump,prune' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^--system --elevated (start|stop|kill|tail|dump|prune) [0-9a-f]{8} web-sys $hash$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
   as_root "$safe" revoke web-sys "$TEST_USER" >"$TEST_ROOT/revoke-all.out" 2>"$TEST_ROOT/revoke-all.err" || { cat "$TEST_ROOT/revoke-all.out" "$TEST_ROOT/revoke-all.err" >&2; return 1; }
   root_path_absent "$sudoers_file"
+}
+
+test_elevated_capability_start_and_stop_validate_alias_hash() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
+  local safe out id hash start_out cap_id rc
+  safe="$TEST_ROOT/sigmund-cap"
+  cp "$SIGMUND_REAL_BIN" "$safe" || return 1
+  as_root chown 0:0 "$safe" || return 1
+  as_root chmod 755 "$safe" || return 1
+
+  out=$(as_root "$safe" /bin/sh -c 'while :; do sleep 1; done' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  as_root "$safe" alias "$id" web-cap >"$TEST_ROOT/cap-alias.out" 2>"$TEST_ROOT/cap-alias.err" || return 1
+  hash=$(sed -n 's/^sigmund: alias web-cap -> \([0-9a-f]\{64\}\)$/\1/p' "$TEST_ROOT/cap-alias.out")
+  [ -n "$hash" ] || return 1
+  as_root "$safe" stop "$id" >/dev/null || return 1
+  as_root "$safe" prune "$id" >/dev/null || return 1
+
+  start_out=$(as_root "$safe" --system --elevated start 00000000 web-cap "$hash" 2>&1) || return 1
+  cap_id=$(printf '%s\n' "$start_out" | extract_id)
+  [ -n "$cap_id" ] || return 1
+  root_grep '"alias": "web-cap"' "$SIGMUND_TEST_SYSTEM_STATE_DIR/runs/$cap_id.json" || return 1
+
+  set +e
+  as_root "$safe" --system --elevated stop "$cap_id" web-cap 0000000000000000000000000000000000000000000000000000000000000000 >/dev/null 2>"$TEST_ROOT/cap-bad.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 1
+  grep -q 'capability' "$TEST_ROOT/cap-bad.err" || return 1
+
+  as_root "$safe" --system --elevated stop "$cap_id" web-cap "$hash" >/dev/null || return 1
 }
 
 test_raw_start_does_not_steal_trailing_system() {
@@ -953,7 +1003,7 @@ test_raw_start_does_not_steal_trailing_system() {
 
 test_public_root_index_list_is_redacted() {
   write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z || return 1
-  "$SIGMUND_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
+  "$SIGMUND_BIN" list --iso >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
   grep -Eq '^abc12345[[:space:]]+unknown[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+-[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || return 1
   ! grep -q 'secret' "$TEST_ROOT/list.out"
 }
@@ -962,7 +1012,7 @@ test_user_local_wins_over_public_root_collision() {
   local out id pgid
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
-  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  pgid=$(record_pgid "$id")
   [ -n "$id" ] && [ -n "$pgid" ] || return 1
   write_public_index_fixture "$id" running 2026-06-15T18:42:11Z || return 1
   make_fake_sudo || return 1
@@ -976,7 +1026,7 @@ test_explicit_user_target() {
   local out id pgid
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
-  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  pgid=$(record_pgid "$id")
   [ -n "$id" ] && [ -n "$pgid" ] || return 1
   "$SIGMUND_BIN" stop "user:$id" >/dev/null || return 1
   pgid_terminated "$pgid"
@@ -1034,7 +1084,7 @@ test_tail_ctrl_c_detaches_from_tail_and_keeps_run() {
   local out id pgid tail_pid rc
   out=$("$SIGMUND_BIN" bash -c 'while :; do echo tail-still-running; sleep 1; done' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
-  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  pgid=$(record_pgid "$id")
   [ -n "$id" ] && [ -n "$pgid" ] || return 1
   setsid "$SIGMUND_BIN" tail "$id" >"$TEST_ROOT/tail.out" 2>"$TEST_ROOT/tail.err" &
   tail_pid=$!
@@ -1177,7 +1227,7 @@ test_sudo_context_can_stop_unique_user_local_run() {
   local out id pgid
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
-  pgid=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out" | head -n1)
+  pgid=$(record_pgid "$id")
   [ -n "$id" ] && [ -n "$pgid" ] || return 1
   as_sudo_from_user "$SIGMUND_REAL_BIN" stop "$id" >/dev/null || return 1
   pgid_terminated "$pgid"
@@ -1225,9 +1275,9 @@ run_test "deeply nested/corrupt JSON record is rejected, not crashed" test_deep_
 run_test "symlinked record is rejected" test_symlinked_record_rejected
 run_test "symlinked log is rejected" test_symlinked_log_rejected
 run_test "invalid pgid=0 record is not listed as running" test_invalid_pgid_record
-run_test "orphan logs are removed by prune" test_orphan_log_cleanup
+run_test "unreferenced logs are removed by prune" test_orphan_log_cleanup
 run_test "ID input sanitization rejects invalid ids" test_id_sanitization
-run_test "killcmd prints group kill command" test_killcmd_output
+run_test "stop/kill --print emits group signal command" test_print_signal_output
 run_test "stop supports multiple IDs in one command" test_stop_multiple_ids
 run_test "argument edge cases" test_argument_edges
 run_test "special characters are preserved in argv JSON" test_special_chars_args
@@ -1257,6 +1307,7 @@ run_test "short hex-looking alias names are allowed" test_short_hex_alias_name_a
 run_test "system alias action self-elevates alias token" test_system_alias_action_self_elevates_alias
 run_test "system alias start self-elevates alias token" test_system_alias_start_self_elevates_alias
 run_test "grant/revoke writes hash-scoped sudoers entries" test_grant_revoke_writes_hash_scoped_sudoers
+run_test "elevated capability start/stop validates alias and hash" test_elevated_capability_start_and_stop_validate_alias_hash
 run_test "action self-elevation uses argv-preserving sudo fork+wait" test_action_self_elevation_uses_argv_fork_wait
 run_test "elevated action returns child/root-sigmund status" test_elevated_action_returns_child_status
 run_test "sudo exec failure returns clean error" test_sudo_exec_failure_returns_clean_error

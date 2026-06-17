@@ -22,7 +22,10 @@ material, not normal action targets.
   `prune`; ambiguous alias selections exit 6 and print the matching run IDs.
 - Added `--all` to resolve alias ambiguity for `stop`, `kill`, and `prune`.
 - Added `sigmund aliases` for visible alias lookup. User aliases show `-` in the
-  hash column; system aliases show their protected profile hash.
+  hash column; system aliases show `<root-managed>` with a truncated protected
+  profile hash by default and the full hash with `-v`.
+- Added `stop --print` and `kill --print` as the dry-run replacement for the
+  old standalone signal-command helper.
 - Added root-managed `grant` and `revoke` support for hash-scoped sudoers
   entries covering `start`, `stop`, `kill`, `tail`, `dump`, and `prune`.
 - Added macOS arm64 and x86_64 package builds to the multi-arch release
@@ -40,16 +43,22 @@ material, not normal action targets.
   `ffffffff` reserved for internal capability selectors.
 - Alias-started runs record their alias label in private run records and, for
   root-managed runs, in the redacted public index.
-- Root-managed alias self-elevation now carries an internal
-  `system:<alias>@<hash>` capability token so sudoers remains hash-pinned while
-  root Sigmund resolves concrete runs by alias label and command intent.
+- Root-managed alias self-elevation now carries the internal capability argv
+  shape `<verb> <runid_sel> <alias> <hash>` so sudoers remains hash-pinned
+  while root Sigmund resolves concrete runs by alias label and command intent.
+- Start now writes only the bare 8-hex run ID to stdout and writes the human
+  banner to stderr; `--quiet` suppresses that human banner/status output.
+- `list` now supports alias filtering and relative start ages by default; use
+  `--iso` or `-l` for absolute timestamps.
+- Successful `stop`, `kill`, and `prune` operations now confirm what happened
+  on stderr while keeping stdout scriptable.
 - Release/dev artifact fallback versions now use the `0.3.0-<sha>` prefix.
 
 ### Fixed
 
-- Fixed sudoers profile grants so generated command entries contain both the
-  alias label and immutable hash (`system:<alias>@<hash>`), and root Sigmund
-  verifies the pair before acting.
+- Fixed sudoers profile grants so generated command entries contain the
+  selected run ID slot, alias label, and immutable hash, and root Sigmund
+  verifies the pair plus selected run records before acting.
 - Fixed the profile fingerprint regression test to extract the `bin` value from
   the exact hash entry under test.
 - Fixed the SHA-256 test helper to fail with a clear diagnostic when neither
@@ -287,7 +296,7 @@ This changelog records the changes made during the Linux/macOS portability and p
 - Improved `list`:
   - warns on unreadable or corrupt `.json` records;
   - uses boot markers only when available.
-- Improved `prune` and `killcmd`:
+- Improved `prune` and dry-run signal printing:
   - use safer boot handling;
   - refuse unknown or unvalidated signaling targets.
 
