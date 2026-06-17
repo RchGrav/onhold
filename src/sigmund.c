@@ -79,7 +79,6 @@ struct record {
     char id[16];
     char run_id[16];
     char alias[ALIAS_MAX_LEN + 1];
-    char profile_hash[PROFILE_HASH_STR_LEN];
     char console_sock[SIGMUND_PATH_MAX];
     pid_t pid;
     pid_t pgid;
@@ -113,7 +112,6 @@ struct record {
     bool has_launch_error;
     bool has_invocation;
     bool has_alias;
-    bool has_profile_hash;
     bool has_console;
 };
 
@@ -153,7 +151,6 @@ struct resolved_target {
     char cap_hash[PROFILE_HASH_STR_LEN];
     struct store_paths store;
     bool needs_elevation;
-    bool resolved_profile;
     bool has_capability;
 };
 
@@ -1348,11 +1345,6 @@ static int write_record_atomic(const char *dir, const struct record *r, int argc
     if (r->has_launch_error) {
         fprintf(f, "  \"launch_error\": \"");
         json_escape(f, r->launch_error);
-        fprintf(f, "\",\n");
-    }
-    if (r->has_profile_hash) {
-        fprintf(f, "  \"profile_hash\": \"");
-        json_escape(f, r->profile_hash);
         fprintf(f, "\",\n");
     }
     if (r->has_console) {
@@ -3207,10 +3199,6 @@ static int load_record(const char *path, struct record *r) {
     if (json_get_str(j, "launch_error", r->launch_error, sizeof(r->launch_error)) == 0) {
         r->has_launch_error = true;
     }
-    if (json_get_str(j, "profile_hash", r->profile_hash, sizeof(r->profile_hash)) == 0 &&
-        valid_profile_hash(r->profile_hash)) {
-        r->has_profile_hash = true;
-    }
     if (json_get_str(j, "console_sock", r->console_sock, sizeof(r->console_sock)) == 0 &&
         r->console_sock[0] == '/') {
         r->has_console = true;
@@ -3431,7 +3419,6 @@ static int perform_start(const struct invocation *inv,
                          bool console_mode,
                          int argc,
                          char **argv,
-                         const char *profile_hash,
                          const char *exec_path,
                          const char *run_alias) {
     if (argc <= 0 || !argv || !argv[0]) {
@@ -3628,12 +3615,6 @@ static int perform_start(const struct invocation *inv,
                 die_errno("sigmund: invoking user too long");
             }
             r.invoked_via_sudo = false;
-        }
-    }
-    if (profile_hash && valid_profile_hash(profile_hash)) {
-        r.has_profile_hash = true;
-        if (checked_snprintf(r.profile_hash, sizeof(r.profile_hash), "%s", profile_hash) != 0) {
-            die_errno("sigmund: profile hash too long");
         }
     }
     if (run_alias && valid_alias(run_alias)) {
@@ -4428,102 +4409,7 @@ static int resolve_system_public_id(const struct store_paths *store, const char 
 }
 
 static bool valid_target_atom(const char *id) {
-    return valid_id_prefix(id) || valid_profile_hash(id) || valid_alias(id);
-}
-
-static int record_path_profile_matches(const char *path, const char *hash, char *id_out, size_t id_n) {
-    struct record r;
-    if (load_record(path, &r) != 0 || !valid_record(&r)) {
-        return 0;
-    }
-    if (r.has_profile_hash) {
-        if (strcmp(r.profile_hash, hash) != 0) {
-            return 0;
-        }
-        return checked_snprintf(id_out, id_n, "%s", r.id) == 0 ? 1 : -1;
-    }
-
-    char *j = NULL;
-    if (read_owned_file_no_symlink(path, &j) != 0) {
-        return 0;
-    }
-    char **argv = NULL;
-    int argc = 0;
-    char binary_path[SIGMUND_PATH_MAX];
-    char computed[PROFILE_HASH_STR_LEN];
-    int rc = 0;
-    if (json_get_argv_alloc(j, &argv, &argc) == 0 &&
-        resolve_binary_path(argv[0], binary_path, sizeof(binary_path)) == 0) {
-        profile_hash_for_argv(binary_path, argc, argv, computed);
-        if (strcmp(computed, hash) == 0) {
-            rc = checked_snprintf(id_out, id_n, "%s", r.id) == 0 ? 1 : -1;
-        }
-    }
-    free_argv_alloc(argv, argc);
-    free(j);
-    return rc;
-}
-
-static int resolve_profile_run_id(const struct store_paths *store, const char *hash, char *resolved, size_t n) {
-    if (!valid_profile_hash(hash)) {
-        errno = EINVAL;
-        return -1;
-    }
-    DIR *d = opendir(store->record_dir);
-    if (!d) {
-        return -1;
-    }
-    int matches = 0;
-    const struct dirent *e;
-    while ((e = readdir(d))) {
-        if (!has_suffix(e->d_name, ".json")) {
-            continue;
-        }
-        char path[SIGMUND_PATH_MAX];
-        if (checked_snprintf(path, sizeof(path), "%s/%s", store->record_dir, e->d_name) != 0) {
-            closedir(d);
-            return -1;
-        }
-        char id[16];
-        int mr = record_path_profile_matches(path, hash, id, sizeof(id));
-        if (mr < 0) {
-            closedir(d);
-            return -1;
-        }
-        if (mr == 1) {
-            matches++;
-            if (checked_snprintf(resolved, n, "%s", id) != 0) {
-                closedir(d);
-                return -1;
-            }
-        }
-    }
-    closedir(d);
-    if (matches == 1) {
-        return 0;
-    }
-    errno = matches > 1 ? EEXIST : ENOENT;
-    return -1;
-}
-
-static int resolve_private_profile_token(const struct store_paths *store,
-                                         const char *token,
-                                         char *resolved,
-                                         size_t n,
-                                         bool *matched_profile) {
-    *matched_profile = false;
-    char hash[PROFILE_HASH_STR_LEN];
-    if (valid_profile_hash(token)) {
-        snprintf(hash, sizeof(hash), "%s", token);
-    } else if (valid_alias(token)) {
-        if (alias_lookup_hash(store, token, hash) != 0) {
-            return 0;
-        }
-    } else {
-        return 0;
-    }
-    *matched_profile = true;
-    return resolve_profile_run_id(store, hash, resolved, n) == 0 ? 1 : -1;
+    return valid_id_prefix(id) || valid_alias(id);
 }
 
 static int resolve_public_profile_token(const struct store_paths *store,
@@ -4543,13 +4429,11 @@ static void fill_target(struct resolved_target *out,
                         enum resolve_scope scope,
                         const struct store_paths *store,
                         const char *id,
-                        bool needs_elevation,
-                        bool resolved_profile) {
+                        bool needs_elevation) {
     memset(out, 0, sizeof(*out));
     out->scope = scope;
     out->store = *store;
     out->needs_elevation = needs_elevation;
-    out->resolved_profile = resolved_profile;
     checked_snprintf(out->id, sizeof(out->id), "%s", id);
 }
 
@@ -4756,14 +4640,13 @@ static int append_resolved_target(struct resolved_target **targets,
                                   enum resolve_scope scope,
                                   const struct store_paths *store,
                                   const char *id,
-                                  bool needs_elevation,
-                                  bool resolved_profile) {
+                                  bool needs_elevation) {
     struct resolved_target *next = realloc(*targets, (size_t)(*count + 1) * sizeof(**targets));
     if (!next) {
         return -1;
     }
     *targets = next;
-    fill_target(&(*targets)[*count], scope, store, id, needs_elevation, resolved_profile);
+    fill_target(&(*targets)[*count], scope, store, id, needs_elevation);
     (*count)++;
     return 0;
 }
@@ -4774,7 +4657,7 @@ static int append_capability_target(struct resolved_target **targets,
                                     const char *runid_sel,
                                     const char *alias,
                                     const char *hash) {
-    if (append_resolved_target(targets, count, RESOLVE_SYSTEM_MANAGED, store, runid_sel, true, false) != 0) {
+    if (append_resolved_target(targets, count, RESOLVE_SYSTEM_MANAGED, store, runid_sel, true) != 0) {
         return -1;
     }
     if (set_target_capability(&(*targets)[*count - 1], alias, hash) != 0) {
@@ -4804,7 +4687,7 @@ static int append_private_alias_targets(struct resolved_target **targets,
         return -2;
     }
     for (size_t i = 0; i < matches.count; i++) {
-        if (append_resolved_target(targets, count, scope, store, matches.items[i].id, false, false) != 0) {
+        if (append_resolved_target(targets, count, scope, store, matches.items[i].id, false) != 0) {
             free_alias_match_list(&matches);
             return -1;
         }
@@ -4925,38 +4808,16 @@ static int resolve_target(const struct invocation *inv,
             }
             char resolved[16];
             if (resolve_user_store_id(&user_store, id, resolved, sizeof(resolved)) == 0) {
-                fill_target(out, RESOLVE_USER_LOCAL, &user_store, resolved, false, false);
+                fill_target(out, RESOLVE_USER_LOCAL, &user_store, resolved, false);
                 return 0;
-            }
-            bool matched_profile = false;
-            int pr = resolve_private_profile_token(&user_store, id, resolved, sizeof(resolved), &matched_profile);
-            if (pr == 1) {
-                fill_target(out, RESOLVE_USER_LOCAL, &user_store, resolved, false, true);
-                return 0;
-            }
-            if (pr < 0 && matched_profile) {
-                fprintf(stderr, "sigmund: error: no unique user-local run matches '%s'\n", token);
-                out->scope = RESOLVE_ERROR;
-                return -1;
             }
             return 0;
         }
         if (token_scope == ID_TOKEN_SYSTEM) {
             char resolved[16];
             if (resolve_system_private_id(system_store, id, resolved, sizeof(resolved)) == 0) {
-                fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false, false);
+                fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false);
                 return 0;
-            }
-            bool matched_profile = false;
-            int pr = resolve_private_profile_token(system_store, id, resolved, sizeof(resolved), &matched_profile);
-            if (pr == 1) {
-                fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false, true);
-                return 0;
-            }
-            if (pr < 0 && matched_profile) {
-                fprintf(stderr, "sigmund: error: no unique root-managed run matches '%s'\n", token);
-                out->scope = RESOLVE_ERROR;
-                return -1;
             }
             return 0;
         }
@@ -4966,38 +4827,16 @@ static int resolve_target(const struct invocation *inv,
         bool root_match = resolve_system_private_id(system_store, id, root_resolved, sizeof(root_resolved)) == 0;
         bool user_match = false;
         struct store_paths user_store;
-        bool root_profile = false;
-        bool user_profile = false;
-        int root_profile_match = 0;
-        int user_profile_match = 0;
-        if (!root_match) {
-            root_profile_match = resolve_private_profile_token(system_store, id, root_resolved, sizeof(root_resolved), &root_profile);
-            if (root_profile_match < 0 && root_profile) {
-                fprintf(stderr, "sigmund: error: no unique root-managed run matches '%s'\n", token);
-                out->scope = RESOLVE_ERROR;
-                return -1;
-            }
-            root_match = root_profile_match == 1;
-        }
         if (inv->have_sudo_user && init_invoking_user_store(inv, &user_store) == 0) {
             user_match = resolve_user_store_id(&user_store, id, user_resolved, sizeof(user_resolved)) == 0;
-            if (!user_match) {
-                user_profile_match = resolve_private_profile_token(&user_store, id, user_resolved, sizeof(user_resolved), &user_profile);
-                if (user_profile_match < 0 && user_profile) {
-                    fprintf(stderr, "sigmund: error: no unique user-local run matches '%s'\n", token);
-                    out->scope = RESOLVE_ERROR;
-                    return -1;
-                }
-                user_match = user_profile_match == 1;
-            }
         }
         if (root_match) {
             (void)user_match;
-            fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, root_resolved, false, root_profile);
+            fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, root_resolved, false);
             return 0;
         }
         if (user_match) {
-            fill_target(out, RESOLVE_USER_LOCAL, &user_store, user_resolved, false, user_profile);
+            fill_target(out, RESOLVE_USER_LOCAL, &user_store, user_resolved, false);
             return 0;
         }
         return 0;
@@ -5006,32 +4845,15 @@ static int resolve_target(const struct invocation *inv,
     if (token_scope == ID_TOKEN_USER) {
         char resolved[16];
         if (resolve_user_store_id(current_user_store, id, resolved, sizeof(resolved)) == 0) {
-            fill_target(out, RESOLVE_USER_LOCAL, current_user_store, resolved, false, false);
+            fill_target(out, RESOLVE_USER_LOCAL, current_user_store, resolved, false);
             return 0;
-        }
-        bool matched_profile = false;
-        int pr = resolve_private_profile_token(current_user_store, id, resolved, sizeof(resolved), &matched_profile);
-        if (pr == 1) {
-            fill_target(out, RESOLVE_USER_LOCAL, current_user_store, resolved, false, true);
-            return 0;
-        }
-        if (pr < 0 && matched_profile) {
-            fprintf(stderr, "sigmund: error: no unique user-local run matches '%s'\n", token);
-            out->scope = RESOLVE_ERROR;
-            return -1;
         }
         return 0;
     }
     if (token_scope == ID_TOKEN_SYSTEM) {
         char resolved[16];
         if (resolve_system_public_id(system_store, id, resolved, sizeof(resolved)) == 0) {
-            fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, true, false);
-            return 0;
-        }
-        char hash[PROFILE_HASH_STR_LEN];
-        int pr = resolve_public_profile_token(system_store, id, hash);
-        if (pr == 1) {
-            fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, hash, true, true);
+            fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, true);
             return 0;
         }
         return 0;
@@ -5039,29 +4861,12 @@ static int resolve_target(const struct invocation *inv,
 
     char user_resolved[16];
     if (resolve_user_store_id(current_user_store, id, user_resolved, sizeof(user_resolved)) == 0) {
-        fill_target(out, RESOLVE_USER_LOCAL, current_user_store, user_resolved, false, false);
+        fill_target(out, RESOLVE_USER_LOCAL, current_user_store, user_resolved, false);
         return 0;
-    }
-    bool user_profile = false;
-    int user_pr = resolve_private_profile_token(current_user_store, id, user_resolved, sizeof(user_resolved), &user_profile);
-    if (user_pr == 1) {
-        fill_target(out, RESOLVE_USER_LOCAL, current_user_store, user_resolved, false, true);
-        return 0;
-    }
-    if (user_pr < 0 && user_profile) {
-        fprintf(stderr, "sigmund: error: no unique user-local run matches '%s'\n", token);
-        out->scope = RESOLVE_ERROR;
-        return -1;
     }
     char system_resolved[16];
     if (resolve_system_public_id(system_store, id, system_resolved, sizeof(system_resolved)) == 0) {
-        fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, system_resolved, true, false);
-        return 0;
-    }
-    char hash[PROFILE_HASH_STR_LEN];
-    int system_pr = resolve_public_profile_token(system_store, id, hash);
-    if (system_pr == 1) {
-        fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, hash, true, true);
+        fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, system_resolved, true);
         return 0;
     }
     return 0;
@@ -5110,28 +4915,28 @@ static int resolve_action_token(const struct invocation *inv,
                     return 5;
                 }
                 if (resolve_user_store_id(&user_store, atom, resolved, sizeof(resolved)) == 0) {
-                    return append_resolved_target(targets_out, count_out, RESOLVE_USER_LOCAL, &user_store, resolved, false, false) == 0 ? 0 : 3;
+                    return append_resolved_target(targets_out, count_out, RESOLVE_USER_LOCAL, &user_store, resolved, false) == 0 ? 0 : 3;
                 }
             } else if (scope == ID_TOKEN_SYSTEM) {
                 if (resolve_system_private_id(system_store, atom, resolved, sizeof(resolved)) == 0) {
-                    return append_resolved_target(targets_out, count_out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false, false) == 0 ? 0 : 3;
+                    return append_resolved_target(targets_out, count_out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false) == 0 ? 0 : 3;
                 }
             } else {
                 if (resolve_system_private_id(system_store, atom, resolved, sizeof(resolved)) == 0) {
-                    return append_resolved_target(targets_out, count_out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false, false) == 0 ? 0 : 3;
+                    return append_resolved_target(targets_out, count_out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false) == 0 ? 0 : 3;
                 }
                 if (inv->have_sudo_user) {
                     struct store_paths user_store;
                     if (init_invoking_user_store(inv, &user_store) == 0 &&
                         resolve_user_store_id(&user_store, atom, resolved, sizeof(resolved)) == 0) {
-                        return append_resolved_target(targets_out, count_out, RESOLVE_USER_LOCAL, &user_store, resolved, false, false) == 0 ? 0 : 3;
+                        return append_resolved_target(targets_out, count_out, RESOLVE_USER_LOCAL, &user_store, resolved, false) == 0 ? 0 : 3;
                     }
                 }
             }
         } else {
             if (scope == ID_TOKEN_USER || scope == ID_TOKEN_PLAIN) {
                 if (resolve_user_store_id(current_user_store, atom, resolved, sizeof(resolved)) == 0) {
-                    return append_resolved_target(targets_out, count_out, RESOLVE_USER_LOCAL, current_user_store, resolved, false, false) == 0 ? 0 : 3;
+                    return append_resolved_target(targets_out, count_out, RESOLVE_USER_LOCAL, current_user_store, resolved, false) == 0 ? 0 : 3;
                 }
                 if (scope == ID_TOKEN_USER) {
                     return report_not_found(token);
@@ -5139,7 +4944,7 @@ static int resolve_action_token(const struct invocation *inv,
             }
             if (scope == ID_TOKEN_SYSTEM || scope == ID_TOKEN_PLAIN) {
                 if (resolve_system_public_id(system_store, atom, resolved, sizeof(resolved)) == 0) {
-                    return append_resolved_target(targets_out, count_out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, true, false) == 0 ? 0 : 3;
+                    return append_resolved_target(targets_out, count_out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, true) == 0 ? 0 : 3;
                 }
             }
         }
@@ -5469,7 +5274,7 @@ static int elevate_with_sudo_targets(const char *program,
         if (targets[i].scope == RESOLVE_USER_LOCAL) {
             prefix = "user:";
         } else if (targets[i].scope == RESOLVE_SYSTEM_MANAGED &&
-                   (orig_scope == ID_TOKEN_SYSTEM || targets[i].needs_elevation || targets[i].resolved_profile)) {
+                   (orig_scope == ID_TOKEN_SYSTEM || targets[i].needs_elevation)) {
             prefix = "system:";
         }
         size_t need = strlen(prefix) + strlen(targets[i].id) + 1;
@@ -6149,7 +5954,7 @@ static int perform_profile_start(const struct invocation *inv,
         fprintf(stderr, "sigmund: error: profile %s is unavailable\n", hash);
         return 5;
     }
-    int rc = perform_start(inv, store, tail, console_mode, p.argc, p.argv, hash, p.binary_path, alias);
+    int rc = perform_start(inv, store, tail, console_mode, p.argc, p.argv, p.binary_path, alias);
     free_profile(&p);
     return rc;
 }
@@ -6224,7 +6029,6 @@ static int cmd_start_action(const struct invocation *inv,
                                                  console_mode,
                                                  target.recipe.argc,
                                                  target.recipe.argv,
-                                                 NULL,
                                                  target.recipe.binary_path,
                                                  target.has_alias ? target.alias : NULL);
                     } else {
@@ -7055,8 +6859,8 @@ static int help_profiles(void) {
            "  sigmund alias <id> <name>       pin the command behind <id> as <name>\n"
            "  sigmund aliases [-v]            list visible aliases\n"
            "  sigmund start <name>            start a fresh run under that name\n\n"
-           "The name is also a history label. Runs started as <name> stay grouped under\n"
-           "<name> for list, tail, console, dump, stop, kill, and prune. If the command behind\n"
+           "The name is also recorded on runs started as <name>, so later\n"
+           "list, tail, console, dump, stop, kill, and prune commands can use <name>. If the command behind\n"
            "<name> is updated later, future starts use the updated command; prior runs\n"
            "remain under the same recorded alias label.\n");
     return 0;
@@ -7225,9 +7029,9 @@ static int perform_explicit_start(const struct invocation *inv,
         shell_argv[1] = "-c";
         shell_argv[2] = argv[0];
         shell_argv[3] = NULL;
-        return perform_start(inv, store, tail, console_mode, 3, shell_argv, NULL, NULL, NULL);
+        return perform_start(inv, store, tail, console_mode, 3, shell_argv, NULL, NULL);
     }
-    return perform_start(inv, store, tail, console_mode, argc, argv, NULL, NULL, NULL);
+    return perform_start(inv, store, tail, console_mode, argc, argv, NULL, NULL);
 }
 
 static int cmd_elevated_capability_action(const struct invocation *inv,
@@ -7674,7 +7478,7 @@ int main(int argc, char **argv) {
                 die_errno("sigmund: failed to init user storage");
             }
         }
-        return perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL, NULL);
+        return perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL);
     }
 
     if (!strcmp(command, "start")) {

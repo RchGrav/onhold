@@ -1059,6 +1059,7 @@ test_elevated_capability_start_and_stop_validate_alias_hash() {
   cap_id=$(printf '%s\n' "$start_out" | extract_id)
   [ -n "$cap_id" ] || return 1
   root_grep '"alias": "web-cap"' "$SIGMUND_TEST_SYSTEM_STATE_DIR/runs/$cap_id.json" || return 1
+  ! root_grep '"profile_hash":' "$SIGMUND_TEST_SYSTEM_STATE_DIR/runs/$cap_id.json" || return 1
 
   set +e
   as_root "$safe" --system --elevated stop "$cap_id" web-cap 0000000000000000000000000000000000000000000000000000000000000000 >/dev/null 2>"$TEST_ROOT/cap-bad.err"

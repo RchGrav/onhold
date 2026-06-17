@@ -584,11 +584,11 @@ state
 exit_code
 term_signal
 launch_error
-profile_hash
 alias
+console_sock
 ```
 
-`alias` is present when a run was started through an alias. `profile_hash` is present for protected root-managed profile starts; user-local alias starts record the alias label and do not need a profile hash.
+`alias` is present when a run was started through an alias. `console_sock` is present only for console-enabled runs. Run records never store protected profile hashes; hashes live in root-private `profiles.json`, public root-managed `aliases.json`, and sudo capability argv only.
 
 Best-effort process identity fields:
 
