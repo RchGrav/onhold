@@ -91,6 +91,8 @@ as_user() {
     SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE \
     SIGMUND_FAKE_SUDO_ARGV \
     SIGMUND_FAKE_SUDO_RC \
+    SIGMUND_TEST_SUDOERS_DIR \
+    SIGMUND_TEST_VISUDO_PROG \
     SIGMUND_TEST_SUDO_PROG; do
     if [ "${!name+x}" = x ]; then
       env_args+=("$name=${!name}")
@@ -118,6 +120,8 @@ as_root() {
     SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE \
     SIGMUND_FAKE_SUDO_ARGV \
     SIGMUND_FAKE_SUDO_RC \
+    SIGMUND_TEST_SUDOERS_DIR \
+    SIGMUND_TEST_VISUDO_PROG \
     SIGMUND_TEST_SUDO_PROG; do
     if [ "${!name+x}" = x ]; then
       env_args+=("$name=${!name}")
@@ -149,6 +153,8 @@ as_sudo_from_user() {
     SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE \
     SIGMUND_FAKE_SUDO_ARGV \
     SIGMUND_FAKE_SUDO_RC \
+    SIGMUND_TEST_SUDOERS_DIR \
+    SIGMUND_TEST_VISUDO_PROG \
     SIGMUND_TEST_SUDO_PROG; do
     if [ "${!name+x}" = x ]; then
       env_args+=("$name=${!name}")
@@ -177,6 +183,8 @@ for name in \
   SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE \
   SIGMUND_FAKE_SUDO_ARGV \
   SIGMUND_FAKE_SUDO_RC \
+  SIGMUND_TEST_SUDOERS_DIR \
+  SIGMUND_TEST_VISUDO_PROG \
   SIGMUND_TEST_SUDO_PROG; do
   if [ "${!name+x}" = x ]; then
     env_args+=("$name=${!name}")
@@ -268,7 +276,7 @@ root_file_mode() {
 
 root_grep() {
   local pattern="$1" path="$2"
-  as_root grep -q "$pattern" "$path"
+  as_root grep -F -q -- "$pattern" "$path"
 }
 
 run_test() {
@@ -718,6 +726,150 @@ JSON
   chmod 0644 "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" || return 1
 }
 
+write_public_alias_fixture() {
+  local name="$1" hash="$2"
+  mkdir -p "$SIGMUND_TEST_SYSTEM_STATE_DIR/public" || return 1
+  chmod 755 "$SIGMUND_TEST_SYSTEM_STATE_DIR" "$SIGMUND_TEST_SYSTEM_STATE_DIR/public" || return 1
+  cat > "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/aliases.json" <<JSON
+{
+  "$name": "$hash"
+}
+JSON
+  chmod 0644 "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/aliases.json" || return 1
+}
+
+test_alias_profile_map_start_and_stop() {
+  local out id hash out2 id2 pgid2 store
+  store="$HOME/.local/state/sigmund"
+  out=$("$SIGMUND_BIN" /bin/sh -c 'while :; do sleep 1; done' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  "$SIGMUND_BIN" alias "$id" web-test >"$TEST_ROOT/alias.out" 2>"$TEST_ROOT/alias.err" || return 1
+  hash=$(sed -n 's/^sigmund: alias web-test -> \([0-9a-f]\{64\}\)$/\1/p' "$TEST_ROOT/alias.out")
+  [ -n "$hash" ] || return 1
+  [ -f "$store/profiles.json" ] || return 1
+  [ ! -d "$store/profiles" ] || return 1
+  grep -q "\"$hash\"" "$store/profiles.json" || return 1
+  grep -q '"bin": "' "$store/profiles.json" || return 1
+  grep -q '"args": \["/bin/sh", "-c", "while :; do sleep 1; done"\]' "$store/profiles.json" || return 1
+  "$SIGMUND_BIN" aliases | grep -Eq "^user[[:space:]]+$hash[[:space:]]+web-test$" || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
+  "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
+
+  out2=$("$SIGMUND_BIN" start web-test 2>&1) || return 1
+  id2=$(printf '%s\n' "$out2" | extract_id)
+  pgid2=$(sed -n 's/.*pgid=\([0-9][0-9]*\).*/\1/p' <<<"$out2" | head -n1)
+  [ -n "$id2" ] && [ -n "$pgid2" ] || return 1
+  grep -q "\"profile_hash\": \"$hash\"" "$store/$id2.json" || return 1
+  "$SIGMUND_BIN" stop web-test >/dev/null || return 1
+  pgid_terminated "$pgid2"
+}
+
+test_invalid_alias_names_rejected() {
+  local out id rc
+  out=$("$SIGMUND_BIN" true 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  set +e
+  "$SIGMUND_BIN" alias "$id" bad.name >"$TEST_ROOT/alias-bad.out" 2>"$TEST_ROOT/alias-bad.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || return 1
+  grep -q 'invalid alias' "$TEST_ROOT/alias-bad.err"
+}
+
+test_short_hex_alias_name_allowed() {
+  local out id hash
+  out=$("$SIGMUND_BIN" /bin/sh -c ':' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  "$SIGMUND_BIN" alias "$id" db >"$TEST_ROOT/alias-db.out" 2>"$TEST_ROOT/alias-db.err" || return 1
+  hash=$(sed -n 's/^sigmund: alias db -> \([0-9a-f]\{64\}\)$/\1/p' "$TEST_ROOT/alias-db.out")
+  [ -n "$hash" ] || return 1
+  "$SIGMUND_BIN" aliases | grep -Eq "^user[[:space:]]+$hash[[:space:]]+db$"
+}
+
+test_system_alias_action_elevates_hash_not_alias() {
+  local hash rc
+  hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  write_public_alias_fixture web-test "$hash" || return 1
+  make_fake_sudo || return 1
+  set +e
+  "$SIGMUND_BIN" stop web-test >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  args=()
+  while IFS= read -r line; do args+=("$line"); done < "$SIGMUND_FAKE_SUDO_ARGV"
+  [ "${args[4]}" = "stop" ] || return 1
+  [ "${args[5]}" = "system:$hash" ] || return 1
+  ! grep -qx 'web-test' "$SIGMUND_FAKE_SUDO_ARGV"
+}
+
+test_system_alias_start_elevates_hash_not_alias() {
+  local hash rc
+  hash=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd
+  write_public_alias_fixture web-test "$hash" || return 1
+  make_fake_sudo || return 1
+  set +e
+  "$SIGMUND_BIN" --system start web-test >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  args=()
+  while IFS= read -r line; do args+=("$line"); done < "$SIGMUND_FAKE_SUDO_ARGV"
+  [ "${args[4]}" = "start" ] || return 1
+  [ "${args[5]}" = "system:$hash" ] || return 1
+  ! grep -qx 'web-test' "$SIGMUND_FAKE_SUDO_ARGV"
+}
+
+test_grant_revoke_writes_hash_scoped_sudoers() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
+  local safe safe_real out id hash sudoers_dir sudoers_file rc visudo_ok
+  safe="$TEST_ROOT/sigmund-safe"
+  cp "$SIGMUND_REAL_BIN" "$safe" || return 1
+  as_root chown 0:0 "$safe" || return 1
+  as_root chmod 755 "$safe" || return 1
+  safe_real="$(cd "$(dirname "$safe")" && pwd -P)/$(basename "$safe")" || return 1
+  sudoers_dir="$TEST_ROOT/sudoers.d"
+  mkdir -p "$sudoers_dir" || return 1
+  chmod 755 "$sudoers_dir" || return 1
+  export SIGMUND_TEST_SUDOERS_DIR="$sudoers_dir"
+  visudo_ok="$TEST_ROOT/visudo-ok"
+  printf '#!/usr/bin/env sh\nexit 0\n' >"$visudo_ok" || return 1
+  chmod 755 "$visudo_ok" || return 1
+  export SIGMUND_TEST_VISUDO_PROG="$visudo_ok"
+
+  out=$(as_root "$safe" /bin/sh -c ':' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  as_root "$safe" alias "$id" web-sys >"$TEST_ROOT/root-alias.out" 2>"$TEST_ROOT/root-alias.err" || return 1
+  hash=$(sed -n 's/^sigmund: alias web-sys -> \([0-9a-f]\{64\}\)$/\1/p' "$TEST_ROOT/root-alias.out")
+  [ -n "$hash" ] || return 1
+  set +e
+  as_root "$safe" grant "$hash" "$TEST_USER" start >"$TEST_ROOT/grant-hash.out" 2>"$TEST_ROOT/grant-hash.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { cat "$TEST_ROOT/grant-hash.out" "$TEST_ROOT/grant-hash.err" >&2; return 1; }
+  grep -q 'existing system alias' "$TEST_ROOT/grant-hash.err" || { cat "$TEST_ROOT/grant-hash.err" >&2; return 1; }
+  as_root "$safe" grant web-sys "$TEST_USER" start,stop >"$TEST_ROOT/grant.out" 2>"$TEST_ROOT/grant.err" || { cat "$TEST_ROOT/grant.out" "$TEST_ROOT/grant.err" >&2; return 1; }
+  sudoers_file="$sudoers_dir/sigmund_web-sys_$TEST_USER"
+  root_file_exists "$sudoers_file" || { echo "missing $sudoers_file" >&2; cat "$TEST_ROOT/grant.err" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated start system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated stop system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+
+  as_root "$safe" revoke web-sys "$TEST_USER" start >"$TEST_ROOT/revoke.out" 2>"$TEST_ROOT/revoke.err" || { cat "$TEST_ROOT/revoke.out" "$TEST_ROOT/revoke.err" >&2; return 1; }
+  as_root sh -c '! grep -F -q -- "$1" "$2"' sh "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated start system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated stop system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+
+  as_root "$safe" grant web-sys "$TEST_USER" >"$TEST_ROOT/grant-all.out" 2>"$TEST_ROOT/grant-all.err" || { cat "$TEST_ROOT/grant-all.out" "$TEST_ROOT/grant-all.err" >&2; return 1; }
+  root_grep '# actions: ALL' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated start system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real --system --elevated prune system\\:$hash" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  as_root "$safe" revoke web-sys "$TEST_USER" >"$TEST_ROOT/revoke-all.out" 2>"$TEST_ROOT/revoke-all.err" || { cat "$TEST_ROOT/revoke-all.out" "$TEST_ROOT/revoke-all.err" >&2; return 1; }
+  root_path_absent "$sudoers_file"
+}
+
 test_raw_start_does_not_steal_trailing_system() {
   local out id log
   out=$("$SIGMUND_BIN" sh -c 'printf "arg:%s\n" "$1"' sh --system 2>&1) || return 1
@@ -778,7 +930,7 @@ test_action_self_elevation_uses_argv_fork_wait() {
   [ "${args[2]}" = "--system" ] || return 1
   [ "${args[3]}" = "--elevated" ] || return 1
   [ "${args[4]}" = "stop" ] || return 1
-  [ "${args[5]}" = "abc123" ] || return 1
+  [ "${args[5]}" = "system:abc123" ] || return 1
   ! grep -qx -- 'sh\|-c' "$SIGMUND_FAKE_SUDO_ARGV"
 }
 
@@ -1026,6 +1178,12 @@ run_test "sudo context can stop unique invoking-user local run" test_sudo_contex
 run_test "public root index rows are redacted in normal list" test_public_root_index_list_is_redacted
 run_test "normal run does not self-elevate on local/root ID conflict" test_user_local_wins_over_public_root_collision
 run_test "explicit user:<id> targets user-local run" test_explicit_user_target
+run_test "alias creates protected profile map and starts/stops by alias" test_alias_profile_map_start_and_stop
+run_test "invalid alias names are rejected" test_invalid_alias_names_rejected
+run_test "short hex-looking alias names are allowed" test_short_hex_alias_name_allowed
+run_test "system alias action self-elevates hash not alias" test_system_alias_action_elevates_hash_not_alias
+run_test "system alias start self-elevates hash not alias" test_system_alias_start_elevates_hash_not_alias
+run_test "grant/revoke writes hash-scoped sudoers entries" test_grant_revoke_writes_hash_scoped_sudoers
 run_test "action self-elevation uses argv-preserving sudo fork+wait" test_action_self_elevation_uses_argv_fork_wait
 run_test "elevated action returns child/root-sigmund status" test_elevated_action_returns_child_status
 run_test "sudo exec failure returns clean error" test_sudo_exec_failure_returns_clean_error

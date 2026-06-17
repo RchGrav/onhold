@@ -31,6 +31,9 @@
 #include <unistd.h>
 
 #define ID_HEX_LEN 6
+#define PROFILE_HASH_HEX_LEN 64
+#define PROFILE_HASH_STR_LEN (PROFILE_HASH_HEX_LEN + 1)
+#define ALIAS_MAX_LEN 64
 #define STOP_TIMEOUT_MS 5000
 #define POLL_SLEEP_MS 25
 #ifndef SIGMUND_VERSION
@@ -66,6 +69,7 @@ struct record {
     int version;
     char id[16];
     char run_id[16];
+    char profile_hash[PROFILE_HASH_STR_LEN];
     pid_t pid;
     pid_t pgid;
     pid_t sid;
@@ -97,6 +101,7 @@ struct record {
     bool has_term_signal;
     bool has_launch_error;
     bool has_invocation;
+    bool has_profile_hash;
 };
 
 enum run_state { STATE_RUNNING, STATE_EXITED, STATE_STALE, STATE_FAILED, STATE_UNKNOWN };
@@ -109,6 +114,8 @@ struct store_paths {
     char record_dir[SIGMUND_PATH_MAX];
     char log_dir[SIGMUND_PATH_MAX];
     char public_dir[SIGMUND_PATH_MAX];
+    char profile_path[SIGMUND_PATH_MAX];
+    char alias_path[SIGMUND_PATH_MAX];
 };
 
 struct invocation {
@@ -126,9 +133,10 @@ enum resolve_scope { RESOLVE_USER_LOCAL, RESOLVE_SYSTEM_MANAGED, RESOLVE_NOT_FOU
 
 struct resolved_target {
     enum resolve_scope scope;
-    char id[16];
+    char id[PROFILE_HASH_STR_LEN];
     struct store_paths store;
     bool needs_elevation;
+    bool resolved_profile;
 };
 
 struct public_index {
@@ -192,6 +200,38 @@ static bool valid_id_prefix(const char *id) {
     }
     for (size_t i = 0; i < len; i++) {
         if (!isdigit((unsigned char)id[i]) && !(id[i] >= 'a' && id[i] <= 'f')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool valid_profile_hash(const char *hash) {
+    if (!hash || strlen(hash) != PROFILE_HASH_HEX_LEN) {
+        return false;
+    }
+    for (size_t i = 0; i < PROFILE_HASH_HEX_LEN; i++) {
+        if (!isdigit((unsigned char)hash[i]) && !(hash[i] >= 'a' && hash[i] <= 'f')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool valid_alias(const char *alias) {
+    if (!alias) {
+        return false;
+    }
+    size_t len = strlen(alias);
+    if (len == 0 || len > ALIAS_MAX_LEN || valid_profile_hash(alias)) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)alias[i];
+        if (!(isalnum(c) || c == '_' || c == '-')) {
+            return false;
+        }
+        if (c == '/' || c == '.') {
             return false;
         }
     }
@@ -298,6 +338,107 @@ static bool current_boot_id(char *buf, size_t n) {
     }
     buf[0] = '\0';
     return get_boot_id(buf, n) == 0 && buf[0] != '\0';
+}
+
+struct sha256_ctx {
+    uint32_t h[8];
+    uint64_t len;
+    unsigned char buf[64];
+    size_t off;
+};
+
+static uint32_t rotr32(uint32_t x, unsigned n) {
+    return (x >> n) | (x << (32 - n));
+}
+
+static void sha256_block(struct sha256_ctx *c, const unsigned char *p) {
+    static const uint32_t k[64] = {
+        0x428a2f98U,0x71374491U,0xb5c0fbcfU,0xe9b5dba5U,0x3956c25bU,0x59f111f1U,0x923f82a4U,0xab1c5ed5U,
+        0xd807aa98U,0x12835b01U,0x243185beU,0x550c7dc3U,0x72be5d74U,0x80deb1feU,0x9bdc06a7U,0xc19bf174U,
+        0xe49b69c1U,0xefbe4786U,0x0fc19dc6U,0x240ca1ccU,0x2de92c6fU,0x4a7484aaU,0x5cb0a9dcU,0x76f988daU,
+        0x983e5152U,0xa831c66dU,0xb00327c8U,0xbf597fc7U,0xc6e00bf3U,0xd5a79147U,0x06ca6351U,0x14292967U,
+        0x27b70a85U,0x2e1b2138U,0x4d2c6dfcU,0x53380d13U,0x650a7354U,0x766a0abbU,0x81c2c92eU,0x92722c85U,
+        0xa2bfe8a1U,0xa81a664bU,0xc24b8b70U,0xc76c51a3U,0xd192e819U,0xd6990624U,0xf40e3585U,0x106aa070U,
+        0x19a4c116U,0x1e376c08U,0x2748774cU,0x34b0bcb5U,0x391c0cb3U,0x4ed8aa4aU,0x5b9cca4fU,0x682e6ff3U,
+        0x748f82eeU,0x78a5636fU,0x84c87814U,0x8cc70208U,0x90befffaU,0xa4506cebU,0xbef9a3f7U,0xc67178f2U
+    };
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) |
+               ((uint32_t)p[i * 4 + 2] << 8) | (uint32_t)p[i * 4 + 3];
+    }
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        uint32_t s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    uint32_t a = c->h[0], b = c->h[1], d = c->h[3], e = c->h[4], f = c->h[5], g = c->h[6], h = c->h[7], cc = c->h[2];
+    for (int i = 0; i < 64; i++) {
+        uint32_t s1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t t1 = h + s1 + ch + k[i] + w[i];
+        uint32_t s0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
+        uint32_t t2 = s0 + maj;
+        h = g; g = f; f = e; e = d + t1; d = cc; cc = b; b = a; a = t1 + t2;
+    }
+    c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
+    c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += h;
+}
+
+static void sha256_init(struct sha256_ctx *c) {
+    c->h[0] = 0x6a09e667U; c->h[1] = 0xbb67ae85U; c->h[2] = 0x3c6ef372U; c->h[3] = 0xa54ff53aU;
+    c->h[4] = 0x510e527fU; c->h[5] = 0x9b05688cU; c->h[6] = 0x1f83d9abU; c->h[7] = 0x5be0cd19U;
+    c->len = 0;
+    c->off = 0;
+}
+
+static void sha256_update(struct sha256_ctx *c, const void *data, size_t n) {
+    const unsigned char *p = data;
+    c->len += (uint64_t)n * 8U;
+    while (n > 0) {
+        size_t take = 64 - c->off;
+        if (take > n) take = n;
+        memcpy(c->buf + c->off, p, take);
+        c->off += take;
+        p += take;
+        n -= take;
+        if (c->off == 64) {
+            sha256_block(c, c->buf);
+            c->off = 0;
+        }
+    }
+}
+
+static void sha256_final(struct sha256_ctx *c, unsigned char out[32]) {
+    c->buf[c->off++] = 0x80;
+    if (c->off > 56) {
+        while (c->off < 64) c->buf[c->off++] = 0;
+        sha256_block(c, c->buf);
+        c->off = 0;
+    }
+    while (c->off < 56) c->buf[c->off++] = 0;
+    for (int i = 7; i >= 0; i--) c->buf[c->off++] = (unsigned char)(c->len >> (i * 8));
+    sha256_block(c, c->buf);
+    for (int i = 0; i < 8; i++) {
+        out[i * 4] = (unsigned char)(c->h[i] >> 24);
+        out[i * 4 + 1] = (unsigned char)(c->h[i] >> 16);
+        out[i * 4 + 2] = (unsigned char)(c->h[i] >> 8);
+        out[i * 4 + 3] = (unsigned char)c->h[i];
+    }
+}
+
+static void hex_encode(const unsigned char *bytes, size_t n, char *out, size_t out_n) {
+    static const char hex[] = "0123456789abcdef";
+    if (out_n < n * 2 + 1) {
+        if (out_n > 0) out[0] = '\0';
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2] = hex[bytes[i] >> 4];
+        out[i * 2 + 1] = hex[bytes[i] & 0x0f];
+    }
+    out[n * 2] = '\0';
 }
 
 static int rand_bytes(uint8_t *buf, size_t n) {
@@ -428,7 +569,9 @@ static int init_user_store_from_home(const char *home, struct store_paths *store
     store->kind = STORE_USER_LOCAL;
     if (checked_snprintf(store->base, sizeof(store->base), "%s/.local/state/sigmund", home) != 0 ||
         checked_snprintf(store->record_dir, sizeof(store->record_dir), "%s", store->base) != 0 ||
-        checked_snprintf(store->log_dir, sizeof(store->log_dir), "%s", store->base) != 0) {
+        checked_snprintf(store->log_dir, sizeof(store->log_dir), "%s", store->base) != 0 ||
+        checked_snprintf(store->profile_path, sizeof(store->profile_path), "%s/profiles.json", store->base) != 0 ||
+        checked_snprintf(store->alias_path, sizeof(store->alias_path), "%s/aliases.json", store->base) != 0) {
         return -1;
     }
     return 0;
@@ -470,7 +613,9 @@ static int init_system_store(struct store_paths *store) {
     if (checked_snprintf(store->base, sizeof(store->base), "%s", base) != 0 ||
         checked_snprintf(store->record_dir, sizeof(store->record_dir), "%s/runs", base) != 0 ||
         checked_snprintf(store->log_dir, sizeof(store->log_dir), "%s/logs", base) != 0 ||
-        checked_snprintf(store->public_dir, sizeof(store->public_dir), "%s/public", base) != 0) {
+        checked_snprintf(store->public_dir, sizeof(store->public_dir), "%s/public", base) != 0 ||
+        checked_snprintf(store->profile_path, sizeof(store->profile_path), "%s/profiles.json", base) != 0 ||
+        checked_snprintf(store->alias_path, sizeof(store->alias_path), "%s/public/aliases.json", base) != 0) {
         return -1;
     }
     return 0;
@@ -701,6 +846,40 @@ static int write_json_argv(FILE *f, int argc, char **argv) {
     return 0;
 }
 
+static void sha256_update_cstr(struct sha256_ctx *ctx, const char *s) {
+    sha256_update(ctx, s, strlen(s));
+}
+
+static void sha256_update_nul_field(struct sha256_ctx *ctx, const char *s) {
+    static const unsigned char nul = 0;
+    sha256_update_cstr(ctx, s ? s : "");
+    sha256_update(ctx, &nul, 1);
+}
+
+static void profile_hash_for_argv(const char *binary_path, int argc, char **argv, char out[PROFILE_HASH_STR_LEN]) {
+    struct sha256_ctx ctx;
+    unsigned char digest[32];
+    sha256_init(&ctx);
+    sha256_update_nul_field(&ctx, "sigmund-profile-v1");
+    sha256_update_nul_field(&ctx, "bin");
+    sha256_update_nul_field(&ctx, binary_path);
+    char count[32];
+    snprintf(count, sizeof(count), "%d", argc);
+    sha256_update_nul_field(&ctx, "argc");
+    sha256_update_nul_field(&ctx, count);
+    for (int i = 0; i < argc; i++) {
+        char idx[32];
+        snprintf(idx, sizeof(idx), "%d", i);
+        sha256_update_nul_field(&ctx, "arg");
+        sha256_update_nul_field(&ctx, idx);
+        sha256_update_nul_field(&ctx, argv[i]);
+    }
+    sha256_update_nul_field(&ctx, "envc");
+    sha256_update_nul_field(&ctx, "0");
+    sha256_final(&ctx, digest);
+    hex_encode(digest, sizeof(digest), out, PROFILE_HASH_STR_LEN);
+}
+
 static int write_record_atomic(const char *dir, const struct record *r, int argc, char **argv, char *out_json_path, size_t out_n) {
     char tmp[SIGMUND_PATH_MAX], fin[SIGMUND_PATH_MAX], reserve[SIGMUND_PATH_MAX];
     int rc = -1;
@@ -769,6 +948,11 @@ static int write_record_atomic(const char *dir, const struct record *r, int argc
     if (r->has_launch_error) {
         fprintf(f, "  \"launch_error\": \"");
         json_escape(f, r->launch_error);
+        fprintf(f, "\",\n");
+    }
+    if (r->has_profile_hash) {
+        fprintf(f, "  \"profile_hash\": \"");
+        json_escape(f, r->profile_hash);
         fprintf(f, "\",\n");
     }
     fprintf(f, "  \"uid\": %u,\n", r->uid);
@@ -1621,6 +1805,124 @@ static int json_get_argv_display(const char *j, char *out, size_t n) {
     return 0;
 }
 
+static void free_argv_alloc(char **argv, int argc) {
+    if (!argv) {
+        return;
+    }
+    for (int i = 0; i < argc; i++) {
+        free(argv[i]);
+    }
+    free(argv);
+}
+
+static int json_get_string_array_alloc(const char *j, const char *key, char ***argv_out, int *argc_out) {
+    *argv_out = NULL;
+    *argc_out = 0;
+    const char *v;
+    if (json_find_key(j, key, &v) != 0 || *v != '[') {
+        return -1;
+    }
+    v = skip_ws(v + 1);
+    int cap = 4;
+    int argc = 0;
+    char **argv = calloc((size_t)cap + 1, sizeof(char *));
+    if (!argv) {
+        return -1;
+    }
+    while (*v && *v != ']') {
+        char arg[SIGMUND_PATH_MAX];
+        if (parse_json_string(v, arg, sizeof(arg), &v) != 0) {
+            free_argv_alloc(argv, argc);
+            return -1;
+        }
+        if (argc == cap) {
+            cap *= 2;
+            char **next = realloc(argv, ((size_t)cap + 1) * sizeof(char *));
+            if (!next) {
+                free_argv_alloc(argv, argc);
+                return -1;
+            }
+            argv = next;
+        }
+        argv[argc] = strdup(arg);
+        if (!argv[argc]) {
+            free_argv_alloc(argv, argc);
+            return -1;
+        }
+        argc++;
+        argv[argc] = NULL;
+        v = skip_ws(v);
+        if (*v == ',') {
+            v = skip_ws(v + 1);
+        } else if (*v != ']') {
+            free_argv_alloc(argv, argc);
+            return -1;
+        }
+    }
+    if (*v != ']' || argc == 0) {
+        free_argv_alloc(argv, argc);
+        return -1;
+    }
+    *argv_out = argv;
+    *argc_out = argc;
+    return 0;
+}
+
+static int json_get_argv_alloc(const char *j, char ***argv_out, int *argc_out) {
+    return json_get_string_array_alloc(j, "argv", argv_out, argc_out);
+}
+
+static int json_get_args_alloc(const char *j, char ***argv_out, int *argc_out) {
+    return json_get_string_array_alloc(j, "args", argv_out, argc_out);
+}
+
+static int resolve_binary_path(const char *argv0, char *out, size_t n) {
+    if (!argv0 || !*argv0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (strchr(argv0, '/')) {
+        char resolved[SIGMUND_PATH_MAX];
+        if (!realpath(argv0, resolved)) {
+            return -1;
+        }
+        return checked_snprintf(out, n, "%s", resolved);
+    }
+    const char *path = getenv("PATH");
+    if (!path || !*path) {
+        path = "/usr/local/bin:/usr/bin:/bin";
+    }
+    const char *p = path;
+    while (1) {
+        const char *colon = strchr(p, ':');
+        size_t len = colon ? (size_t)(colon - p) : strlen(p);
+        char dir[SIGMUND_PATH_MAX];
+        if (len == 0) {
+            if (checked_snprintf(dir, sizeof(dir), ".") != 0) {
+                return -1;
+            }
+        } else {
+            if (len >= sizeof(dir)) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            memcpy(dir, p, len);
+            dir[len] = '\0';
+        }
+        char candidate[SIGMUND_PATH_MAX], resolved[SIGMUND_PATH_MAX];
+        if (checked_snprintf(candidate, sizeof(candidate), "%s/%s", dir, argv0) == 0 &&
+            access(candidate, X_OK) == 0 && realpath(candidate, resolved)) {
+            return checked_snprintf(out, n, "%s", resolved);
+        }
+        if (!colon) {
+            break;
+        }
+        p = colon + 1;
+    }
+    errno = ENOENT;
+    return -1;
+}
+
 static int read_owned_file_no_symlink(const char *path, char **out) {
     *out = NULL;
     int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -1682,6 +1984,514 @@ static int read_owned_file_no_symlink(const char *path, char **out) {
     }
     *out = j;
     return 0;
+}
+
+struct profile {
+    char hash[PROFILE_HASH_STR_LEN];
+    char binary_path[SIGMUND_PATH_MAX];
+    int argc;
+    char **argv;
+};
+
+struct alias_entry {
+    char name[ALIAS_MAX_LEN + 1];
+    char hash[PROFILE_HASH_STR_LEN];
+};
+
+static void free_profile(struct profile *p) {
+    if (!p) {
+        return;
+    }
+    free_argv_alloc(p->argv, p->argc);
+    memset(p, 0, sizeof(*p));
+}
+
+static int fsync_dir_path(const char *dir) {
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd < 0) {
+        return -1;
+    }
+    int rc = fsync(dfd);
+    int saved = errno;
+    close(dfd);
+    errno = saved;
+    return rc;
+}
+
+static void free_profiles(struct profile *profiles, size_t count) {
+    if (!profiles) {
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        free_profile(&profiles[i]);
+    }
+    free(profiles);
+}
+
+static int copy_argv(char ***out, int argc, char **argv) {
+    *out = NULL;
+    if (argc <= 0 || !argv) {
+        errno = EINVAL;
+        return -1;
+    }
+    char **copy = calloc((size_t)argc + 1, sizeof(char *));
+    if (!copy) {
+        return -1;
+    }
+    for (int i = 0; i < argc; i++) {
+        copy[i] = strdup(argv[i]);
+        if (!copy[i]) {
+            free_argv_alloc(copy, i);
+            return -1;
+        }
+    }
+    copy[argc] = NULL;
+    *out = copy;
+    return 0;
+}
+
+static bool profile_equal_argv(const struct profile *p, const char *binary_path, int argc, char **argv) {
+    if (strcmp(p->binary_path, binary_path) != 0 || p->argc != argc) {
+        return false;
+    }
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(p->argv[i], argv[i]) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int parse_profile_object(const char *j, const char *hash, struct profile *profile) {
+    memset(profile, 0, sizeof(*profile));
+    if (!valid_profile_hash(hash)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (json_get_str(j, "bin", profile->binary_path, sizeof(profile->binary_path)) != 0 &&
+        json_get_str(j, "binary_path", profile->binary_path, sizeof(profile->binary_path)) != 0) {
+        return -1;
+    }
+    if (profile->binary_path[0] != '/') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (json_get_args_alloc(j, &profile->argv, &profile->argc) != 0 &&
+        json_get_argv_alloc(j, &profile->argv, &profile->argc) != 0) {
+        free_profile(profile);
+        return -1;
+    }
+    profile_hash_for_argv(profile->binary_path, profile->argc, profile->argv, profile->hash);
+    if (strcmp(profile->hash, hash) != 0) {
+        free_profile(profile);
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static int load_profiles(const struct store_paths *store, struct profile **profiles_out, size_t *count_out) {
+    *profiles_out = NULL;
+    *count_out = 0;
+    char *j = NULL;
+    if (read_owned_file_no_symlink(store->profile_path, &j) != 0) {
+        if (errno == ENOENT) {
+            return 0;
+        }
+        return -1;
+    }
+    const char *p = skip_ws(j);
+    if (*p != '{') {
+        free(j);
+        errno = EINVAL;
+        return -1;
+    }
+    p++;
+    size_t cap = 0, count = 0;
+    struct profile *profiles = NULL;
+    while (1) {
+        p = skip_ws(p);
+        if (*p == '}') {
+            break;
+        }
+        char hash[PROFILE_HASH_STR_LEN];
+        if (parse_json_string(p, hash, sizeof(hash), &p) != 0 || !valid_profile_hash(hash)) {
+            free(j);
+            free_profiles(profiles, count);
+            errno = EINVAL;
+            return -1;
+        }
+        p = skip_ws(p);
+        if (*p != ':') {
+            free(j);
+            free_profiles(profiles, count);
+            errno = EINVAL;
+            return -1;
+        }
+        p = skip_ws(p + 1);
+        if (*p != '{') {
+            free(j);
+            free_profiles(profiles, count);
+            errno = EINVAL;
+            return -1;
+        }
+        if (count == cap) {
+            size_t next_cap = cap ? cap * 2 : 8;
+            struct profile *next = realloc(profiles, next_cap * sizeof(*profiles));
+            if (!next) {
+                free(j);
+                free_profiles(profiles, count);
+                return -1;
+            }
+            profiles = next;
+            cap = next_cap;
+        }
+        if (parse_profile_object(p, hash, &profiles[count]) != 0) {
+            free(j);
+            free_profiles(profiles, count);
+            return -1;
+        }
+        count++;
+        if (skip_json_value(&p) != 0) {
+            free(j);
+            free_profiles(profiles, count);
+            return -1;
+        }
+        p = skip_ws(p);
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (*p == '}') {
+            break;
+        }
+        free(j);
+        free_profiles(profiles, count);
+        errno = EINVAL;
+        return -1;
+    }
+    free(j);
+    *profiles_out = profiles;
+    *count_out = count;
+    return 0;
+}
+
+static int write_profiles_atomic(const struct store_paths *store, const struct profile *profiles, size_t count) {
+    char dir[SIGMUND_PATH_MAX], tmp[SIGMUND_PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s", store->profile_path);
+    char *slash = strrchr(dir, '/');
+    if (!slash) {
+        errno = EINVAL;
+        return -1;
+    }
+    *slash = '\0';
+    if (checked_snprintf(tmp, sizeof(tmp), "%s/.profiles.tmp", dir) != 0) {
+        return -1;
+    }
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -1;
+    }
+    if (fchmod(fd, 0600) != 0 ||
+        (store->kind == STORE_SYSTEM_MANAGED && geteuid() == 0 && fchown(fd, 0, 0) != 0)) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+    FILE *f = fdopen(fd, "w");
+    if (!f) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+    fprintf(f, "{\n");
+    for (size_t i = 0; i < count; i++) {
+        fprintf(f, "  \"");
+        json_escape(f, profiles[i].hash);
+        fprintf(f, "\": {\"bin\": \"");
+        json_escape(f, profiles[i].binary_path);
+        fprintf(f, "\", \"args\": ");
+        write_json_argv(f, profiles[i].argc, profiles[i].argv);
+        fprintf(f, "}%s\n", i + 1 == count ? "" : ",");
+    }
+    fprintf(f, "}\n");
+    if (ferror(f) || fflush(f) != 0 || fsync(fd) != 0) {
+        fclose(f);
+        unlink(tmp);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, store->profile_path) != 0) {
+        int saved = errno;
+        unlink(tmp);
+        errno = saved;
+        return -1;
+    }
+    (void)fsync_dir_path(dir);
+    return 0;
+}
+
+static int write_profile_atomic(const struct store_paths *store,
+                                const char *hash,
+                                const char *binary_path,
+                                int argc,
+                                char **argv) {
+    if (!valid_profile_hash(hash) || !binary_path || binary_path[0] != '/' || argc <= 0 || !argv) {
+        errno = EINVAL;
+        return -1;
+    }
+    char check_hash[PROFILE_HASH_STR_LEN];
+    profile_hash_for_argv(binary_path, argc, argv, check_hash);
+    if (strcmp(check_hash, hash) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct profile *profiles = NULL;
+    size_t count = 0;
+    if (load_profiles(store, &profiles, &count) != 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(profiles[i].hash, hash) == 0) {
+            int rc = 0;
+            if (!profile_equal_argv(&profiles[i], binary_path, argc, argv)) {
+                errno = EEXIST;
+                rc = -1;
+            }
+            free_profiles(profiles, count);
+            return rc;
+        }
+    }
+    struct profile *next = realloc(profiles, (count + 1) * sizeof(*profiles));
+    if (!next) {
+        free_profiles(profiles, count);
+        return -1;
+    }
+    profiles = next;
+    memset(&profiles[count], 0, sizeof(profiles[count]));
+    snprintf(profiles[count].hash, sizeof(profiles[count].hash), "%s", hash);
+    if (checked_snprintf(profiles[count].binary_path, sizeof(profiles[count].binary_path), "%s", binary_path) != 0 ||
+        copy_argv(&profiles[count].argv, argc, argv) != 0) {
+        free_profiles(profiles, count + 1);
+        return -1;
+    }
+    profiles[count].argc = argc;
+    count++;
+    int rc = write_profiles_atomic(store, profiles, count);
+    free_profiles(profiles, count);
+    return rc;
+}
+
+static int load_profile_by_hash(const struct store_paths *store, const char *hash, struct profile *profile) {
+    memset(profile, 0, sizeof(*profile));
+    if (!valid_profile_hash(hash)) {
+        errno = EINVAL;
+        return -1;
+    }
+    char *j = NULL;
+    if (read_owned_file_no_symlink(store->profile_path, &j) != 0) {
+        return -1;
+    }
+    const char *v = NULL;
+    if (json_find_key(j, hash, &v) != 0 || parse_profile_object(v, hash, profile) != 0) {
+        free(j);
+        return -1;
+    }
+    free(j);
+    return 0;
+}
+
+static void free_aliases(struct alias_entry *entries) {
+    free(entries);
+}
+
+static int load_aliases(const struct store_paths *store, struct alias_entry **entries_out, size_t *count_out) {
+    *entries_out = NULL;
+    *count_out = 0;
+    char *j = NULL;
+    if (read_owned_file_no_symlink(store->alias_path, &j) != 0) {
+        if (errno == ENOENT) {
+            return 0;
+        }
+        return -1;
+    }
+    const char *p = skip_ws(j);
+    if (*p != '{') {
+        free(j);
+        errno = EINVAL;
+        return -1;
+    }
+    p++;
+    size_t cap = 0, count = 0;
+    struct alias_entry *entries = NULL;
+    while (1) {
+        p = skip_ws(p);
+        if (*p == '}') {
+            break;
+        }
+        char name[ALIAS_MAX_LEN + 1], hash[PROFILE_HASH_STR_LEN];
+        if (parse_json_string(p, name, sizeof(name), &p) != 0 || !valid_alias(name)) {
+            free(j);
+            free_aliases(entries);
+            errno = EINVAL;
+            return -1;
+        }
+        p = skip_ws(p);
+        if (*p != ':') {
+            free(j);
+            free_aliases(entries);
+            errno = EINVAL;
+            return -1;
+        }
+        p = skip_ws(p + 1);
+        if (parse_json_string(p, hash, sizeof(hash), &p) != 0 || !valid_profile_hash(hash)) {
+            free(j);
+            free_aliases(entries);
+            errno = EINVAL;
+            return -1;
+        }
+        if (count == cap) {
+            size_t next_cap = cap ? cap * 2 : 8;
+            struct alias_entry *next = realloc(entries, next_cap * sizeof(*entries));
+            if (!next) {
+                free(j);
+                free_aliases(entries);
+                return -1;
+            }
+            entries = next;
+            cap = next_cap;
+        }
+        snprintf(entries[count].name, sizeof(entries[count].name), "%s", name);
+        snprintf(entries[count].hash, sizeof(entries[count].hash), "%s", hash);
+        count++;
+        p = skip_ws(p);
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (*p == '}') {
+            break;
+        }
+        free(j);
+        free_aliases(entries);
+        errno = EINVAL;
+        return -1;
+    }
+    free(j);
+    *entries_out = entries;
+    *count_out = count;
+    return 0;
+}
+
+static int write_aliases_atomic(const struct store_paths *store, const struct alias_entry *entries, size_t count) {
+    const char *dir = store->kind == STORE_SYSTEM_MANAGED ? store->public_dir : store->base;
+    char tmp[SIGMUND_PATH_MAX];
+    mode_t mode = store->kind == STORE_SYSTEM_MANAGED ? 0644 : 0600;
+    if (checked_snprintf(tmp, sizeof(tmp), "%s/.aliases.tmp", dir) != 0) {
+        return -1;
+    }
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
+    if (fd < 0) {
+        return -1;
+    }
+    if (fchmod(fd, mode) != 0) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+    if (store->kind == STORE_SYSTEM_MANAGED && geteuid() == 0 && fchown(fd, 0, 0) != 0) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+    FILE *f = fdopen(fd, "w");
+    if (!f) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+    fprintf(f, "{\n");
+    for (size_t i = 0; i < count; i++) {
+        fprintf(f, "  \"");
+        json_escape(f, entries[i].name);
+        fprintf(f, "\": \"");
+        json_escape(f, entries[i].hash);
+        fprintf(f, "\"%s\n", i + 1 == count ? "" : ",");
+    }
+    fprintf(f, "}\n");
+    if (ferror(f) || fflush(f) != 0 || fsync(fd) != 0) {
+        fclose(f);
+        unlink(tmp);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, store->alias_path) != 0) {
+        int saved = errno;
+        unlink(tmp);
+        errno = saved;
+        return -1;
+    }
+    (void)fsync_dir_path(dir);
+    return 0;
+}
+
+static int alias_lookup_hash(const struct store_paths *store, const char *alias, char hash[PROFILE_HASH_STR_LEN]) {
+    if (!valid_alias(alias)) {
+        return -1;
+    }
+    struct alias_entry *entries = NULL;
+    size_t count = 0;
+    if (load_aliases(store, &entries, &count) != 0) {
+        return -1;
+    }
+    int rc = -1;
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].name, alias) == 0) {
+            snprintf(hash, PROFILE_HASH_STR_LEN, "%s", entries[i].hash);
+            rc = 0;
+            break;
+        }
+    }
+    free_aliases(entries);
+    return rc;
+}
+
+static int alias_upsert_hash(const struct store_paths *store, const char *alias, const char *hash) {
+    if (!valid_alias(alias) || !valid_profile_hash(hash)) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct alias_entry *entries = NULL;
+    size_t count = 0;
+    if (load_aliases(store, &entries, &count) != 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].name, alias) == 0) {
+            snprintf(entries[i].hash, sizeof(entries[i].hash), "%s", hash);
+            int rc = write_aliases_atomic(store, entries, count);
+            free_aliases(entries);
+            return rc;
+        }
+    }
+    struct alias_entry *next = realloc(entries, (count + 1) * sizeof(*entries));
+    if (!next) {
+        free_aliases(entries);
+        return -1;
+    }
+    entries = next;
+    snprintf(entries[count].name, sizeof(entries[count].name), "%s", alias);
+    snprintf(entries[count].hash, sizeof(entries[count].hash), "%s", hash);
+    count++;
+    int rc = write_aliases_atomic(store, entries, count);
+    free_aliases(entries);
+    return rc;
 }
 
 static int load_record(const char *path, struct record *r) {
@@ -1772,6 +2582,10 @@ static int load_record(const char *path, struct record *r) {
     }
     if (json_get_str(j, "launch_error", r->launch_error, sizeof(r->launch_error)) == 0) {
         r->has_launch_error = true;
+    }
+    if (json_get_str(j, "profile_hash", r->profile_hash, sizeof(r->profile_hash)) == 0 &&
+        valid_profile_hash(r->profile_hash)) {
+        r->has_profile_hash = true;
     }
     if (json_get_u64(j, "proc_starttime_ticks", &r->proc_starttime_ticks) != 0 ||
         json_get_u64(j, "exe_dev", &r->exe_dev) != 0 ||
@@ -1981,7 +2795,13 @@ static int read_exec_handshake(int fd, int *child_errno) {
     return 1;
 }
 
-static int perform_start(const struct invocation *inv, const struct store_paths *store, bool tail, int argc, char **argv) {
+static int perform_start(const struct invocation *inv,
+                         const struct store_paths *store,
+                         bool tail,
+                         int argc,
+                         char **argv,
+                         const char *profile_hash,
+                         const char *exec_path) {
     if (argc <= 0 || !argv || !argv[0]) {
         usage();
         return 5;
@@ -2070,7 +2890,11 @@ static int perform_start(const struct invocation *inv, const struct store_paths 
         if (lfd > 2) {
             close(lfd);
         }
-        execvp(argv[0], argv);
+        if (exec_path && *exec_path) {
+            execv(exec_path, argv);
+        } else {
+            execvp(argv[0], argv);
+        }
         int e = errno;
         write_all(pipefd[1], &e, sizeof(e));
         _exit(127);
@@ -2135,6 +2959,12 @@ static int perform_start(const struct invocation *inv, const struct store_paths 
                 die_errno("sigmund: invoking user too long");
             }
             r.invoked_via_sudo = false;
+        }
+    }
+    if (profile_hash && valid_profile_hash(profile_hash)) {
+        r.has_profile_hash = true;
+        if (checked_snprintf(r.profile_hash, sizeof(r.profile_hash), "%s", profile_hash) != 0) {
+            die_errno("sigmund: profile hash too long");
         }
     }
     r.has_log = true;
@@ -2669,6 +3499,131 @@ static int resolve_system_public_id(const struct store_paths *store, const char 
     return 0;
 }
 
+static bool valid_target_atom(const char *id) {
+    return valid_id_prefix(id) || valid_profile_hash(id) || valid_alias(id);
+}
+
+static int record_path_profile_matches(const char *path, const char *hash, char *id_out, size_t id_n) {
+    struct record r;
+    if (load_record(path, &r) != 0 || !valid_record(&r)) {
+        return 0;
+    }
+    if (r.has_profile_hash) {
+        if (strcmp(r.profile_hash, hash) != 0) {
+            return 0;
+        }
+        return checked_snprintf(id_out, id_n, "%s", r.id) == 0 ? 1 : -1;
+    }
+
+    char *j = NULL;
+    if (read_owned_file_no_symlink(path, &j) != 0) {
+        return 0;
+    }
+    char **argv = NULL;
+    int argc = 0;
+    char binary_path[SIGMUND_PATH_MAX];
+    char computed[PROFILE_HASH_STR_LEN];
+    int rc = 0;
+    if (json_get_argv_alloc(j, &argv, &argc) == 0 &&
+        resolve_binary_path(argv[0], binary_path, sizeof(binary_path)) == 0) {
+        profile_hash_for_argv(binary_path, argc, argv, computed);
+        if (strcmp(computed, hash) == 0) {
+            rc = checked_snprintf(id_out, id_n, "%s", r.id) == 0 ? 1 : -1;
+        }
+    }
+    free_argv_alloc(argv, argc);
+    free(j);
+    return rc;
+}
+
+static int resolve_profile_run_id(const struct store_paths *store, const char *hash, char *resolved, size_t n) {
+    if (!valid_profile_hash(hash)) {
+        errno = EINVAL;
+        return -1;
+    }
+    DIR *d = opendir(store->record_dir);
+    if (!d) {
+        return -1;
+    }
+    int matches = 0;
+    const struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!has_suffix(e->d_name, ".json")) {
+            continue;
+        }
+        char path[SIGMUND_PATH_MAX];
+        if (checked_snprintf(path, sizeof(path), "%s/%s", store->record_dir, e->d_name) != 0) {
+            closedir(d);
+            return -1;
+        }
+        char id[16];
+        int mr = record_path_profile_matches(path, hash, id, sizeof(id));
+        if (mr < 0) {
+            closedir(d);
+            return -1;
+        }
+        if (mr == 1) {
+            matches++;
+            if (checked_snprintf(resolved, n, "%s", id) != 0) {
+                closedir(d);
+                return -1;
+            }
+        }
+    }
+    closedir(d);
+    if (matches == 1) {
+        return 0;
+    }
+    errno = matches > 1 ? EEXIST : ENOENT;
+    return -1;
+}
+
+static int resolve_private_profile_token(const struct store_paths *store,
+                                         const char *token,
+                                         char *resolved,
+                                         size_t n,
+                                         bool *matched_profile) {
+    *matched_profile = false;
+    char hash[PROFILE_HASH_STR_LEN];
+    if (valid_profile_hash(token)) {
+        snprintf(hash, sizeof(hash), "%s", token);
+    } else if (valid_alias(token)) {
+        if (alias_lookup_hash(store, token, hash) != 0) {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+    *matched_profile = true;
+    return resolve_profile_run_id(store, hash, resolved, n) == 0 ? 1 : -1;
+}
+
+static int resolve_public_profile_token(const struct store_paths *store,
+                                        const char *token,
+                                        char hash[PROFILE_HASH_STR_LEN]) {
+    if (valid_profile_hash(token)) {
+        snprintf(hash, PROFILE_HASH_STR_LEN, "%s", token);
+        return 1;
+    }
+    if (valid_alias(token) && alias_lookup_hash(store, token, hash) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static void fill_target(struct resolved_target *out,
+                        enum resolve_scope scope,
+                        const struct store_paths *store,
+                        const char *id,
+                        bool needs_elevation,
+                        bool resolved_profile) {
+    out->scope = scope;
+    out->store = *store;
+    out->needs_elevation = needs_elevation;
+    out->resolved_profile = resolved_profile;
+    checked_snprintf(out->id, sizeof(out->id), "%s", id);
+}
+
 static int resolve_target(const struct invocation *inv,
                           const struct store_paths *current_user_store,
                           const struct store_paths *system_store,
@@ -2679,8 +3634,8 @@ static int resolve_target(const struct invocation *inv,
 
     const char *id = NULL;
     enum id_token_scope token_scope = parse_id_token(token, &id);
-    if (token_scope == ID_TOKEN_INVALID || !valid_id_prefix(id)) {
-        fprintf(stderr, "sigmund: error: invalid run id '%s'\n", token ? token : "");
+    if (token_scope == ID_TOKEN_INVALID || !valid_target_atom(id)) {
+        fprintf(stderr, "sigmund: error: invalid target '%s'\n", token ? token : "");
         out->scope = RESOLVE_ERROR;
         return -1;
     }
@@ -2695,20 +3650,38 @@ static int resolve_target(const struct invocation *inv,
             }
             char resolved[16];
             if (resolve_user_store_id(&user_store, id, resolved, sizeof(resolved)) == 0) {
-                out->scope = RESOLVE_USER_LOCAL;
-                out->store = user_store;
-                checked_snprintf(out->id, sizeof(out->id), "%s", resolved);
+                fill_target(out, RESOLVE_USER_LOCAL, &user_store, resolved, false, false);
                 return 0;
+            }
+            bool matched_profile = false;
+            int pr = resolve_private_profile_token(&user_store, id, resolved, sizeof(resolved), &matched_profile);
+            if (pr == 1) {
+                fill_target(out, RESOLVE_USER_LOCAL, &user_store, resolved, false, true);
+                return 0;
+            }
+            if (pr < 0 && matched_profile) {
+                fprintf(stderr, "sigmund: error: no unique user-local run matches '%s'\n", token);
+                out->scope = RESOLVE_ERROR;
+                return -1;
             }
             return 0;
         }
         if (token_scope == ID_TOKEN_SYSTEM) {
             char resolved[16];
             if (resolve_system_private_id(system_store, id, resolved, sizeof(resolved)) == 0) {
-                out->scope = RESOLVE_SYSTEM_MANAGED;
-                out->store = *system_store;
-                checked_snprintf(out->id, sizeof(out->id), "%s", resolved);
+                fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false, false);
                 return 0;
+            }
+            bool matched_profile = false;
+            int pr = resolve_private_profile_token(system_store, id, resolved, sizeof(resolved), &matched_profile);
+            if (pr == 1) {
+                fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, false, true);
+                return 0;
+            }
+            if (pr < 0 && matched_profile) {
+                fprintf(stderr, "sigmund: error: no unique root-managed run matches '%s'\n", token);
+                out->scope = RESOLVE_ERROR;
+                return -1;
             }
             return 0;
         }
@@ -2718,20 +3691,38 @@ static int resolve_target(const struct invocation *inv,
         bool root_match = resolve_system_private_id(system_store, id, root_resolved, sizeof(root_resolved)) == 0;
         bool user_match = false;
         struct store_paths user_store;
+        bool root_profile = false;
+        bool user_profile = false;
+        int root_profile_match = 0;
+        int user_profile_match = 0;
+        if (!root_match) {
+            root_profile_match = resolve_private_profile_token(system_store, id, root_resolved, sizeof(root_resolved), &root_profile);
+            if (root_profile_match < 0 && root_profile) {
+                fprintf(stderr, "sigmund: error: no unique root-managed run matches '%s'\n", token);
+                out->scope = RESOLVE_ERROR;
+                return -1;
+            }
+            root_match = root_profile_match == 1;
+        }
         if (inv->have_sudo_user && init_invoking_user_store(inv, &user_store) == 0) {
             user_match = resolve_user_store_id(&user_store, id, user_resolved, sizeof(user_resolved)) == 0;
+            if (!user_match) {
+                user_profile_match = resolve_private_profile_token(&user_store, id, user_resolved, sizeof(user_resolved), &user_profile);
+                if (user_profile_match < 0 && user_profile) {
+                    fprintf(stderr, "sigmund: error: no unique user-local run matches '%s'\n", token);
+                    out->scope = RESOLVE_ERROR;
+                    return -1;
+                }
+                user_match = user_profile_match == 1;
+            }
         }
         if (root_match) {
             (void)user_match;
-            out->scope = RESOLVE_SYSTEM_MANAGED;
-            out->store = *system_store;
-            checked_snprintf(out->id, sizeof(out->id), "%s", root_resolved);
+            fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, root_resolved, false, root_profile);
             return 0;
         }
         if (user_match) {
-            out->scope = RESOLVE_USER_LOCAL;
-            out->store = user_store;
-            checked_snprintf(out->id, sizeof(out->id), "%s", user_resolved);
+            fill_target(out, RESOLVE_USER_LOCAL, &user_store, user_resolved, false, user_profile);
             return 0;
         }
         return 0;
@@ -2740,20 +3731,32 @@ static int resolve_target(const struct invocation *inv,
     if (token_scope == ID_TOKEN_USER) {
         char resolved[16];
         if (resolve_user_store_id(current_user_store, id, resolved, sizeof(resolved)) == 0) {
-            out->scope = RESOLVE_USER_LOCAL;
-            out->store = *current_user_store;
-            checked_snprintf(out->id, sizeof(out->id), "%s", resolved);
+            fill_target(out, RESOLVE_USER_LOCAL, current_user_store, resolved, false, false);
             return 0;
+        }
+        bool matched_profile = false;
+        int pr = resolve_private_profile_token(current_user_store, id, resolved, sizeof(resolved), &matched_profile);
+        if (pr == 1) {
+            fill_target(out, RESOLVE_USER_LOCAL, current_user_store, resolved, false, true);
+            return 0;
+        }
+        if (pr < 0 && matched_profile) {
+            fprintf(stderr, "sigmund: error: no unique user-local run matches '%s'\n", token);
+            out->scope = RESOLVE_ERROR;
+            return -1;
         }
         return 0;
     }
     if (token_scope == ID_TOKEN_SYSTEM) {
         char resolved[16];
         if (resolve_system_public_id(system_store, id, resolved, sizeof(resolved)) == 0) {
-            out->scope = RESOLVE_SYSTEM_MANAGED;
-            out->store = *system_store;
-            out->needs_elevation = true;
-            checked_snprintf(out->id, sizeof(out->id), "%s", resolved);
+            fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, resolved, true, false);
+            return 0;
+        }
+        char hash[PROFILE_HASH_STR_LEN];
+        int pr = resolve_public_profile_token(system_store, id, hash);
+        if (pr == 1) {
+            fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, hash, true, true);
             return 0;
         }
         return 0;
@@ -2761,17 +3764,29 @@ static int resolve_target(const struct invocation *inv,
 
     char user_resolved[16];
     if (resolve_user_store_id(current_user_store, id, user_resolved, sizeof(user_resolved)) == 0) {
-        out->scope = RESOLVE_USER_LOCAL;
-        out->store = *current_user_store;
-        checked_snprintf(out->id, sizeof(out->id), "%s", user_resolved);
+        fill_target(out, RESOLVE_USER_LOCAL, current_user_store, user_resolved, false, false);
         return 0;
+    }
+    bool user_profile = false;
+    int user_pr = resolve_private_profile_token(current_user_store, id, user_resolved, sizeof(user_resolved), &user_profile);
+    if (user_pr == 1) {
+        fill_target(out, RESOLVE_USER_LOCAL, current_user_store, user_resolved, false, true);
+        return 0;
+    }
+    if (user_pr < 0 && user_profile) {
+        fprintf(stderr, "sigmund: error: no unique user-local run matches '%s'\n", token);
+        out->scope = RESOLVE_ERROR;
+        return -1;
     }
     char system_resolved[16];
     if (resolve_system_public_id(system_store, id, system_resolved, sizeof(system_resolved)) == 0) {
-        out->scope = RESOLVE_SYSTEM_MANAGED;
-        out->store = *system_store;
-        out->needs_elevation = true;
-        checked_snprintf(out->id, sizeof(out->id), "%s", system_resolved);
+        fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, system_resolved, true, false);
+        return 0;
+    }
+    char hash[PROFILE_HASH_STR_LEN];
+    int system_pr = resolve_public_profile_token(system_store, id, hash);
+    if (system_pr == 1) {
+        fill_target(out, RESOLVE_SYSTEM_MANAGED, system_store, hash, true, true);
         return 0;
     }
     return 0;
@@ -2975,7 +3990,8 @@ static int elevate_with_sudo_targets(const char *program,
         const char *prefix = "";
         if (targets[i].scope == RESOLVE_USER_LOCAL) {
             prefix = "user:";
-        } else if (orig_scope == ID_TOKEN_SYSTEM) {
+        } else if (targets[i].scope == RESOLVE_SYSTEM_MANAGED &&
+                   (orig_scope == ID_TOKEN_SYSTEM || targets[i].needs_elevation || targets[i].resolved_profile)) {
             prefix = "system:";
         }
         size_t need = strlen(prefix) + strlen(targets[i].id) + 1;
@@ -3007,7 +4023,7 @@ static int cmd_signal_action(const struct invocation *inv,
                              int sig,
                              bool graceful) {
     if (argc <= 0) {
-        fprintf(stderr, "usage: sigmund %s <id>...\n", command);
+        fprintf(stderr, "usage: sigmund %s <target>...\n", command);
         return 5;
     }
     struct resolved_target *targets = calloc((size_t)argc, sizeof(*targets));
@@ -3151,6 +4167,796 @@ static int cmd_prune_action(const struct invocation *inv,
     return prune_one_run(&target.store, target.id, have_boot ? boot : NULL, true, &removed);
 }
 
+static int profile_exists_in_store(const struct store_paths *store, const char *hash) {
+    struct profile p;
+    if (load_profile_by_hash(store, hash, &p) != 0) {
+        return -1;
+    }
+    free_profile(&p);
+    return 0;
+}
+
+static int private_start_hash_for_token(const struct store_paths *store,
+                                        const char *token,
+                                        char hash[PROFILE_HASH_STR_LEN],
+                                        bool *matched) {
+    *matched = false;
+    if (valid_profile_hash(token)) {
+        *matched = true;
+        if (profile_exists_in_store(store, token) != 0) {
+            return -1;
+        }
+        snprintf(hash, PROFILE_HASH_STR_LEN, "%s", token);
+        return 1;
+    }
+    if (valid_alias(token)) {
+        if (alias_lookup_hash(store, token, hash) != 0) {
+            return 0;
+        }
+        *matched = true;
+        if (profile_exists_in_store(store, hash) != 0) {
+            return -1;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+struct start_profile_target {
+    struct store_paths store;
+    char hash[PROFILE_HASH_STR_LEN];
+    bool needs_elevation;
+};
+
+static int resolve_start_profile_target(const struct invocation *inv,
+                                        const struct store_paths *current_user_store,
+                                        const struct store_paths *system_store,
+                                        const char *token,
+                                        struct start_profile_target *out) {
+    memset(out, 0, sizeof(*out));
+    const char *atom = NULL;
+    enum id_token_scope scope = parse_id_token(token, &atom);
+    if (scope == ID_TOKEN_INVALID) {
+        return 0;
+    }
+    if (!valid_profile_hash(atom) && !valid_alias(atom)) {
+        return 0;
+    }
+
+    if (inv->euid_root) {
+        if (scope == ID_TOKEN_USER) {
+            struct store_paths user_store;
+            if (init_invoking_user_store(inv, &user_store) != 0) {
+                fprintf(stderr, "sigmund: error: user:%s requires sudo provenance\n", atom);
+                return -1;
+            }
+            bool matched = false;
+            int rc = private_start_hash_for_token(&user_store, atom, out->hash, &matched);
+            if (rc == 1) {
+                out->store = user_store;
+                return 1;
+            }
+            if (rc < 0 && matched) {
+                fprintf(stderr, "sigmund: error: profile for '%s' is unavailable\n", token);
+                return -1;
+            }
+            return 0;
+        }
+        if (scope == ID_TOKEN_SYSTEM) {
+            bool matched = false;
+            int rc = private_start_hash_for_token(system_store, atom, out->hash, &matched);
+            if (rc == 1) {
+                out->store = *system_store;
+                return 1;
+            }
+            if (rc < 0 && matched) {
+                fprintf(stderr, "sigmund: error: profile for '%s' is unavailable\n", token);
+                return -1;
+            }
+            return 0;
+        }
+
+        bool matched = false;
+        int rc = private_start_hash_for_token(system_store, atom, out->hash, &matched);
+        if (rc == 1) {
+            out->store = *system_store;
+            return 1;
+        }
+        if (rc < 0 && matched) {
+            fprintf(stderr, "sigmund: error: profile for '%s' is unavailable\n", token);
+            return -1;
+        }
+        if (inv->have_sudo_user) {
+            struct store_paths user_store;
+            if (init_invoking_user_store(inv, &user_store) == 0) {
+                matched = false;
+                rc = private_start_hash_for_token(&user_store, atom, out->hash, &matched);
+                if (rc == 1) {
+                    out->store = user_store;
+                    return 1;
+                }
+                if (rc < 0 && matched) {
+                    fprintf(stderr, "sigmund: error: profile for '%s' is unavailable\n", token);
+                    return -1;
+                }
+            }
+        }
+        return 0;
+    }
+
+    if (scope == ID_TOKEN_USER || scope == ID_TOKEN_PLAIN) {
+        bool matched = false;
+        int rc = private_start_hash_for_token(current_user_store, atom, out->hash, &matched);
+        if (rc == 1) {
+            out->store = *current_user_store;
+            return 1;
+        }
+        if (rc < 0 && matched) {
+            fprintf(stderr, "sigmund: error: profile for '%s' is unavailable\n", token);
+            return -1;
+        }
+        if (scope == ID_TOKEN_USER) {
+            return 0;
+        }
+    }
+
+    if (scope == ID_TOKEN_SYSTEM || scope == ID_TOKEN_PLAIN) {
+        int rc = resolve_public_profile_token(system_store, atom, out->hash);
+        if (rc == 1) {
+            out->store = *system_store;
+            out->needs_elevation = true;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int elevate_start_hash(const char *program, bool tail, const char *hash) {
+    char token[8 + PROFILE_HASH_STR_LEN];
+    if (checked_snprintf(token, sizeof(token), "system:%s", hash) != 0) {
+        return 3;
+    }
+    char *canon[3];
+    int n = 0;
+    canon[n++] = "start";
+    if (tail) {
+        canon[n++] = "--tail";
+    }
+    canon[n++] = token;
+    return elevate_with_sudo_canonical(program, n, canon);
+}
+
+static int perform_profile_start(const struct invocation *inv,
+                                 const struct store_paths *store,
+                                 bool tail,
+                                 const char *hash) {
+    struct profile p;
+    if (load_profile_by_hash(store, hash, &p) != 0) {
+        fprintf(stderr, "sigmund: error: profile %s is unavailable\n", hash);
+        return 5;
+    }
+    int rc = perform_start(inv, store, tail, p.argc, p.argv, hash, p.binary_path);
+    free_profile(&p);
+    return rc;
+}
+
+static int perform_explicit_start(const struct invocation *inv,
+                                  const struct store_paths *store,
+                                  bool tail,
+                                  int argc,
+                                  char **argv);
+
+static int cmd_start_action(const struct invocation *inv,
+                            const struct store_paths *user_store,
+                            const struct store_paths *system_store,
+                            const char *program,
+                            const struct store_paths *fallback_store,
+                            bool tail,
+                            int argc,
+                            char **argv) {
+    if (argc == 1) {
+        struct start_profile_target target;
+        int rc = resolve_start_profile_target(inv, user_store, system_store, argv[0], &target);
+        if (rc < 0) {
+            return 5;
+        }
+        if (rc == 1) {
+            if (target.needs_elevation) {
+                return elevate_start_hash(program, tail, target.hash);
+            }
+            return perform_profile_start(inv, &target.store, tail, target.hash);
+        }
+    }
+    return perform_explicit_start(inv, fallback_store, tail, argc, argv);
+}
+
+static bool command_accepts_target_tokens(const char *command) {
+    return command && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
+                       !strcmp(command, "tail") || !strcmp(command, "dump") ||
+                       !strcmp(command, "prune") || !strcmp(command, "killcmd"));
+}
+
+static int maybe_elevate_requested_system_targets(const char *program,
+                                                  const char *command,
+                                                  int argc,
+                                                  char **argv,
+                                                  int *rc_out) {
+    if (!command_accepts_target_tokens(command) || argc <= 0) {
+        return 0;
+    }
+    struct store_paths system_store;
+    if (init_system_store(&system_store) != 0) {
+        return 0;
+    }
+    char **canon = calloc((size_t)argc + 1, sizeof(char *));
+    char **owned_tokens = calloc((size_t)argc, sizeof(char *));
+    if (!canon || !owned_tokens) {
+        free(canon);
+        free(owned_tokens);
+        *rc_out = 3;
+        return 1;
+    }
+    bool changed = false;
+    int n = 0;
+    canon[n++] = (char *)command;
+    for (int i = 0; i < argc; i++) {
+        const char *token = argv[i];
+        const char *atom = NULL;
+        enum id_token_scope scope = parse_id_token(token, &atom);
+        if (!strcmp(command, "prune") && strcmp(token, "all") == 0) {
+            canon[n++] = argv[i];
+            continue;
+        }
+        if ((scope == ID_TOKEN_PLAIN || scope == ID_TOKEN_SYSTEM) && atom &&
+            (valid_profile_hash(atom) || valid_alias(atom))) {
+            char hash[PROFILE_HASH_STR_LEN];
+            if (resolve_public_profile_token(&system_store, atom, hash) == 1) {
+                size_t need = strlen("system:") + strlen(hash) + 1;
+                owned_tokens[i] = malloc(need);
+                if (!owned_tokens[i]) {
+                    for (int j = 0; j < i; j++) free(owned_tokens[j]);
+                    free(owned_tokens);
+                    free(canon);
+                    *rc_out = 3;
+                    return 1;
+                }
+                snprintf(owned_tokens[i], need, "system:%s", hash);
+                canon[n++] = owned_tokens[i];
+                changed = true;
+                continue;
+            }
+        }
+        canon[n++] = argv[i];
+    }
+    if (!changed) {
+        free(owned_tokens);
+        free(canon);
+        return 0;
+    }
+    *rc_out = elevate_with_sudo_canonical(program, n, canon);
+    for (int i = 0; i < argc; i++) {
+        free(owned_tokens[i]);
+    }
+    free(owned_tokens);
+    free(canon);
+    return 1;
+}
+
+static int cmd_alias_action(const struct invocation *inv,
+                            const struct store_paths *user_store,
+                            const struct store_paths *system_store,
+                            const char *program,
+                            int argc,
+                            char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "usage: sigmund alias <id> <name>\n");
+        return 5;
+    }
+    const char *target_token = argv[0];
+    const char *name = argv[1];
+    if (!valid_alias(name)) {
+        fprintf(stderr, "sigmund: error: invalid alias '%s'\n", name);
+        return 5;
+    }
+
+    struct resolved_target target;
+    if (resolve_target(inv, user_store, system_store, target_token, &target) != 0) {
+        return 5;
+    }
+    if (target.scope == RESOLVE_NOT_FOUND) {
+        return report_not_found(target_token);
+    }
+    if (target.needs_elevation) {
+        char scoped[8 + PROFILE_HASH_STR_LEN];
+        if (checked_snprintf(scoped, sizeof(scoped), "system:%s", target.id) != 0) {
+            return 3;
+        }
+        char *canon[3] = {"alias", scoped, (char *)name};
+        return elevate_with_sudo_canonical(program, 3, canon);
+    }
+    if (target.store.kind == STORE_USER_LOCAL && inv->euid_root) {
+        fprintf(stderr, "sigmund: error: create user-local aliases as that user\n");
+        return 5;
+    }
+    if (target.store.kind == STORE_SYSTEM_MANAGED) {
+        if (ensure_system_store(&target.store) != 0) {
+            die_errno("sigmund: failed to init system storage");
+        }
+    } else if (ensure_user_store_for_current_user(&target.store) != 0) {
+        die_errno("sigmund: failed to init user storage");
+    }
+
+    struct record r;
+    char record_path[SIGMUND_PATH_MAX];
+    if (load_record_by_id(target.store.record_dir, target.id, &r, record_path, sizeof(record_path)) != 0) {
+        return 5;
+    }
+    char *j = NULL;
+    if (read_owned_file_no_symlink(record_path, &j) != 0) {
+        return 5;
+    }
+    char **profile_argv = NULL;
+    int profile_argc = 0;
+    char binary_path[SIGMUND_PATH_MAX];
+    char hash[PROFILE_HASH_STR_LEN];
+    int rc = 0;
+    if (json_get_argv_alloc(j, &profile_argv, &profile_argc) != 0 ||
+        resolve_binary_path(profile_argv[0], binary_path, sizeof(binary_path)) != 0) {
+        fprintf(stderr, "sigmund: error: failed to derive profile from run %s\n", target.id);
+        rc = 5;
+        goto out;
+    }
+    profile_hash_for_argv(binary_path, profile_argc, profile_argv, hash);
+    if (write_profile_atomic(&target.store, hash, binary_path, profile_argc, profile_argv) != 0) {
+        die_errno("sigmund: failed to write profile");
+    }
+    if (alias_upsert_hash(&target.store, name, hash) != 0) {
+        die_errno("sigmund: failed to write alias");
+    }
+    printf("sigmund: alias %s -> %s\n", name, hash);
+
+out:
+    free_argv_alloc(profile_argv, profile_argc);
+    free(j);
+    return rc;
+}
+
+static int print_aliases_for_store(const char *scope, const struct store_paths *store) {
+    struct alias_entry *entries = NULL;
+    size_t count = 0;
+    if (load_aliases(store, &entries, &count) != 0) {
+        fprintf(stderr, "sigmund: warning: failed to read %s aliases\n", scope);
+        return 5;
+    }
+    for (size_t i = 0; i < count; i++) {
+        printf("%-8s %-64s %s\n", scope, entries[i].hash, entries[i].name);
+    }
+    free_aliases(entries);
+    return 0;
+}
+
+static int cmd_aliases_action(const struct invocation *inv,
+                              const struct store_paths *user_store,
+                              const struct store_paths *system_store) {
+    printf("%-8s %-64s %s\n", "SCOPE", "HASH", "ALIAS");
+    int rc = 0;
+    if (inv->euid_root) {
+        if (print_aliases_for_store("system", system_store) != 0) {
+            rc = 5;
+        }
+        if (!inv->requested_system && inv->have_sudo_user) {
+            struct store_paths sudo_user_store;
+            if (init_invoking_user_store(inv, &sudo_user_store) == 0 &&
+                print_aliases_for_store("user", &sudo_user_store) != 0) {
+                rc = 5;
+            }
+        }
+        return rc;
+    }
+    if (print_aliases_for_store("user", user_store) != 0) {
+        rc = 5;
+    }
+    if (print_aliases_for_store("system", system_store) != 0) {
+        rc = 5;
+    }
+    return rc;
+}
+
+static const char *const grant_action_names[] = {"start", "stop", "kill", "tail", "dump", "prune"};
+#define GRANT_ACTION_COUNT ((int)(sizeof(grant_action_names) / sizeof(grant_action_names[0])))
+
+static int parse_grant_subject(const char *input, char *out, size_t n) {
+    if (!input || !*input) {
+        return -1;
+    }
+    if (strcmp(input, "all") == 0 || strcmp(input, "ALL") == 0) {
+        return checked_snprintf(out, n, "%s", "ALL");
+    }
+    const char *name = input;
+    bool group = false;
+    if (*name == '%') {
+        group = true;
+        name++;
+        if (!*name) {
+            return -1;
+        }
+    }
+    size_t len = strlen(name);
+    if (len == 0 || len > ALIAS_MAX_LEN) {
+        return -1;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (!(isalnum(c) || c == '_' || c == '-')) {
+            return -1;
+        }
+    }
+    return checked_snprintf(out, n, "%s%s", group ? "%" : "", name);
+}
+
+static int grant_action_index(const char *name) {
+    for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+        if (strcmp(name, grant_action_names[i]) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int parse_grant_actions(const char *input, bool selected[GRANT_ACTION_COUNT], bool *all_scope) {
+    for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+        selected[i] = false;
+    }
+    *all_scope = false;
+    if (!input || !*input) {
+        for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+            selected[i] = true;
+        }
+        *all_scope = true;
+        return 0;
+    }
+    if (strlen(input) > 128) {
+        return -1;
+    }
+    char buf[129];
+    snprintf(buf, sizeof(buf), "%s", input);
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        if (!*tok) {
+            return -1;
+        }
+        int idx = grant_action_index(tok);
+        if (idx < 0) {
+            return -1;
+        }
+        selected[idx] = true;
+    }
+    return 0;
+}
+
+static int validate_sigmund_self_for_sudoers(const char *program, char *abs_sigmund, size_t n) {
+    if (resolve_self_executable_path(program, abs_sigmund, n) != 0) {
+        fprintf(stderr, "sigmund: error: cannot determine executable path for sudoers grant\n");
+        return -1;
+    }
+    for (const char *p = abs_sigmund; *p; p++) {
+        if (isspace((unsigned char)*p)) {
+            fprintf(stderr, "sigmund: error: executable path contains whitespace and cannot be safely managed in sudoers\n");
+            return -1;
+        }
+    }
+    struct stat st;
+    if (stat(abs_sigmund, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fprintf(stderr, "sigmund: error: executable path is not a regular file: %s\n", abs_sigmund);
+        return -1;
+    }
+    if (st.st_uid != 0 || (st.st_mode & 0022) != 0) {
+        fprintf(stderr,
+                "sigmund: error: refusing sudoers grant because %s is not root-owned with group/world writes disabled\n",
+                abs_sigmund);
+        return -1;
+    }
+    return 0;
+}
+
+static const char *sudoers_dir_path(void) {
+#ifdef SIGMUND_TESTING
+    const char *override = getenv("SIGMUND_TEST_SUDOERS_DIR");
+    if (override && *override) {
+        return override;
+    }
+#endif
+    return "/etc/sudoers.d";
+}
+
+static int resolve_system_alias_hash_for_grant(const struct store_paths *system_store,
+                                               const char *alias,
+                                               char hash[PROFILE_HASH_STR_LEN]) {
+    if (!valid_alias(alias)) {
+        return -1;
+    }
+    if (alias_lookup_hash(system_store, alias, hash) != 0) {
+        return -1;
+    }
+    return profile_exists_in_store(system_store, hash);
+}
+
+static int build_sudoers_line(char *out,
+                              size_t n,
+                              const char *subject,
+                              const char *abs_sigmund,
+                              const char *action,
+                              const char *hash) {
+    return checked_snprintf(out, n,
+                            "%s ALL=(root) NOPASSWD: %s --system --elevated %s system\\:%s",
+                            subject, abs_sigmund, action, hash);
+}
+
+static bool any_grant_action_selected(const bool selected[GRANT_ACTION_COUNT]) {
+    for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+        if (selected[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool text_contains_exact_line(const char *text, const char *line) {
+    size_t line_len = strlen(line);
+    const char *p = text;
+    while (p && *p) {
+        const char *end = strchr(p, '\n');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len == line_len && strncmp(p, line, line_len) == 0) {
+            return true;
+        }
+        p = end ? end + 1 : NULL;
+    }
+    return false;
+}
+
+static int find_visudo(char *out, size_t n) {
+#ifdef SIGMUND_TESTING
+    const char *override = getenv("SIGMUND_TEST_VISUDO_PROG");
+    if (override && *override) {
+        return checked_snprintf(out, n, "%s", override);
+    }
+#endif
+    return resolve_binary_path("visudo", out, n);
+}
+
+static int validate_sudoers_candidate(const char *path) {
+    char visudo[SIGMUND_PATH_MAX];
+    if (find_visudo(visudo, sizeof(visudo)) != 0) {
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        execl(visudo, visudo, "-cf", path, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) {
+            continue;
+        }
+        return -1;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static int subject_file_label_for_grant(const char *subject, char *out, size_t n) {
+    if (strcmp(subject, "ALL") == 0) {
+        return checked_snprintf(out, n, "%s", "all");
+    }
+    if (subject[0] == '%') {
+        return checked_snprintf(out, n, "group_%s", subject + 1);
+    }
+    return checked_snprintf(out, n, "%s", subject);
+}
+
+static void actions_from_existing_sudoers(const char *existing,
+                                          const char *subject,
+                                          const char *abs_sigmund,
+                                          const char *hash,
+                                          bool selected[GRANT_ACTION_COUNT]) {
+    for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+        selected[i] = false;
+        char line[SIGMUND_PATH_MAX + 192];
+        if (build_sudoers_line(line, sizeof(line), subject, abs_sigmund, grant_action_names[i], hash) == 0 &&
+            existing && text_contains_exact_line(existing, line)) {
+            selected[i] = true;
+        }
+    }
+}
+
+static int write_sudoers_template_file(const char *sudoers_path,
+                                       const char *target_label,
+                                       const char *subject,
+                                       const char *abs_sigmund,
+                                       const char *hash,
+                                       const bool selected[GRANT_ACTION_COUNT],
+                                       bool all_scope) {
+    char dir[SIGMUND_PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s", sudoers_path);
+    char *slash = strrchr(dir, '/');
+    if (!slash) {
+        errno = EINVAL;
+        return -1;
+    }
+    *slash = '\0';
+    char tmp[SIGMUND_PATH_MAX];
+    if (checked_snprintf(tmp, sizeof(tmp), "%s.tmp", sudoers_path) != 0) {
+        return -1;
+    }
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0440);
+    if (fd < 0) {
+        return -1;
+    }
+    if (fchmod(fd, 0440) != 0 || (geteuid() == 0 && fchown(fd, 0, 0) != 0)) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+    FILE *f = fdopen(fd, "w");
+    if (!f) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+    fputs("# sigmund managed sudoers; use sigmund grant/revoke\n", f);
+    fprintf(f, "# target: ");
+    json_escape(f, target_label);
+    fputc('\n', f);
+    fprintf(f, "# hash: ");
+    json_escape(f, hash);
+    fputc('\n', f);
+    fprintf(f, "# actions: %s\n", all_scope ? "ALL" : "explicit");
+    for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+        if (selected[i]) {
+            char line[SIGMUND_PATH_MAX + 192];
+            if (build_sudoers_line(line, sizeof(line), subject, abs_sigmund, grant_action_names[i], hash) != 0) {
+                fclose(f);
+                unlink(tmp);
+                return -1;
+            }
+            fputs(line, f);
+            fputc('\n', f);
+        }
+    }
+    if (ferror(f) || fflush(f) != 0 || fsync(fd) != 0) {
+        fclose(f);
+        unlink(tmp);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    if (validate_sudoers_candidate(tmp) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, sudoers_path) != 0) {
+        int saved = errno;
+        unlink(tmp);
+        errno = saved;
+        return -1;
+    }
+    (void)fsync_dir_path(dir);
+    return 0;
+}
+
+static int unlink_sudoers_template_file(const char *sudoers_path) {
+    if (unlink(sudoers_path) != 0 && errno != ENOENT) {
+        return -1;
+    }
+    char dir[SIGMUND_PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s", sudoers_path);
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = '\0';
+        (void)fsync_dir_path(dir);
+    }
+    return 0;
+}
+
+static int cmd_grant_revoke_action(const struct invocation *inv,
+                                   const struct store_paths *system_store,
+                                   const char *program,
+                                   bool grant,
+    int argc,
+    char **argv) {
+    if (argc < 2 || argc > 3) {
+        fprintf(stderr, "usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune]\n",
+                grant ? "grant" : "revoke");
+        return 5;
+    }
+    if (!inv->euid_root) {
+        fprintf(stderr, "sigmund: error: %s requires root authority\n", grant ? "grant" : "revoke");
+        return 5;
+    }
+    char abs_sigmund[SIGMUND_PATH_MAX];
+    if (validate_sigmund_self_for_sudoers(program, abs_sigmund, sizeof(abs_sigmund)) != 0) {
+        return 5;
+    }
+    char subject[128];
+    if (parse_grant_subject(argv[1], subject, sizeof(subject)) != 0) {
+        fprintf(stderr, "sigmund: error: invalid sudoers subject '%s'\n", argv[1]);
+        return 5;
+    }
+    bool selected[GRANT_ACTION_COUNT];
+    bool all_scope = false;
+    if (parse_grant_actions(argc == 3 ? argv[2] : NULL, selected, &all_scope) != 0) {
+        fprintf(stderr, "sigmund: error: invalid action list '%s'\n", argc == 3 ? argv[2] : "");
+        return 5;
+    }
+    char hash[PROFILE_HASH_STR_LEN];
+    if (resolve_system_alias_hash_for_grant(system_store, argv[0], hash) != 0) {
+        fprintf(stderr, "sigmund: error: grant target must be an existing system alias\n");
+        return 5;
+    }
+
+    const char *target_label = argv[0];
+    char subject_label[128];
+    if (subject_file_label_for_grant(subject, subject_label, sizeof(subject_label)) != 0) {
+        return 3;
+    }
+    const char *dir = sudoers_dir_path();
+    char sudoers_path[SIGMUND_PATH_MAX];
+    if (checked_snprintf(sudoers_path, sizeof(sudoers_path), "%s/sigmund_%s_%s", dir, target_label, subject_label) != 0) {
+        return 3;
+    }
+
+    if (!grant) {
+        if (all_scope) {
+            if (unlink_sudoers_template_file(sudoers_path) != 0) {
+                die_errno("sigmund: failed to remove managed sudoers file");
+            }
+            printf("sigmund: revoked sudoers entries for %s %s\n", subject, hash);
+            return 0;
+        }
+        char *existing = NULL;
+        bool remaining[GRANT_ACTION_COUNT];
+        if (read_owned_file_no_symlink(sudoers_path, &existing) != 0) {
+            if (errno == ENOENT) {
+                printf("sigmund: revoked sudoers entries for %s %s\n", subject, hash);
+                return 0;
+            }
+            die_errno("sigmund: failed to read managed sudoers file");
+        }
+        actions_from_existing_sudoers(existing, subject, abs_sigmund, hash, remaining);
+        free(existing);
+        for (int i = 0; i < GRANT_ACTION_COUNT; i++) {
+            if (selected[i]) {
+                remaining[i] = false;
+            }
+        }
+        if (!any_grant_action_selected(remaining)) {
+            if (unlink_sudoers_template_file(sudoers_path) != 0) {
+                die_errno("sigmund: failed to remove managed sudoers file");
+            }
+        } else if (write_sudoers_template_file(sudoers_path, target_label, subject, abs_sigmund, hash, remaining, false) != 0) {
+            die_errno("sigmund: failed to update managed sudoers file");
+        }
+        printf("sigmund: revoked sudoers entries for %s %s\n", subject, hash);
+        return 0;
+    }
+
+    if (write_sudoers_template_file(sudoers_path, target_label, subject, abs_sigmund, hash, selected, all_scope) != 0) {
+        die_errno("sigmund: failed to update managed sudoers file");
+    }
+    printf("sigmund: granted sudoers entries for %s %s\n", subject, hash);
+    return 0;
+}
+
 static void usage(void) {
     printf("sigmund %s — More than nohup, less than systemd.\n\n"
            "start forms:\n"
@@ -3162,19 +4968,24 @@ static void usage(void) {
            "\n"
            "commands:\n"
            "  sigmund list                      list user-local and public root-managed runs\n"
-           "  sigmund tail <id>                 follow existing log output\n"
-           "  sigmund dump <id>                 print saved log output and exit\n"
-           "  sigmund stop <id>...              graceful stop (SIGTERM → SIGKILL)\n"
-           "  sigmund kill <id>...              immediate kill (SIGKILL)\n"
+           "  sigmund tail <target>             follow existing log output\n"
+           "  sigmund dump <target>             print saved log output and exit\n"
+           "  sigmund stop <target>...          graceful stop (SIGTERM → SIGKILL)\n"
+           "  sigmund kill <target>...          immediate kill (SIGKILL)\n"
            "  sigmund killcmd <id>...           print kill command for scripting\n"
+           "  sigmund alias <id> <name>         pin a run argv as an alias profile\n"
+           "  sigmund aliases                   list visible aliases and profile hashes\n"
+           "  sigmund grant <alias> <user> [actions]\n"
+           "  sigmund revoke <alias> <user> [actions]\n"
            "  sigmund prune                     remove exited/failed records and orphan logs\n"
-           "  sigmund prune <id>                remove one prunable run and its log\n"
+           "  sigmund prune <target>            remove one prunable run and its log\n"
            "  sigmund prune all                 remove all prunable runs (stale+exited+failed)\n"
            "\n"
            "target forms:\n"
-           "  <id>                              normal invocation-context resolution\n"
-           "  user:<id>                         force user-local lookup\n"
-           "  system:<id>                       force root-managed lookup\n"
+           "  <target>                          normal invocation-context resolution\n"
+           "  user:<target>                     force user-local lookup\n"
+           "  system:<target>                   force root-managed lookup\n"
+           "  target = run ID, alias, or 64-character profile hash\n"
            "\n"
            "switches:\n"
            "  --system                          run this invocation with root-managed authority\n"
@@ -3190,7 +5001,9 @@ static void usage(void) {
 static bool is_sigmund_owned_command(const char *s) {
     return s && (!strcmp(s, "list") || !strcmp(s, "stop") || !strcmp(s, "kill") ||
                  !strcmp(s, "tail") || !strcmp(s, "dump") || !strcmp(s, "prune") ||
-                 !strcmp(s, "start") || !strcmp(s, "killcmd"));
+                 !strcmp(s, "start") || !strcmp(s, "killcmd") ||
+                 !strcmp(s, "alias") || !strcmp(s, "aliases") ||
+                 !strcmp(s, "grant") || !strcmp(s, "revoke"));
 }
 
 static int perform_explicit_start(const struct invocation *inv,
@@ -3208,9 +5021,9 @@ static int perform_explicit_start(const struct invocation *inv,
         shell_argv[1] = "-c";
         shell_argv[2] = argv[0];
         shell_argv[3] = NULL;
-        return perform_start(inv, store, tail, 3, shell_argv);
+        return perform_start(inv, store, tail, 3, shell_argv, NULL, NULL);
     }
-    return perform_start(inv, store, tail, argc, argv);
+    return perform_start(inv, store, tail, argc, argv, NULL, NULL);
 }
 
 int main(int argc, char **argv) {
@@ -3315,7 +5128,28 @@ int main(int argc, char **argv) {
     }
 
     bool is_list = owned && !strcmp(command, "list");
+    if (requested_system && !inv.euid_root && owned && !strcmp(command, "start") && cmd_argc == 1) {
+        struct store_paths pre_system_store;
+        if (init_system_store(&pre_system_store) == 0) {
+            const char *atom = NULL;
+            enum id_token_scope start_scope = parse_id_token(cmd_argv[0], &atom);
+            if ((start_scope == ID_TOKEN_PLAIN || start_scope == ID_TOKEN_SYSTEM) && atom &&
+                (valid_profile_hash(atom) || valid_alias(atom))) {
+                char hash[PROFILE_HASH_STR_LEN];
+                if (resolve_public_profile_token(&pre_system_store, atom, hash) == 1) {
+                    int rc = elevate_start_hash(argv[0], tail, hash);
+                    free(cmd_argv);
+                    return rc;
+                }
+            }
+        }
+    }
     if (requested_system && !inv.euid_root && !is_list) {
+        int canonical_rc = 0;
+        if (owned && maybe_elevate_requested_system_targets(argv[0], command, cmd_argc, cmd_argv, &canonical_rc)) {
+            free(cmd_argv);
+            return canonical_rc;
+        }
         int rc = elevate_with_sudo_parsed(argv[0], owned, command, tail, force_raw, cmd_argc, cmd_argv);
         if (owned) {
             free(cmd_argv);
@@ -3351,7 +5185,7 @@ int main(int argc, char **argv) {
                 die_errno("sigmund: failed to init user storage");
             }
         }
-        return perform_start(&inv, &start_store, tail, cmd_argc, cmd_argv);
+        return perform_start(&inv, &start_store, tail, cmd_argc, cmd_argv, NULL, NULL);
     }
 
     if (!strcmp(command, "start")) {
@@ -3365,7 +5199,7 @@ int main(int argc, char **argv) {
                 die_errno("sigmund: failed to init user storage");
             }
         }
-        int rc = perform_explicit_start(&inv, &start_store, tail, cmd_argc, cmd_argv);
+        int rc = cmd_start_action(&inv, &user_store, &system_store, argv[0], &start_store, tail, cmd_argc, cmd_argv);
         free(cmd_argv);
         return rc;
     }
@@ -3385,7 +5219,7 @@ int main(int argc, char **argv) {
 
     if (!strcmp(command, "tail")) {
         if (cmd_argc < 1) {
-            fprintf(stderr, "usage: sigmund tail <id>\n");
+            fprintf(stderr, "usage: sigmund tail <target>\n");
             free(cmd_argv);
             return 5;
         }
@@ -3395,7 +5229,7 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(command, "dump")) {
         if (cmd_argc < 1) {
-            fprintf(stderr, "usage: sigmund dump <id>\n");
+            fprintf(stderr, "usage: sigmund dump <target>\n");
             free(cmd_argv);
             return 5;
         }
@@ -3406,6 +5240,37 @@ int main(int argc, char **argv) {
     if (!strcmp(command, "prune")) {
         const char *target = cmd_argc > 0 ? cmd_argv[0] : NULL;
         int rc = cmd_prune_action(&inv, &user_store, &system_store, argv[0], target);
+        free(cmd_argv);
+        return rc;
+    }
+    if (!strcmp(command, "alias")) {
+        int rc = cmd_alias_action(&inv, &user_store, &system_store, argv[0], cmd_argc, cmd_argv);
+        free(cmd_argv);
+        return rc;
+    }
+    if (!strcmp(command, "aliases")) {
+        if (cmd_argc != 0) {
+            fprintf(stderr, "usage: sigmund aliases\n");
+            free(cmd_argv);
+            return 5;
+        }
+        int rc = cmd_aliases_action(&inv, &user_store, &system_store);
+        free(cmd_argv);
+        return rc;
+    }
+    if (!strcmp(command, "grant")) {
+        if (ensure_system_store(&system_store) != 0) {
+            die_errno("sigmund: failed to init system storage");
+        }
+        int rc = cmd_grant_revoke_action(&inv, &system_store, argv[0], true, cmd_argc, cmd_argv);
+        free(cmd_argv);
+        return rc;
+    }
+    if (!strcmp(command, "revoke")) {
+        if (ensure_system_store(&system_store) != 0) {
+            die_errno("sigmund: failed to init system storage");
+        }
+        int rc = cmd_grant_revoke_action(&inv, &system_store, argv[0], false, cmd_argc, cmd_argv);
         free(cmd_argv);
         return rc;
     }

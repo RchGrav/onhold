@@ -10,7 +10,7 @@ else
 STATIC_LDFLAGS ?= -static
 endif
 TEST_LDFLAGS ?=
-VERSION_BASE ?= 0.2.0
+VERSION_BASE ?= 0.2.5
 VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || printf '%s-%s%s\n' "$(VERSION_BASE)" "$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" "$$(git diff --quiet 2>/dev/null || echo -dirty)")
 VERSION_CPPFLAG := -DSIGMUND_VERSION=\"$(VERSION)\"
 

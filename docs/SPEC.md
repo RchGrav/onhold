@@ -1,6 +1,6 @@
 # Sigmund Specification
 
-This document describes the current Sigmund implementation contract: user-local state, root-managed state, public redacted discovery, sudo-aware ID resolution, argv-preserving fork/wait self-elevation, and process-safety behavior.
+This document describes the current Sigmund implementation contract: user-local state, root-managed state, public redacted discovery, alias/profile resolution, sudo-aware target resolution, argv-preserving fork/wait self-elevation, and process-safety behavior.
 
 ## 1. Storage contexts
 
@@ -20,6 +20,8 @@ Required permissions:
 directory: 0700 user:user
 records:   0600 user:user
 logs:      0600 user:user
+aliases:   0600 user:user aliases.json
+profiles:  0600 user:user profiles.json
 ```
 
 User-local state is private to the user. Sigmund does not scan every user's home directory and does not require globally unique run IDs across users.
@@ -38,7 +40,9 @@ Layout:
 ```text
 /var/lib/sigmund/runs/      private root run records
 /var/lib/sigmund/logs/      private root logs
+/var/lib/sigmund/profiles.json
 /var/lib/sigmund/public/    public root run index
+/var/lib/sigmund/public/aliases.json
 ```
 
 macOS uses the same layout under `/var/db/sigmund`.
@@ -49,8 +53,10 @@ Required permissions:
 root state dir:       0755 root:root
 private run records:  0600 root:root
 private logs:         0600 root:root
+private profiles:     0600 root:root
 public dir:           0755 root:root
 public index files:   0644 root:root
+public aliases:       0644 root:root
 ```
 
 A root-managed start must never create a run under `/root/.local/state/sigmund` and must never accidentally create a root-managed run inside the invoking user's home state.
@@ -130,6 +136,10 @@ tail
 dump
 prune
 start
+alias
+aliases
+grant
+revoke
 ```
 
 For Sigmund-owned commands, invocation switches may appear before or after the command arguments:
@@ -189,7 +199,13 @@ A root-managed start writes:
 
 If public index creation fails, startup fails and rolls back. A root-managed run that cannot be discovered violates the storage model.
 
-## 5. Public root index
+### 4.4 Profile start
+
+`sigmund start <alias>` and `sigmund start <hash>` start immutable profiles. A profile start loads the protected profile by hash, executes the stored argv using the stored absolute binary path, and writes `profile_hash` into the new run record.
+
+For normal non-root invocation, plain profile targets resolve user-local first, then public root-managed aliases/hashes. Root-managed profile starts self-elevate and canonicalize the target to `system:<hash>` before crossing sudo.
+
+## 5. Public root index and aliases
 
 The public root index contains only safe discovery and elevation metadata.
 
@@ -226,6 +242,16 @@ Private root records are authoritative. Public records are derived discovery dat
 
 Because Sigmund is daemonless and cannot continuously refresh root-public state after natural process exit, normal `sigmund list` displays public root rows as `unknown` rather than overselling stale `running` hints. Root/private list and root action commands evaluate authoritative state from private records.
 
+`public/aliases.json` is a flat JSON object mapping validated alias names to 64-character profile hashes:
+
+```json
+{
+  "web-test": "fb736e64274bb2fd4861ff5d239288d4abc74aa3ae233b733b6201da507868ee"
+}
+```
+
+Public aliases must not include argv, binary paths, log paths, environment, process identity, or sudo provenance.
+
 ## 6. Run IDs and collision checks
 
 Run IDs are random opaque hex identifiers. Global uniqueness across all users is not required.
@@ -260,9 +286,9 @@ root-managed public index IDs
 
 If old state, manual files, or cross-user private state still create a collision, correctness is preserved by invocation-based resolution.
 
-## 7. ID resolution
+## 7. Target resolution
 
-All action commands use the shared resolver. Action commands are:
+Action commands use the shared resolver. Action commands are:
 
 ```text
 stop
@@ -271,6 +297,18 @@ prune
 tail
 dump
 ```
+
+Targets may be:
+
+```text
+run ID prefix
+alias
+64-character profile hash
+user:<target>
+system:<target>
+```
+
+Alias names must be 1 to 64 characters and must contain only `[A-Za-z0-9_-]`. They must not contain `/` or `.`, and must not parse as a full profile hash. If an alias also looks like a run-ID prefix, concrete run-ID resolution wins before alias lookup.
 
 The resolver returns one normative result:
 
@@ -283,13 +321,17 @@ clean error
 
 Final action execution must use only the resolved target. Action commands must not perform ad hoc store probing outside the shared resolver except for final execution against the already resolved target.
 
-### 7.1 Normal non-root plain ID
+### 7.1 Normal non-root plain target
 
 ```text
 if user-local ID exists:
   target user-local
+else if user-local alias/hash matches exactly one run:
+  target user-local
 else if root public ID exists:
   target root-managed requiring elevation
+else if root public alias/hash exists:
+  target root-managed requiring elevation as system:<hash>
 else:
   not found
 ```
@@ -297,15 +339,15 @@ else:
 Important invariant:
 
 ```text
-If user-local and root-managed public entries share a plain ID,
-normal Sigmund targets the user-local run and does not self-elevate.
+If user-local and root-managed public targets share a plain token,
+normal Sigmund targets the user-local match and does not self-elevate.
 ```
 
-### 7.2 Root/sudo plain ID
+### 7.2 Root/sudo plain target
 
 ```text
-root_match = root-managed private ID exists
-user_match = invoking-user-local ID exists, if sudo provenance exists
+root_match = root-managed private ID exists, or alias/hash matches exactly one root-managed run
+user_match = invoking-user-local ID exists, or alias/hash matches exactly one invoking-user run, if sudo provenance exists
 
 if root_match:
   target root-managed
@@ -317,25 +359,52 @@ else:
 
 This means `sudo sigmund stop <id>` can stop an invoking user's local run when that ID exists only in the invoking user's local state. In the rare conflict where both exist, root-managed wins.
 
-Direct root without sudo provenance has no invoking-user context and resolves plain IDs only against root-managed state.
+Direct root without sudo provenance has no invoking-user context and resolves plain targets only against root-managed state.
 
-### 7.3 Explicit deterministic ID tokens
+### 7.3 Explicit deterministic target tokens
 
-Plain IDs are the normal interface. Explicit tokens are supported for rare deterministic cases:
+Plain targets are the normal interface. Explicit tokens are supported for rare deterministic cases:
 
 ```text
-user:<id>    force user-local lookup
-system:<id>  force root-managed lookup
+user:<target>    force user-local lookup
+system:<target>  force root-managed lookup
 ```
 
 Rules:
 
 ```text
-user:<id> never targets root-managed state.
-system:<id> never targets user-local state.
+user:<target> never targets root-managed state.
+system:<target> never targets user-local state.
 ```
 
-If `system:<id>` is used from normal non-root invocation, Sigmund may self-elevate. If `user:<id>` is used from root/sudo invocation, Sigmund targets the invoking user's local state when sudo provenance exists. Direct root using `user:<id>` without sudo provenance returns a clean error.
+If `system:<target>` is used from normal non-root invocation, Sigmund may self-elevate. If `user:<target>` is used from root/sudo invocation, Sigmund targets the invoking user's local state when sudo provenance exists. Direct root using `user:<target>` without sudo provenance returns a clean error.
+
+### 7.4 Profiles
+
+Protected profile state is stored in `profiles.json` as a hash-keyed object:
+
+```json
+{
+  "fb736e64274bb2fd4861ff5d239288d4abc74aa3ae233b733b6201da507868ee": {
+    "bin": "/usr/bin/redis-server",
+    "args": ["redis-server", "/etc/redis.conf"]
+  }
+}
+```
+
+The profile hash is SHA-256 over a versioned, NUL-delimited byte stream containing:
+
+```text
+domain/version
+resolved absolute binary path
+argc
+each argv element in exact order
+environment count, currently 0
+```
+
+Environment capture is reserved for a future schema version. Current run records do not store environment, and silently hashing ambient environment would be unstable and could leak secrets.
+
+When a normal user targets a root-managed alias, Sigmund resolves the alias to its hash before self-elevation. The sudo boundary must carry `system:<hash>`, never `system:<alias>`.
 
 ## 8. Self-elevation boundary
 
@@ -343,10 +412,12 @@ Normal non-root Sigmund may self-elevate only when:
 
 ```text
 the command is stop, kill, prune, tail, or dump;
-no user-local plain-ID target matched;
-a root-managed public entry matched;
+no user-local plain target matched;
+a root-managed public ID, alias, or profile hash matched;
 the target requires elevation.
 ```
+
+`sigmund --system start <profile>` may also self-elevate. Here, `<profile>` is an alias or a profile hash. Before the sudo boundary, a root-managed alias must be resolved to its profile hash.
 
 The elevation boundary is argv-preserving `fork()` + `waitpid()`:
 
@@ -363,7 +434,7 @@ child:
     "/absolute/path/to/sigmund",
     "--system",
     "--elevated",
-    <canonical-command...>,
+    <canonical-command using system:<id-or-hash> where needed>,
     NULL
   ])
 ```
@@ -457,7 +528,10 @@ state
 exit_code
 term_signal
 launch_error
+profile_hash
 ```
+
+`profile_hash` is present when a run was started from an immutable profile.
 
 Best-effort process identity fields:
 
@@ -530,7 +604,26 @@ Signaling refuses `stale` and `unknown` targets. A zombie leader with live same-
 
 Root-managed prune follows the same resolver and elevation rules as other action commands.
 
-## 14. Test harness contract
+## 14. Sudoers grants
+
+`sigmund grant` and `sigmund revoke` manage only Sigmund-owned sudoers entries. They require root authority and operate on root-managed profiles only:
+
+```text
+sigmund grant <alias> <user> [start,stop,kill,tail,dump,prune]
+sigmund revoke <alias> <user> [start,stop,kill,tail,dump,prune]
+```
+
+The grant target must be an existing root-managed alias. The `<user>` argument may be a username, `%group`, or `all`. Sigmund resolves the alias to its immutable profile hash before writing sudoers; the alias name is used only for the managed filename. If the action list is omitted, all supported Sigmund actions for the profile are selected. This is a wildcard over Sigmund's supported profile actions, not arbitrary sudo command access. `purge` is not a supported action; the command is `prune`.
+
+Before writing sudoers, Sigmund resolves its own executable path and refuses to proceed unless that file is root-owned, regular, and not writable by group or world. Managed sudoers lines grant NOPASSWD access only to exact canonical invocations such as:
+
+```text
+alice ALL=(root) NOPASSWD: /usr/bin/sigmund --system --elevated stop system\:<hash>
+```
+
+The managed file path is `/etc/sudoers.d/sigmund_<alias>_<user>` in production. Test builds may use `SIGMUND_TEST_SUDOERS_DIR`. Writes go to a same-directory `.tmp` candidate, use mode `0440`, are validated with `visudo -cf <tmp>`, and then `rename()` into place.
+
+## 15. Test harness contract
 
 The test suite must validate Sigmund contexts explicitly rather than inheriting the test runner's EUID.
 
@@ -548,6 +641,6 @@ When CI starts as root, the harness creates a temporary non-root test user. When
 
 Tests must not touch real `/var/lib/sigmund` or `/var/db/sigmund`. `make test` compiles with `SIGMUND_TESTING` and uses `SIGMUND_TEST_SYSTEM_STATE_DIR`.
 
-## 15. Non-goals
+## 16. Non-goals
 
 This implementation does not add root log visibility for normal users, global all-user private state scanning, global run-ID uniqueness across all users, or a daemon/supervisor. Root logs and private root records require root authority; normal users see only redacted public index rows.

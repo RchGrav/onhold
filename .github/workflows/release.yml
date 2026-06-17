@@ -78,7 +78,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="0.2.0-${GITHUB_SHA::7}"
+            version="0.2.5-${GITHUB_SHA::7}"
           fi
           echo "value=${version}" >> "$GITHUB_OUTPUT"
 
@@ -133,7 +133,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="0.2.0-${GITHUB_SHA::7}"
+            version="0.2.5-${GITHUB_SHA::7}"
           fi
           echo "value=${version}" >> "$GITHUB_OUTPUT"
 
@@ -190,7 +190,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="0.2.0-${GITHUB_SHA::7}"
+            version="0.2.5-${GITHUB_SHA::7}"
           fi
           echo "value=${version}" >> "$GITHUB_OUTPUT"
 

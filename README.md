@@ -18,7 +18,7 @@ Many CI runners and non-interactive job systems terminate the invoking shell's p
 
 ## Review artifacts
 
-This archive includes durable review artifacts:
+This repository includes durable review artifacts:
 
 - [`CHANGELOG.md`](CHANGELOG.md): file-by-file changes and verification history, including the root-managed state / sudo self-elevation update.
 - [`REVIEW.md`](REVIEW.md): review process, rationale, verification commands, and known limitations.
@@ -65,6 +65,30 @@ $ sigmund stop 7f3c2a
 ```
 
 Use `sigmund -- <cmd>` when the child command name overlaps with a `sigmund` subcommand.
+
+## Concepts
+
+### Ephemeral to immutable
+
+Normal starts create ephemeral run IDs. `sigmund alias <id> <name>` promotes one recorded command into an immutable profile keyed by a SHA-256 fingerprint of the resolved binary path and exact argv array.
+
+```mermaid
+flowchart TD
+    A["User runs: sigmund /bin/mydaemon --flag"] --> B["Generate ephemeral run ID<br/>example: a1b2c3"]
+    B --> C{"Process runs"}
+    C --> D[("Private run record<br/>a1b2c3.json")]
+    C --> E[("Log file<br/>a1b2c3.log")]
+
+    F["User runs: sigmund alias a1b2c3 web"] --> G["Extract recorded argv"]
+    G --> H["Resolve argv[0] to absolute binary path"]
+    H --> I["Compute SHA-256 profile hash"]
+    I --> J[("Protected profiles.json<br/>hash -> {bin,args}")]
+    I --> K[("aliases.json<br/>web -> hash")]
+
+    K --> L["Future command: sigmund stop web"]
+    L --> M["Resolve alias to hash"]
+    M --> N["Find matching run or cross sudo as system:&lt;hash&gt;"]
+```
 
 ## Real-World Workflows
 
@@ -144,6 +168,8 @@ User-local records and logs are private to that user:
 directory: 0700
 records:   0600
 logs:      0600
+aliases:   0600 aliases.json
+profiles:  0600 profiles.json
 ```
 
 ### Root-managed state
@@ -160,12 +186,13 @@ The system store is split into private and public areas:
 ```text
 /var/lib/sigmund/runs/      private root run records
 /var/lib/sigmund/logs/      private root logs
+/var/lib/sigmund/profiles.json
 /var/lib/sigmund/public/    public redacted discovery index
 ```
 
 macOS uses the same layout under `/var/db/sigmund`.
 
-Private root records and logs are root-owned and require root authority to read. Public index files are user-readable and contain only safe discovery fields: ID, root-managed marker, elevation requirement, non-authoritative state hint, and start time. They do **not** expose argv, command display, log paths, PID/PGID/SID, boot identity, executable identity, environment, sudo provenance, or private filesystem paths.
+Private root records, logs, and profiles are root-owned and require root authority to read. Public index files are user-readable and contain only safe discovery fields: ID, root-managed marker, elevation requirement, non-authoritative state hint, and start time. The public alias dictionary maps alias names to profile hashes only. Public files do **not** expose argv, command display, log paths, PID/PGID/SID, boot identity, executable identity, environment, sudo provenance, or private filesystem paths.
 
 Because there is no daemon continuously refreshing root state, normal `sigmund list` displays root-public rows with `STATE` as `unknown` and never prompts for sudo. Root/private records remain authoritative when root Sigmund evaluates the run, and root logs/private details require running the relevant command through root authority such as `sudo sigmund list`, `sudo sigmund tail <id>`, or `sudo sigmund dump <id>`.
 
@@ -174,6 +201,35 @@ Example normal list containing a redacted root-managed run:
 ```text
 RUNID      STATE    STARTED_AT               RESULT         CMD
 7f3c2a     unknown  2026-06-15T18:42:11Z     -              <root-managed>
+```
+
+```mermaid
+flowchart LR
+    User(["Standard user"])
+    Admin(["Root / sudo"])
+
+    subgraph UserStore["User local store<br/>~/.local/state/sigmund/"]
+        direction TB
+        UR["run records<br/>0600 private"]
+        UL["logs<br/>0600 private"]
+        UA["aliases.json<br/>0600 private"]
+        UP["profiles.json<br/>0600 private"]
+    end
+
+    subgraph SystemStore["System store<br/>/var/lib/sigmund or /var/db/sigmund"]
+        direction TB
+        SR["runs/<br/>0600 root private"]
+        SL["logs/<br/>0600 root private"]
+        SP["profiles.json<br/>0600 root private"]
+        Public["public/<br/>0755 readable"]
+        SI["public run index<br/>0644 redacted"]
+        SA["public/aliases.json<br/>0644 alias -> hash"]
+    end
+
+    User -->|"sigmund <cmd>"| UserStore
+    Admin -->|"sudo sigmund <cmd>"| SystemStore
+    User -.->|"sigmund list"| SI
+    User -.->|"resolve system aliases"| SA
 ```
 
 ## Root/system mode
@@ -225,7 +281,7 @@ sigmund stop 7f3c2a --system
 sigmund start "qemu-system-x86_64 -m 4096" --system
 ```
 
-Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, and `start`.
+Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `start`, `alias`, `aliases`, `grant`, and `revoke`.
 
 ## Command reference
 
@@ -238,40 +294,98 @@ Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, and `sta
 | `sigmund -- <cmd...>` | Starts a command whose name overlaps with a Sigmund subcommand. |
 | `sigmund --system <cmd...>` | Self-elevates through sudo when needed and starts a root-managed run. |
 | `sigmund start <cmd...>` | Explicit start form; Sigmund-owned switches such as trailing `--system` are parsed by Sigmund. |
+| `sigmund start <profile>` | Starts an immutable capability profile; `<profile>` may be an alias or a profile hash. |
 
 ### Management commands
 
 | Command | Description |
 |---|---|
 | `sigmund list` | Lists user-local runs plus redacted root-managed public rows. Never prompts for sudo. |
-| `sigmund tail <id>` | Follows a running log from the end; prints an already-finished/stale/unknown log from the beginning. |
-| `sigmund dump <id>` | Prints the saved output log for a run and exits. |
-| `sigmund stop <id>` | Sends `SIGTERM` to the tracked process group, waits up to 5 seconds, then sends `SIGKILL` if needed. |
-| `sigmund kill <id>` | Immediately sends `SIGKILL` to the tracked process group. |
-| `sigmund killcmd <id>` | Prints the raw shell command needed to signal a safely validated user-local process group. |
+| `sigmund tail <target>` | Follows a running log from the end; prints an already-finished/stale/unknown log from the beginning. |
+| `sigmund dump <target>` | Prints the saved output log for a run and exits. |
+| `sigmund stop <target>` | Sends `SIGTERM` to the tracked process group, waits up to 5 seconds, then sends `SIGKILL` if needed. |
+| `sigmund kill <target>` | Immediately sends `SIGKILL` to the tracked process group. |
+| `sigmund killcmd <id>` | Prints the raw shell command needed to signal a safely validated user-local process group. IDs only. |
+| `sigmund alias <id> <name>` | Pins a run's binary path and argv as an immutable profile and maps an alias to its SHA-256 hash. |
+| `sigmund aliases` | Lists visible aliases and profile hashes. |
+| `sigmund grant <alias> <user> [actions]` | Adds root-managed NOPASSWD sudoers entries for `start,stop,kill,tail,dump,prune`; `<user>` may be a username, `%group`, or `all`; omitted actions means all supported Sigmund actions for that alias profile. |
+| `sigmund revoke <alias> <user> [actions]` | Removes matching Sigmund-managed sudoers entries; `<user>` may be a username, `%group`, or `all`; omitted actions removes the managed file. |
 | `sigmund prune` | Removes exited/failed/stale records and orphan logs. |
-| `sigmund prune <id>` | Removes exactly one prunable run record and associated log. |
+| `sigmund prune <target>` | Removes exactly one prunable run record and associated log. |
 | `sigmund prune all` | Removes all prunable runs and associated output. |
 
-### ID targeting
+### Targeting IDs, aliases, and hashes
 
-Plain IDs are the normal interface.
+A `<target>` is a run ID, an alias, or a 64-character profile hash. Plain run IDs are the normal interface, but aliases and profile hashes are valid for `start`, `stop`, `kill`, `tail`, `dump`, and `prune`.
 
-For rare deterministic conflict cases, explicit ID tokens are supported inside the existing ID slot:
+For rare deterministic conflict cases, explicit target tokens are supported:
 
 ```bash
 sigmund stop user:7f3c2a
 sigmund stop system:7f3c2a
+sigmund start web-test
+sigmund stop system:web-test
 sudo sigmund stop user:7f3c2a
 sudo sigmund stop system:7f3c2a
 ```
 
 Rules:
 
-- Normal non-root action on a plain ID checks user-local state first. If a user-local run and root-managed public entry share the same ID, user-local wins and Sigmund does not self-elevate.
-- Normal non-root action on a root-only plain ID, or on `system:<id>`, self-elevates for `stop`, `kill`, `prune`, `tail`, and `dump`.
-- Root/sudo action on a plain ID checks root-managed private state first, then the invoking user's local state when sudo provenance exists. In a conflict, root-managed wins.
-- `user:<id>` never targets root-managed state. `system:<id>` never targets user-local state.
+- Normal non-root action on a plain target checks user-local state first. If user-local and root-managed public targets share the same token, user-local wins and Sigmund does not self-elevate.
+- Normal non-root action on a root-only plain target, or on `system:<target>`, self-elevates for `stop`, `kill`, `prune`, `tail`, and `dump`.
+- Root/sudo action on a plain target checks root-managed private state first, then the invoking user's local state when sudo provenance exists. In a conflict, root-managed wins.
+- `user:<target>` never targets root-managed state. `system:<target>` never targets user-local state.
+- When a root-managed alias crosses the sudo boundary, Sigmund canonicalizes it to `system:<hash>`, not `system:<alias>`, so sudoers can grant authority to an immutable command fingerprint.
+
+```mermaid
+flowchart TD
+    Start(["User runs: sigmund stop web"]) --> Parse["Parse target token"]
+    Parse --> Scope{"Explicit scope?"}
+
+    Scope -->|"user:"| UserOnly["Check user-local ID, alias, or hash"]
+    Scope -->|"system:"| SystemOnly["Check system public ID, alias, or hash"]
+    Scope -->|"none"| LocalFirst["Check user-local ID, alias, or hash"]
+
+    LocalFirst --> LocalFound{"User-local match?"}
+    LocalFound -->|"yes"| LocalExec["Resolve to concrete local run ID<br/>send SIGTERM"]
+    LocalFound -->|"no"| SystemOnly
+
+    UserOnly --> UserFound{"User-local match?"}
+    UserFound -->|"yes"| LocalExec
+    UserFound -->|"no"| NotFound["error: not found"]
+
+    SystemOnly --> SystemFound{"System match?"}
+    SystemFound -->|"no"| NotFound
+    SystemFound -->|"run ID"| NeedRootID{"Already root?"}
+    SystemFound -->|"alias or hash"| NeedRootHash{"Already root?"}
+
+    NeedRootID -->|"no"| SudoID["sudo -- sigmund --system --elevated stop system:&lt;id&gt;"]
+    NeedRootHash -->|"no"| SudoHash["sudo -- sigmund --system --elevated stop system:&lt;hash&gt;"]
+    NeedRootID -->|"yes"| RootExec["Read private root record<br/>send SIGTERM"]
+    NeedRootHash -->|"yes"| RootResolve["Resolve hash to unique private run"]
+    RootResolve --> RootExec
+    SudoID --> RootExec
+    SudoHash --> RootResolve
+```
+
+### Alias profiles
+
+`sigmund alias <id> <name>` reads the target run's recorded argv, resolves argv[0] to an absolute binary path, computes a SHA-256 profile hash, stores the protected profile, and writes `name -> hash` into `aliases.json`.
+
+The protected profile map is `profiles.json`:
+
+```json
+{
+  "fb736e64274bb2fd4861ff5d239288d4abc74aa3ae233b733b6201da507868ee": {
+    "bin": "/usr/bin/redis-server",
+    "args": ["redis-server", "/etc/redis.conf"]
+  }
+}
+```
+
+The hash is over a versioned, NUL-delimited byte stream containing the resolved binary path, exact argv order, and an empty environment count. Environment capture is intentionally not included yet, because current run records do not store environment and many environments contain secrets.
+
+`sigmund grant <alias> <user> [actions]` writes an alias/user-specific sudoers template such as `/etc/sudoers.d/sigmund_web-test_alice`. The `<user>` argument may be a username, `%group`, or `all`. The alias is resolved to its immutable profile hash before writing, so the generated file contains exact `sigmund --system --elevated <action> system\:<hash>` command lines rather than the mutable alias name. Omitted actions expand to all supported Sigmund actions for that alias profile (`start,stop,kill,tail,dump,prune`), not arbitrary sudo access.
 
 ## Stdio and logging
 
@@ -288,6 +402,37 @@ Action-command self-elevation does **not** pipe or capture terminal I/O. The `su
 ## Architecture and safety guarantees
 
 State updates use atomic temp-file writes, `fsync()`, and `rename()` so records are not left half-written during power loss or interruption.
+
+```mermaid
+sequenceDiagram
+    participant Shell as Caller shell
+    participant Parent as Sigmund parent
+    participant Child as Sigmund child
+    participant Target as Target process
+
+    Shell->>Parent: exec sigmund <cmd>
+    Parent->>Parent: create O_CLOEXEC handshake pipe
+    Parent->>Child: fork()
+
+    rect rgb(40, 44, 52)
+        Note right of Child: child preparation
+        Child->>Child: setsid()
+        Child->>Child: redirect stdin to /dev/null
+        Child->>Child: redirect stdout/stderr to log
+        Child->>Target: execvp(cmd) or execv(profile bin)
+    end
+
+    alt exec succeeds
+        Target-->>Parent: handshake pipe closes on exec
+        Parent->>Parent: write run record and public index if system
+        Parent-->>Shell: print run ID and exit 0
+        Note over Target: target survives caller shell exit
+    else exec fails
+        Child-->>Parent: write errno through pipe
+        Parent->>Parent: rollback reservation, log, and process group
+        Parent-->>Shell: print error and exit 1
+    end
+```
 
 Before sending a signal, Sigmund checks:
 
