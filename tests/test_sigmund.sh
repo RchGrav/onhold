@@ -277,9 +277,26 @@ root_file_mode() {
 sha256_stdin() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum | awk '{print $1}'
-  else
+  elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s\n' 'missing sha256sum or shasum for SHA-256 test helper' >&2
+    return 127
   fi
+}
+
+profile_bin_for_hash() {
+  local path="$1" hash="$2"
+  awk -v hash="$hash" '
+    index($0, "\"" hash "\":") {
+      if (match($0, /"bin": "[^"]*"/)) {
+        print substr($0, RSTART + 8, RLENGTH - 9)
+        found = 1
+        exit
+      }
+    }
+    END { if (!found) exit 1 }
+  ' "$path"
 }
 
 root_grep() {
@@ -760,7 +777,7 @@ test_alias_profile_map_start_and_stop() {
   grep -q "\"$hash\"" "$store/profiles.json" || return 1
   grep -q '"bin": "' "$store/profiles.json" || return 1
   grep -q '"args": \["/bin/sh", "-c", "while :; do sleep 1; done"\]' "$store/profiles.json" || return 1
-  bin=$(sed -n 's/.*"bin": "\([^"]*\)".*/\1/p' "$store/profiles.json" | head -n1)
+  bin=$(profile_bin_for_hash "$store/profiles.json" "$hash")
   [ -n "$bin" ] || return 1
   expected_hash=$(
     {
