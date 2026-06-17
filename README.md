@@ -294,7 +294,7 @@ Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `start`,
 | `sigmund -- <cmd...>` | Starts a command whose name overlaps with a Sigmund subcommand. |
 | `sigmund --system <cmd...>` | Self-elevates through sudo when needed and starts a root-managed run. |
 | `sigmund start <cmd...>` | Explicit start form; Sigmund-owned switches such as trailing `--system` are parsed by Sigmund. |
-| `sigmund start <alias|hash>` | Starts an immutable capability profile by alias or profile hash. |
+| `sigmund start <alias-or-hash>` | Starts an immutable capability profile by alias or profile hash. |
 
 ### Management commands
 
@@ -308,8 +308,8 @@ Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `start`,
 | `sigmund killcmd <id>` | Prints the raw shell command needed to signal a safely validated user-local process group. |
 | `sigmund alias <id> <name>` | Pins a run's binary path and argv as an immutable profile and maps an alias to its SHA-256 hash. |
 | `sigmund aliases` | Lists visible aliases and profile hashes. |
-| `sigmund grant <alias> <user|%group|all> [actions]` | Adds root-managed NOPASSWD sudoers entries for `start,stop,kill,tail,dump,prune`; omitted actions means all supported Sigmund actions for that alias profile. |
-| `sigmund revoke <alias> <user|%group|all> [actions]` | Removes matching Sigmund-managed sudoers entries; omitted actions removes the managed file. |
+| `sigmund grant <alias> <user> [actions]` | Adds root-managed NOPASSWD sudoers entries for `start,stop,kill,tail,dump,prune`; `<user>` may be a username, `%group`, or `all`; omitted actions means all supported Sigmund actions for that alias profile. |
+| `sigmund revoke <alias> <user> [actions]` | Removes matching Sigmund-managed sudoers entries; `<user>` may be a username, `%group`, or `all`; omitted actions removes the managed file. |
 | `sigmund prune` | Removes exited/failed/stale records and orphan logs. |
 | `sigmund prune <id>` | Removes exactly one prunable run record and associated log. |
 | `sigmund prune all` | Removes all prunable runs and associated output. |
@@ -385,7 +385,7 @@ The protected profile map is `profiles.json`:
 
 The hash is over a versioned, NUL-delimited byte stream containing the resolved binary path, exact argv order, and an empty environment count. Environment capture is intentionally not included yet, because current run records do not store environment and many environments contain secrets.
 
-`sigmund grant <alias> <user|%group|all> [actions]` writes an alias/user-specific sudoers template such as `/etc/sudoers.d/sigmund_web-test_alice`. The alias is resolved to its immutable profile hash before writing, so the generated file contains exact `sigmund --system --elevated <action> system:<hash>` command lines rather than the mutable alias name. Omitted actions expand to all supported Sigmund actions for that alias profile (`start,stop,kill,tail,dump,prune`), not arbitrary sudo access.
+`sigmund grant <alias> <user> [actions]` writes an alias/user-specific sudoers template such as `/etc/sudoers.d/sigmund_web-test_alice`. The `<user>` argument may be a username, `%group`, or `all`. The alias is resolved to its immutable profile hash before writing, so the generated file contains exact `sigmund --system --elevated <action> system:<hash>` command lines rather than the mutable alias name. Omitted actions expand to all supported Sigmund actions for that alias profile (`start,stop,kill,tail,dump,prune`), not arbitrary sudo access.
 
 ## Stdio and logging
 
