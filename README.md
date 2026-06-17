@@ -383,7 +383,7 @@ The protected profile map is `profiles.json`:
 }
 ```
 
-The hash is over a versioned, NUL-delimited byte stream containing the resolved binary path, exact argv order, and an empty environment count. Environment capture is intentionally not included yet, because current run records do not store environment and many environments contain secrets.
+The profile hash is a stable SHA-256 fingerprint over a NUL-delimited byte stream containing only the fixed domain string `sigmund-profile`, the resolved absolute binary path, the argc count, and each argv element tagged by index. The domain string is a namespace label, not a version, and it must not be changed for ordinary format churn. Environment, cwd, uid, timestamps, hostnames, and other context are deliberately excluded so aliases, profiles, and sudoers grants stay stable.
 
 `sigmund grant <alias> <user> [actions]` writes an alias/user-specific sudoers template such as `/etc/sudoers.d/sigmund_web-test_alice`. The `<user>` argument may be a username, `%group`, or `all`. The alias is resolved to its immutable profile hash before writing, so the generated file contains exact `sigmund --system --elevated <action> system\:<hash>` command lines rather than the mutable alias name. Omitted actions expand to all supported Sigmund actions for that alias profile (`start,stop,kill,tail,dump,prune`), not arbitrary sudo access.
 
@@ -398,6 +398,8 @@ Child process output is captured:
 `sigmund --tail <cmd...>` starts a command and follows its log immediately. `sigmund tail <id>` follows the log of an existing running process, or prints finished/stale/unknown logs from the beginning. Press Ctrl-C to detach from tailing while the background process keeps running.
 
 Action-command self-elevation does **not** pipe or capture terminal I/O. The `sudo`/root-Sigmund child inherits the original terminal descriptors so password prompts, diagnostics, Ctrl-C behavior, and root-side output are preserved, while the non-root parent waits and returns the child status.
+
+`sigmund` does not scrub, allowlist, capture, or hash the child environment. User-local and direct-root starts inherit Sigmund's current environment unchanged. Privilege-crossing runs rely on sudo's standard `env_reset` behavior for environment hygiene before root Sigmund starts the command; reimplementing sudo's policy inside Sigmund is intentionally out of scope.
 
 ## Architecture and safety guarantees
 
