@@ -780,7 +780,7 @@ test_invalid_alias_names_rejected() {
 
 test_short_hex_alias_name_allowed() {
   local out id hash
-  out=$("$SIGMUND_BIN" /bin/true 2>&1) || return 1
+  out=$("$SIGMUND_BIN" /bin/sh -c ':' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   "$SIGMUND_BIN" alias "$id" db >"$TEST_ROOT/alias-db.out" 2>"$TEST_ROOT/alias-db.err" || return 1
@@ -825,7 +825,7 @@ test_system_alias_start_elevates_hash_not_alias() {
 
 test_grant_revoke_writes_hash_scoped_sudoers() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
-  local safe out id hash sudoers_dir sudoers_file rc
+  local safe out id hash sudoers_dir sudoers_file rc visudo_ok
   safe="$TEST_ROOT/sigmund-safe"
   cp "$SIGMUND_REAL_BIN" "$safe" || return 1
   as_root chown 0:0 "$safe" || return 1
@@ -834,9 +834,12 @@ test_grant_revoke_writes_hash_scoped_sudoers() {
   mkdir -p "$sudoers_dir" || return 1
   chmod 755 "$sudoers_dir" || return 1
   export SIGMUND_TEST_SUDOERS_DIR="$sudoers_dir"
-  export SIGMUND_TEST_VISUDO_PROG="/bin/true"
+  visudo_ok="$TEST_ROOT/visudo-ok"
+  printf '#!/usr/bin/env sh\nexit 0\n' >"$visudo_ok" || return 1
+  chmod 755 "$visudo_ok" || return 1
+  export SIGMUND_TEST_VISUDO_PROG="$visudo_ok"
 
-  out=$(as_root "$safe" /bin/true 2>&1) || return 1
+  out=$(as_root "$safe" /bin/sh -c ':' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   as_root "$safe" alias "$id" web-sys >"$TEST_ROOT/root-alias.out" 2>"$TEST_ROOT/root-alias.err" || return 1
