@@ -18,7 +18,7 @@ Many CI runners and non-interactive job systems terminate the invoking shell's p
 
 ## Review artifacts
 
-This archive includes durable review artifacts:
+This repository includes durable review artifacts:
 
 - [`CHANGELOG.md`](CHANGELOG.md): file-by-file changes and verification history, including the root-managed state / sudo self-elevation update.
 - [`REVIEW.md`](REVIEW.md): review process, rationale, verification commands, and known limitations.
@@ -76,8 +76,8 @@ Normal starts create ephemeral run IDs. `sigmund alias <id> <name>` promotes one
 flowchart TD
     A["User runs: sigmund /bin/mydaemon --flag"] --> B["Generate ephemeral run ID<br/>example: a1b2c3"]
     B --> C{"Process runs"}
-    C --> D[("Private run record<br/>runs/a1b2c3.json")]
-    C --> E[("Log file<br/>logs/a1b2c3.log")]
+    C --> D[("Private run record<br/>a1b2c3.json")]
+    C --> E[("Log file<br/>a1b2c3.log")]
 
     F["User runs: sigmund alias a1b2c3 web"] --> G["Extract recorded argv"]
     G --> H["Resolve argv[0] to absolute binary path"]
@@ -294,31 +294,31 @@ Known commands include `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `start`,
 | `sigmund -- <cmd...>` | Starts a command whose name overlaps with a Sigmund subcommand. |
 | `sigmund --system <cmd...>` | Self-elevates through sudo when needed and starts a root-managed run. |
 | `sigmund start <cmd...>` | Explicit start form; Sigmund-owned switches such as trailing `--system` are parsed by Sigmund. |
-| `sigmund start <alias-or-hash>` | Starts an immutable capability profile by alias or profile hash. |
+| `sigmund start <profile>` | Starts an immutable capability profile; `<profile>` may be an alias or a profile hash. |
 
 ### Management commands
 
 | Command | Description |
 |---|---|
 | `sigmund list` | Lists user-local runs plus redacted root-managed public rows. Never prompts for sudo. |
-| `sigmund tail <id>` | Follows a running log from the end; prints an already-finished/stale/unknown log from the beginning. |
-| `sigmund dump <id>` | Prints the saved output log for a run and exits. |
-| `sigmund stop <id>` | Sends `SIGTERM` to the tracked process group, waits up to 5 seconds, then sends `SIGKILL` if needed. |
-| `sigmund kill <id>` | Immediately sends `SIGKILL` to the tracked process group. |
-| `sigmund killcmd <id>` | Prints the raw shell command needed to signal a safely validated user-local process group. |
+| `sigmund tail <target>` | Follows a running log from the end; prints an already-finished/stale/unknown log from the beginning. |
+| `sigmund dump <target>` | Prints the saved output log for a run and exits. |
+| `sigmund stop <target>` | Sends `SIGTERM` to the tracked process group, waits up to 5 seconds, then sends `SIGKILL` if needed. |
+| `sigmund kill <target>` | Immediately sends `SIGKILL` to the tracked process group. |
+| `sigmund killcmd <id>` | Prints the raw shell command needed to signal a safely validated user-local process group. IDs only. |
 | `sigmund alias <id> <name>` | Pins a run's binary path and argv as an immutable profile and maps an alias to its SHA-256 hash. |
 | `sigmund aliases` | Lists visible aliases and profile hashes. |
 | `sigmund grant <alias> <user> [actions]` | Adds root-managed NOPASSWD sudoers entries for `start,stop,kill,tail,dump,prune`; `<user>` may be a username, `%group`, or `all`; omitted actions means all supported Sigmund actions for that alias profile. |
 | `sigmund revoke <alias> <user> [actions]` | Removes matching Sigmund-managed sudoers entries; `<user>` may be a username, `%group`, or `all`; omitted actions removes the managed file. |
 | `sigmund prune` | Removes exited/failed/stale records and orphan logs. |
-| `sigmund prune <id>` | Removes exactly one prunable run record and associated log. |
+| `sigmund prune <target>` | Removes exactly one prunable run record and associated log. |
 | `sigmund prune all` | Removes all prunable runs and associated output. |
 
 ### Targeting IDs, aliases, and hashes
 
-Plain IDs are the normal interface. Aliases and 64-character profile hashes are also valid in the same target slot for `start`, `stop`, `kill`, `tail`, `dump`, and `prune`.
+A `<target>` is a run ID, an alias, or a 64-character profile hash. Plain run IDs are the normal interface, but aliases and profile hashes are valid for `start`, `stop`, `kill`, `tail`, `dump`, and `prune`.
 
-For rare deterministic conflict cases, explicit ID tokens are supported inside the existing ID slot:
+For rare deterministic conflict cases, explicit target tokens are supported:
 
 ```bash
 sigmund stop user:7f3c2a
@@ -331,7 +331,7 @@ sudo sigmund stop system:7f3c2a
 
 Rules:
 
-- Normal non-root action on a plain target checks user-local state first. If user-local and root-managed public targets share the same name or ID, user-local wins and Sigmund does not self-elevate.
+- Normal non-root action on a plain target checks user-local state first. If user-local and root-managed public targets share the same token, user-local wins and Sigmund does not self-elevate.
 - Normal non-root action on a root-only plain target, or on `system:<target>`, self-elevates for `stop`, `kill`, `prune`, `tail`, and `dump`.
 - Root/sudo action on a plain target checks root-managed private state first, then the invoking user's local state when sudo provenance exists. In a conflict, root-managed wins.
 - `user:<target>` never targets root-managed state. `system:<target>` never targets user-local state.

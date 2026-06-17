@@ -4023,7 +4023,7 @@ static int cmd_signal_action(const struct invocation *inv,
                              int sig,
                              bool graceful) {
     if (argc <= 0) {
-        fprintf(stderr, "usage: sigmund %s <id>...\n", command);
+        fprintf(stderr, "usage: sigmund %s <target>...\n", command);
         return 5;
     }
     struct resolved_target *targets = calloc((size_t)argc, sizeof(*targets));
@@ -4875,7 +4875,7 @@ static int cmd_grant_revoke_action(const struct invocation *inv,
     int argc,
     char **argv) {
     if (argc < 2 || argc > 3) {
-        fprintf(stderr, "usage: sigmund %s <alias> <user|%%group|all> [start,stop,kill,tail,dump,prune]\n",
+        fprintf(stderr, "usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune]\n",
                 grant ? "grant" : "revoke");
         return 5;
     }
@@ -4968,23 +4968,24 @@ static void usage(void) {
            "\n"
            "commands:\n"
            "  sigmund list                      list user-local and public root-managed runs\n"
-           "  sigmund tail <id>                 follow existing log output\n"
-           "  sigmund dump <id>                 print saved log output and exit\n"
-           "  sigmund stop <id>...              graceful stop (SIGTERM → SIGKILL)\n"
-           "  sigmund kill <id>...              immediate kill (SIGKILL)\n"
+           "  sigmund tail <target>             follow existing log output\n"
+           "  sigmund dump <target>             print saved log output and exit\n"
+           "  sigmund stop <target>...          graceful stop (SIGTERM → SIGKILL)\n"
+           "  sigmund kill <target>...          immediate kill (SIGKILL)\n"
            "  sigmund killcmd <id>...           print kill command for scripting\n"
            "  sigmund alias <id> <name>         pin a run argv as an alias profile\n"
            "  sigmund aliases                   list visible aliases and profile hashes\n"
-           "  sigmund grant <alias> <who> [actions]\n"
-           "  sigmund revoke <alias> <who> [actions]\n"
+           "  sigmund grant <alias> <user> [actions]\n"
+           "  sigmund revoke <alias> <user> [actions]\n"
            "  sigmund prune                     remove exited/failed records and orphan logs\n"
-           "  sigmund prune <id>                remove one prunable run and its log\n"
+           "  sigmund prune <target>            remove one prunable run and its log\n"
            "  sigmund prune all                 remove all prunable runs (stale+exited+failed)\n"
            "\n"
            "target forms:\n"
-           "  <id>|<alias>|<hash>               normal invocation-context resolution\n"
-           "  user:<id>|<alias>|<hash>          force user-local lookup\n"
-           "  system:<id>|<alias>|<hash>        force root-managed lookup\n"
+           "  <target>                          normal invocation-context resolution\n"
+           "  user:<target>                     force user-local lookup\n"
+           "  system:<target>                   force root-managed lookup\n"
+           "  target = run ID, alias, or 64-character profile hash\n"
            "\n"
            "switches:\n"
            "  --system                          run this invocation with root-managed authority\n"
@@ -5218,7 +5219,7 @@ int main(int argc, char **argv) {
 
     if (!strcmp(command, "tail")) {
         if (cmd_argc < 1) {
-            fprintf(stderr, "usage: sigmund tail <id>\n");
+            fprintf(stderr, "usage: sigmund tail <target>\n");
             free(cmd_argv);
             return 5;
         }
@@ -5228,7 +5229,7 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(command, "dump")) {
         if (cmd_argc < 1) {
-            fprintf(stderr, "usage: sigmund dump <id>\n");
+            fprintf(stderr, "usage: sigmund dump <target>\n");
             free(cmd_argv);
             return 5;
         }
