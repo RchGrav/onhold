@@ -392,17 +392,20 @@ Protected profile state is stored in `profiles.json` as a hash-keyed object:
 }
 ```
 
-The profile hash is SHA-256 over a versioned, NUL-delimited byte stream containing:
+The profile hash is SHA-256 over this stable, NUL-delimited byte stream:
 
 ```text
-domain/version
+sigmund-profile
 resolved absolute binary path
 argc
-each argv element in exact order
-environment count, currently 0
+argv[0] index, argv[0]
+argv[1] index, argv[1]
+...
 ```
 
-Environment capture is reserved for a future schema version. Current run records do not store environment, and silently hashing ambient environment would be unstable and could leak secrets.
+The domain string `sigmund-profile` is a fixed namespace label, not a version. Do not append versions or add environment, cwd, uid, timestamp, hostname, or other context to this hash input. Existing aliases, profiles, and sudoers grants are keyed by this digest; changing the input silently invalidates them.
+
+Sigmund does not scrub, allowlist, capture, or hash the launched command's environment. `perform_start` and profile starts use the inherited process environment unchanged. Privilege-crossing starts rely on sudo's standard `env_reset` behavior before root Sigmund reaches `perform_start`; disabling `env_reset` or preserving loader variables through sudoers is host sudo policy, not Sigmund policy.
 
 When a normal user targets a root-managed alias, Sigmund resolves the alias to its hash before self-elevation. The sudo boundary must carry `system:<hash>`, never `system:<alias>`.
 
