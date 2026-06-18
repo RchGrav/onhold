@@ -1,5 +1,7 @@
 # Console
 
+[Docs index](index.md) | [Previous: Security](security.md) | [Next: CLI contract](cli-contract.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
+
 Console mode starts a run behind a PTY broker and lets a later `sigmund console <target>` attach through a private Unix socket. It is optional, requires `socat`, and does not replace normal logging.
 
 The main functions are `make_console_listener`, `open_console_pty`, `run_console_broker`, `run_socat_console`, `attach_console_record`, and `cmd_console_action`.
@@ -8,13 +10,22 @@ The main functions are `make_console_listener`, `open_console_pty`, `run_console
 
 ```mermaid
 sequenceDiagram
+    autonumber
+    box rgb(224, 242, 254) User command
     participant CLI as CLI
     participant Parent as Sigmund parent
+    end
+    box rgb(220, 252, 231) Per-run console
     participant Broker as Broker child
     participant Target as Target command
+    end
+    box rgb(254, 243, 199) Private state
     participant Log as Log file
     participant Socket as Unix socket
+    end
+    box rgb(204, 251, 241) Attach client
     participant Socat as socat attach
+    end
 
     CLI->>Parent: start --console command
     Parent->>Parent: require socat in PATH
@@ -45,6 +56,14 @@ flowchart LR
     Broker --> Log["Normal run log"]
     Tail["sigmund tail"] --> Log
     Dump["sigmund dump"] --> Log
+
+    classDef user fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef console fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef state fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef script fill:#ccfbf1,stroke:#0f766e,color:#134e4a
+    class User,Socat,Tail,Dump user
+    class Broker,Pty,Child console
+    class Sock,Log state
 ```
 
 `run_socat_console` checks that the socket path exists and is a socket, builds `UNIX-CONNECT:<console_sock>`, and execs `socat`. If stdin is a TTY, it uses raw terminal mode through the `-,raw,echo=0` socat endpoint. Otherwise it uses `-`.
@@ -72,3 +91,7 @@ Sigmund remains daemonless by making the broker a per-run child, not a global se
 ## Source anchors
 
 Primary functions: `executable_available`, `make_console_listener`, `open_console_pty`, `broker_cleanup_and_exit`, `broker_fail_errno`, `run_console_broker`, `run_socat_console`, `attach_console_record`, `cmd_console_action`, and `record_matches_alias_intent`.
+
+## Continue
+
+[Back to docs index](index.md) | [Top](#console) | [Next: CLI contract](cli-contract.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)

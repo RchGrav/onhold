@@ -1,5 +1,7 @@
 # Launcher
 
+[Docs index](index.md) | [Previous: Index](index.md) | [Next: Store](store.md) | Related: [Identity](identity.md), [Console](console.md), [CLI contract](cli-contract.md)
+
 The launcher is the path from a CLI start request to a recorded, detached child process. In `src/sigmund.c`, this is centered on `perform_start`, with `perform_explicit_start`, `cmd_start_action`, `perform_profile_start`, `read_exec_handshake`, and `rollback_spawned_group` handling the surrounding cases.
 
 The end result of a successful start is a bare 8-hex run ID on stdout, a private JSON record, a log file, and optionally a console socket. Human status goes through `sig_note`, which writes to stderr unless `--quiet` is set.
@@ -19,11 +21,16 @@ This split exists because Sigmund is a single binary, not a service manager with
 
 ```mermaid
 sequenceDiagram
+    autonumber
+    box rgb(220, 252, 231) Launch boundary
     participant CLI as CLI
     participant Parent as Sigmund parent
     participant Child as Child process
+    end
+    box rgb(254, 243, 199) Durable state
     participant Store as Store
     participant Public as Public index
+    end
 
     CLI->>Parent: start command
     Parent->>Parent: choose store and run ID
@@ -72,6 +79,12 @@ stateDiagram-v2
     CleanedUp --> [*]
     RolledBack --> [*]
     Done --> [*]
+
+    classDef good fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef bad fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    classDef state fill:#fef3c7,stroke:#b45309,color:#78350f
+    class Requested,Forked,ExecSucceeded,Recorded,Following,Done good
+    class ExecFailed,RecordFailed,PublicFailed,Rejected,CleanedUp,RolledBack bad
 ```
 
 A private record write failure kills the spawned group, removes the reservation and log, and exits through `die_errno`. A root-managed public-index write failure also rolls back the private record and child process. That all-or-nothing behavior matters because a root-managed run that normal users cannot discover would break the public redacted discovery model.
@@ -89,3 +102,7 @@ The fork/setsid/exec path gives Sigmund the part `nohup` and `setsid` users usua
 ## Source anchors
 
 Primary functions: `perform_start`, `perform_explicit_start`, `cmd_start_action`, `perform_profile_start`, `read_exec_handshake`, `rollback_spawned_group`, `tail_log_until_exit`, and `write_record_atomic`.
+
+## Continue
+
+[Back to docs index](index.md) | [Top](#launcher) | [Next: Store](store.md) | Branch to: [Console](console.md), [CLI contract](cli-contract.md), [Identity](identity.md)

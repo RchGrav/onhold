@@ -1,5 +1,7 @@
 # Profiles and aliases
 
+[Docs index](index.md) | [Previous: Target resolution](target-resolution.md) | [Next: Security](security.md) | Related: [Store](store.md), [Launcher](launcher.md)
+
 Aliases turn a recorded command into a reusable launch target. The implementation has two storage modes:
 
 - User-local aliases store a private launch recipe directly in the user's `aliases.json`.
@@ -21,6 +23,15 @@ flowchart TD
     Hash --> PublicAlias["Write public alias to hash"]
     Recipe --> Future["sigmund start alias"]
     PublicAlias --> Future
+
+    classDef source fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef recipe fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef hash fill:#ede9fe,stroke:#6d28d9,color:#3b0764
+    classDef launch fill:#dcfce7,stroke:#15803d,color:#14532d
+    class Run,Load,Args,Bin,Scope source
+    class Recipe recipe
+    class Hash,Profile,PublicAlias hash
+    class Future launch
 ```
 
 `sigmund alias <id> <name>` first resolves `<id>` to a concrete run. It then reads the record, extracts `argv`, resolves `argv[0]` to an absolute binary path, and writes either a user recipe or a root profile plus public alias. If the target is a root-public run from a normal user, Sigmund self-elevates before creating the system alias.
@@ -60,6 +71,13 @@ flowchart LR
         SP["hash -> bin + args"]
     end
     SA --> SP
+
+    classDef user fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef public fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef private fill:#ede9fe,stroke:#6d28d9,color:#3b0764
+    class UA user
+    class SA public
+    class SP private
 ```
 
 User aliases are private because they reveal the command. System public aliases reveal only an alias and profile hash; the command itself remains in root-private `profiles.json`.
@@ -79,3 +97,7 @@ The validate-before-signal constraint still applies after aliasing. Aliases sele
 ## Source anchors
 
 Primary functions and structs: `struct profile`, `struct alias_entry`, `profile_hash_for_argv`, `resolve_binary_path`, `cmd_alias_action`, `write_profile_atomic`, `write_profiles_atomic`, `alias_upsert_recipe`, `alias_upsert_hash`, `resolve_start_profile_target`, `count_running_alias`, `perform_profile_start`, and `cmd_start_action`.
+
+## Continue
+
+[Back to docs index](index.md) | [Top](#profiles-and-aliases) | [Next: Security](security.md) | Branch to: [Store](store.md), [Launcher](launcher.md), [Target resolution](target-resolution.md)

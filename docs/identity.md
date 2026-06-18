@@ -1,5 +1,7 @@
 # Identity and validation
 
+[Docs index](index.md) | [Previous: Store](store.md) | [Next: Target resolution](target-resolution.md) | Related: [Launcher](launcher.md), [Security](security.md)
+
 Sigmund records process identity at launch and rechecks it before dangerous actions. This is the validate-before-signal model: a run ID selects a record, but the record must still match the current process table before Sigmund sends a signal.
 
 The main source functions are `eval_state`, `do_signal_action`, `do_print_signal_command`, `read_proc_stat_tokens`, `read_proc_exe`, `group_session_liveness`, and `count_session_escapees`.
@@ -43,6 +45,15 @@ flowchart TD
     GroupAgain -->|unknown| Pgid["Process group exists?"]
     Pgid -->|no| StateExited
     Pgid -->|yes or unknown| StateUnknown
+
+    classDef input fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef check fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef safe fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef refuse fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    class Start input
+    class Failed,ValidIds,Boot,Proc,Zombie,GroupLive,Present,Identity,GroupAgain,Pgid check
+    class StateRunning,StateExited,StateFailed safe
+    class StateStale,StateUnknown refuse
 ```
 
 `eval_state` first honors an explicit failed launch state. It then rejects invalid PGID/SID values as unknown. If the record has a boot ID and the current boot marker differs, the run is stale. After that, Sigmund checks the leader process and same-session group members.
@@ -62,6 +73,12 @@ stateDiagram-v2
     running --> stale: PID reused or boot changed
     unknown --> running: later probes succeed
     unknown --> exited: later group gone
+
+    classDef safe fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef refuse fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    classDef neutral fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    class running,exited,failed safe
+    class stale,unknown refuse
 ```
 
 Only `running`, `exited`, and `failed` are benign for action decisions. `stale` and `unknown` are safety stops for signaling. If Sigmund cannot validate the record, it refuses instead of risking a signal to a reused PID or unrelated process group.
@@ -83,3 +100,7 @@ The session scan exists because the process group leader can exit while useful d
 ## Source anchors
 
 Primary functions: `get_boot_id`, `current_boot_id`, `read_process_ids_state`, `group_session_liveness`, `count_session_escapees`, `report_session_escapees`, `read_proc_stat_tokens`, `read_proc_exe`, `leader_present`, `group_exists`, `eval_state`, `do_signal_action`, and `do_print_signal_command`.
+
+## Continue
+
+[Back to docs index](index.md) | [Top](#identity-and-validation) | [Next: Target resolution](target-resolution.md) | Branch to: [Launcher](launcher.md), [Security](security.md)

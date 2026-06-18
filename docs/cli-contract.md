@@ -1,5 +1,7 @@
 # CLI contract
 
+[Docs index](index.md) | [Previous: Console](console.md) | [Next: Using Sigmund in CI](ci.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
+
 Sigmund's CLI contract is defined in `main`, `usage`, `show_help`, the `help_*` functions, and command handlers. The important rule for scripts is that stdout carries machine data and stderr carries human status or diagnostics.
 
 ## Parser shape
@@ -18,6 +20,17 @@ flowchart TD
     Dispatch --> Alias["alias aliases"]
     Dispatch --> Access["grant revoke"]
     Dispatch --> Help["help"]
+
+    classDef entry fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef launch fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef action fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    classDef privilege fill:#ede9fe,stroke:#6d28d9,color:#3b0764
+    classDef script fill:#ccfbf1,stroke:#0f766e,color:#134e4a
+    class Args,Leading,OwnedCheck,Owned,Raw,Dispatch entry
+    class Start,StartCmd launch
+    class Actions action
+    class Access privilege
+    class List,Alias,Help script
 ```
 
 Leading invocation switches include `--system`, `--elevated`, `--tail`/`-f`, `--console`, `--quiet`, and `--`. Once raw command parsing begins, remaining arguments belong to the child. In owned-command mode, Sigmund continues parsing command-specific switches until a literal `--` marks the rest as owned command arguments.
@@ -103,3 +116,7 @@ The stdout/stderr split exists because detached starts are commonly used in CI. 
 ## Source anchors
 
 Primary functions: `main`, `usage`, `show_help`, `help_profiles`, `help_targets`, `help_access`, `help_system`, `help_scripting`, `help_console`, `help_action`, `is_sigmund_owned_command`, `command_accepts_target_tokens`, `cmd_start_action`, `cmd_list_normal`, `cmd_list_system`, `cmd_signal_action`, `cmd_tail_action`, `cmd_dump_action`, `cmd_console_action`, `cmd_prune_action`, `cmd_alias_action`, `cmd_aliases_action`, and `cmd_grant_revoke_action`.
+
+## Continue
+
+[Back to docs index](index.md) | [Top](#cli-contract) | [Next: Using Sigmund in CI](ci.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)

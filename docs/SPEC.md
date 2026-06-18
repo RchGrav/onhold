@@ -1,5 +1,7 @@
 # Sigmund Specification
 
+[Docs index](index.md) | [Documentation plan](PLAN.md) | [Repository README](../README.md)
+
 This document describes the current Sigmund implementation contract: user-local state, root-managed state, public redacted discovery, alias/profile resolution, sudo-aware target resolution, argv-preserving fork/wait self-elevation, and process-safety behavior.
 
 ## 1. Storage contexts
@@ -715,3 +717,7 @@ Tests must not touch real `/var/lib/sigmund` or `/var/db/sigmund`. `make test` c
 ## 16. Non-goals
 
 This implementation does not add root log visibility for normal users, global all-user private state scanning, global run-ID uniqueness across all users, or a daemon/supervisor. Root logs and private root records require root authority; normal users see only redacted public index rows.
+
+## Continue
+
+[Back to docs index](index.md) | [Top](#sigmund-specification) | [Documentation plan](PLAN.md)

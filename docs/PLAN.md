@@ -1,5 +1,7 @@
 # Sigmund developer documentation plan
 
+[Docs index](index.md) | [Specification](SPEC.md) | [Repository README](../README.md)
+
 Phase 1 status: reviewed and approved for Phase 2.
 
 Phase 2 status: delivered in the linked subsystem pages.
@@ -11,7 +13,7 @@ This plan is based on a full read of `src/sigmund.c`. Phase 2 should write the a
 ```text
 docs/
   PLAN.md
-  design.md
+  index.md
   launcher.md
   store.md
   identity.md
@@ -24,7 +26,7 @@ docs/
   SPEC.md
 ```
 
-`README.md` is intentionally excluded. It already exists at the repository root and should remain unchanged.
+`README.md` now links into `docs/index.md` as the developer documentation entry point.
 
 I do not plan to create `docs/roadmap.md` in Phase 2 unless a planned behavior must be mentioned. If any source-adjacent note describes behavior that is not implemented in `src/sigmund.c`, it should either be omitted from the current-design docs or quarantined in `docs/roadmap.md` with a clear `planned - not yet implemented` label.
 
@@ -52,7 +54,7 @@ Phase 2 should anchor the docs to these source regions:
 
 ## Planned documentation pages
 
-### `docs/design.md`
+### `docs/index.md`
 
 Index and landing page for the design documentation. It should state Sigmund's operating model in contributor terms: a daemonless, single-binary launcher that records enough durable identity to validate before signaling, sitting between raw `nohup`/`setsid` and a service manager. It should include a top-level architecture diagram that shows the CLI parser, launch path, store layer, public root index, target resolver, sudo boundary, and process-safety evaluator. It should also provide a table of contents with relative links to each subsystem page.
 
@@ -108,7 +110,7 @@ Planned diagrams: parser flowchart showing pre-command switches, owned-command p
 
 ### `docs/ci.md`
 
-Provides a real GitHub Actions workflow that uses the implemented scriptable contract. It should show starting a detached helper, capturing the bare run ID from stdout, using that ID in later steps, dumping or tailing logs, stopping the process group, pruning records, and handling exit codes. The workflow must use only flags present in `src/sigmund.c`.
+Provides practical guidance for using Sigmund in a user's own CI workflows. It should show starting a detached helper, capturing the bare run ID from stdout, using that ID in later steps, dumping logs, stopping the process group, pruning records, handling exit codes, and adapting the pattern for multiple helpers. Any workflow examples must use only flags present in `src/sigmund.c`.
 
 Planned diagrams: none required; the workflow and prose should be clearer than a diagram here.
 
@@ -135,8 +137,8 @@ Before treating Phase 2 as complete:
 
 1. Re-read `src/sigmund.c` after drafting.
 2. Verify every function name and behavioral claim against the source.
-3. Confirm `docs/design.md` is the index and includes the top-level architecture diagram plus a relative-link table of contents.
-4. Confirm each subsystem page is linked from `docs/design.md`.
+3. Confirm `docs/index.md` is the index and includes the top-level architecture diagram plus a relative-link table of contents.
+4. Confirm each subsystem page is linked from `docs/index.md`.
 5. Confirm the CI workflow example uses only implemented flags and respects stdout/stderr and exit-code behavior.
 6. Confirm every Mermaid block renders on GitHub-flavored Markdown syntax.
 7. Confirm planned or ambiguous behavior is omitted or quarantined in `docs/roadmap.md` as `planned - not yet implemented`.
@@ -148,3 +150,7 @@ Before treating Phase 2 as complete:
 - Accuracy: page boundaries and source-map entries are drawn from actual structures and functions in `src/sigmund.c`, not from planned behavior.
 - Design quality: the planned pages separate conceptual concerns that the source also separates, especially store persistence, target resolution, process validation, and privilege crossing. This should help contributors modify one subsystem without mistaking it for another.
 - Diagram fit: planned diagrams are chosen by subsystem shape: sequences for handshakes and starts, state diagrams for lifecycle/state evaluation, flowcharts for resolution and validation, and ER-style diagrams for persisted records.
+
+## Continue
+
+[Back to docs index](index.md) | [Top](#sigmund-developer-documentation-plan) | [Specification](SPEC.md)

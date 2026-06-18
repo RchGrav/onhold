@@ -23,6 +23,7 @@ This repository includes durable review artifacts:
 
 - [`CHANGELOG.md`](CHANGELOG.md): file-by-file changes and verification history, including the root-managed state / sudo self-elevation update.
 - [`REVIEW.md`](REVIEW.md): review process, rationale, verification commands, and known limitations.
+- [`docs/index.md`](docs/index.md): navigable developer documentation entry point with subsystem reading paths.
 - [`docs/SPEC.md`](docs/SPEC.md): current implementation contract.
 
 ## Quickstart
@@ -95,6 +96,15 @@ flowchart TD
     M --> O["Future command: sigmund stop web"]
     O --> P["Resolve by alias label and verb intent"]
     P --> Q["Act on one run, list ambiguity, or use --all"]
+
+    classDef launch fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef state fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef profile fill:#ede9fe,stroke:#6d28d9,color:#3b0764
+    classDef action fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    class A,B,C,N,O launch
+    class D,E,J state
+    class F,G,H,I,K,L,M profile
+    class P,Q action
 ```
 
 ## Real-World Workflows
@@ -236,6 +246,15 @@ flowchart LR
     Admin -->|"sudo sigmund <cmd>"| SystemStore
     User -.->|"sigmund list"| SI
     User -.->|"resolve system aliases"| SA
+
+    classDef user fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef private fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef root fill:#ede9fe,stroke:#6d28d9,color:#3b0764
+    classDef public fill:#dcfce7,stroke:#15803d,color:#14532d
+    class User user
+    class Admin root
+    class UR,UL,UA,SR,SL,SC,SP private
+    class Public,SI,SA public
 ```
 
 ## Root/system mode
@@ -397,6 +416,15 @@ flowchart TD
     RootResolve --> RootExec
     SudoID --> RootExec
     SudoAlias --> RootResolve
+
+    classDef input fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef local fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef root fill:#ede9fe,stroke:#6d28d9,color:#3b0764
+    classDef safety fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    class Start,Parse,Scope input
+    class UserOnly,LocalFirst,LocalFound,UserFound,LocalExec local
+    class SystemOnly,SystemFound,NeedRootID,NeedRootAlias,SudoID,SudoAlias,RootResolve,RootExec root
+    class NotFound safety
 ```
 
 ### Aliases and protected profiles
@@ -449,16 +477,21 @@ State updates use atomic temp-file writes, `fsync()`, and `rename()` so records 
 
 ```mermaid
 sequenceDiagram
+    autonumber
+    box rgb(224, 242, 254) Caller
     participant Shell as Caller shell
     participant Parent as Sigmund parent
+    end
+    box rgb(220, 252, 231) Launch
     participant Child as Sigmund child
     participant Target as Target process
+    end
 
     Shell->>Parent: exec sigmund <cmd>
     Parent->>Parent: create O_CLOEXEC handshake pipe
     Parent->>Child: fork()
 
-    rect rgb(40, 44, 52)
+    rect rgb(220, 252, 231)
         Note right of Child: child preparation
         Child->>Child: setsid()
         Child->>Child: redirect stdin to /dev/null

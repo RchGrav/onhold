@@ -1,5 +1,7 @@
 # Security and privilege boundaries
 
+[Docs index](index.md) | [Previous: Profiles and aliases](profiles-and-aliases.md) | [Next: Console](console.md) | Related: [Target resolution](target-resolution.md), [Store](store.md)
+
 Sigmund's root-aware behavior is built around two rules: normal state stays user-local unless root/system authority is requested, and privileged actions are re-validated after crossing sudo. There is no daemon and no shell command payload.
 
 The primary functions are `detect_invocation`, `elevate_with_sudo_canonical`, `elevate_with_sudo_targets`, `elevate_start_token`, `verify_system_alias_cap`, `cmd_elevated_capability_action`, and `cmd_grant_revoke_action`.
@@ -16,11 +18,18 @@ When root was reached through sudo, Sigmund resolves the invoking user's home di
 
 ```mermaid
 sequenceDiagram
+    autonumber
+    box rgb(224, 242, 254) User side
     participant User as Non-root Sigmund
     participant Resolver as Resolver
+    end
+    box rgb(237, 233, 254) Privilege boundary
     participant Sudo as sudo
     participant Root as Root Sigmund
+    end
+    box rgb(254, 243, 199) Private authority
     participant Store as System store
+    end
 
     User->>Resolver: resolve target
     Resolver-->>User: system target needs elevation
@@ -51,6 +60,15 @@ flowchart TD
     Selector -->|run ID| Label["ensure_run_recorded_under_alias"]
     Label --> Action["Validate then act"]
     Matches --> Action
+
+    classDef public fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef privilege fill:#ede9fe,stroke:#6d28d9,color:#3b0764
+    classDef safe fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef deny fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    class Public,Build public
+    class Sudo,Verify,Selector privilege
+    class Profile,Matches,Label,Action safe
+    class Deny deny
 ```
 
 Root-managed alias capabilities use three argv fields:
@@ -67,11 +85,18 @@ This second verification is essential because public data was read before the su
 
 ```mermaid
 sequenceDiagram
+    autonumber
+    box rgb(237, 233, 254) Root authority
     participant Admin as Root admin
     participant Sigmund as Sigmund
+    end
+    box rgb(254, 243, 199) Durable policy
     participant Store as System profiles
     participant File as sudoers.d file
+    end
+    box rgb(220, 252, 231) Validation
     participant Visudo as visudo
+    end
 
     Admin->>Sigmund: grant alias user actions
     Sigmund->>Sigmund: validate root authority
@@ -96,3 +121,7 @@ The single-binary constraint also explains managed sudoers. There is no daemon a
 ## Source anchors
 
 Primary functions: `detect_invocation`, `resolve_self_executable_path`, `elevate_with_sudo_canonical`, `elevate_with_sudo_parsed`, `elevate_with_sudo_targets`, `elevate_start_token`, `verify_system_alias_cap`, `ensure_run_recorded_under_alias`, `cmd_elevated_capability_action`, `validate_sigmund_self_for_sudoers`, `build_sudoers_line`, `write_sudoers_template_file`, `unlink_sudoers_template_file`, and `cmd_grant_revoke_action`.
+
+## Continue
+
+[Back to docs index](index.md) | [Top](#security-and-privilege-boundaries) | [Next: Console](console.md) | Branch to: [Target resolution](target-resolution.md), [Profiles and aliases](profiles-and-aliases.md), [Store](store.md)
