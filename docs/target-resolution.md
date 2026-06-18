@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Identity](identity.md) | [Next: Profiles and aliases](profiles-and-aliases.md) | Related: [Security](security.md), [CLI contract](cli-contract.md)
 
-Outer loop bridge: this is the deep dive for [Step 4: Make Targeting Deterministic](quickstart.md#step-4-make-targeting-deterministic).
+Outer loop bridge: deep dive for quickstart Step 4, Make Targeting Deterministic.
 
 Target resolution answers one user-facing question: when you type `sigmund stop web`, `sigmund tail 7f3`, or `sigmund dump system:api`, which concrete run did you mean? It does not decide whether the process is safe to signal; that is the identity validator's job.
 
@@ -107,4 +107,4 @@ For maintainers, the primary functions and structs are `parse_id_token`, `valid_
 
 ## Continue
 
-[Back to Step 4](quickstart.md#step-4-make-targeting-deterministic) | [Back to docs index](index.md) | [Top](#target-resolution) | [Next: Profiles and aliases](profiles-and-aliases.md) | Branch to: [Security](security.md), [CLI contract](cli-contract.md)
+[Resume quickstart after Step 4: Step 5](quickstart.md#step-5-create-an-alias) | [Back to docs index](index.md) | [Top](#target-resolution) | [Next: Profiles and aliases](profiles-and-aliases.md) | Branch to: [Security](security.md), [CLI contract](cli-contract.md)

@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Launcher](launcher.md) | [Next: Identity](identity.md) | Related: [Profiles and aliases](profiles-and-aliases.md), [Security](security.md)
 
-Outer loop bridge: this is the deep dive for [Step 1: Start One Thing](quickstart.md#step-1-start-one-thing).
+Outer loop bridge: deep dive for quickstart Step 1, Start One Thing.
 
 The store is where Sigmund puts the facts users rely on later: run IDs, logs, aliases, root-public discovery hints, and optional console sockets. If `sigmund tail <id>` or `sigmund stop <id>` works after the original shell is gone, it is because this state survived on disk.
 
@@ -67,7 +67,7 @@ flowchart LR
     class Alias user
 ```
 
-`write_record_atomic` writes one private JSON record per run. Required identity fields include `id`, `run_id`, `pid`, `pgid`, `sid`, `start_unix_ns`, `argv`, `uid`, `gid`, `proc_starttime_ticks`, `exe_dev`, and `exe_ino`. Optional fields are written only when the corresponding `has_*` flag is set, including `alias`, `console_sock`, `started_at`, `ended_at`, `state`, `exit_code`, `term_signal`, `launch_error`, `log_path`, `boot_id`, and root invocation provenance.
+`write_record_atomic` writes one private JSON record per run. Required identity fields include `id`, `run_id`, `pid`, `pgid`, `sid`, `start_unix_ns`, `argv`, `uid`, `gid`, `proc_starttime_ticks`, `exe_dev`, and `exe_ino`. The recorded `argv[0]` is the resolved executable path, even when the user launched a relative path such as `../bin/daemon`; aliases later reuse that absolute recipe. Optional fields are written only when the corresponding `has_*` flag is set, including `alias`, `console_sock`, `started_at`, `ended_at`, `state`, `exit_code`, `term_signal`, `launch_error`, `log_path`, `boot_id`, and root invocation provenance.
 
 `write_public_index_atomic` writes only a redacted system discovery record: `id`, `root_managed`, `requires_elevation`, optional `alias`, `state_hint`, and `started_at`. It does not write argv, command display, log paths, console socket paths, PID/PGID/SID, boot ID, executable identity, sudo provenance, environment, or profile hashes.
 
@@ -119,4 +119,4 @@ For maintainers, the primary functions and structs are `struct store_paths`, `st
 
 ## Continue
 
-[Back to Step 1](quickstart.md#step-1-start-one-thing) | [Back to docs index](index.md) | [Top](#store) | [Next: Identity](identity.md) | Branch to: [Profiles and aliases](profiles-and-aliases.md), [Security](security.md)
+[Resume quickstart after Step 1: Step 2](quickstart.md#step-2-manage-it-later) | [Back to docs index](index.md) | [Top](#store) | [Next: Identity](identity.md) | Branch to: [Profiles and aliases](profiles-and-aliases.md), [Security](security.md)

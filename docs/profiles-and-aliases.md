@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Target resolution](target-resolution.md) | [Next: Security](security.md) | Related: [Store](store.md), [Launcher](launcher.md)
 
-Outer loop bridge: this is the deep dive for [Step 5: Create an Alias](quickstart.md#step-5-create-an-alias).
+Outer loop bridge: deep dive for quickstart Step 5, Create an Alias.
 
 Aliases turn a recorded command into a reusable launch target. Users get a friendly name such as `web`, while Sigmund keeps enough recipe information to start that same command again later.
 
@@ -17,7 +17,7 @@ There are two storage modes:
 flowchart TD
     Run["Recorded run ID"] --> Load["Load private record"]
     Load --> Args["Read argv array"]
-    Args --> Bin["Resolve argv0 to binary path"]
+    Args --> Bin["Use recorded absolute argv0"]
     Bin --> Scope["Target store kind"]
     Scope -->|user-local| Recipe["Store alias recipe"]
     Scope -->|system-managed| Hash["Compute profile hash"]
@@ -36,7 +36,9 @@ flowchart TD
     class Future launch
 ```
 
-`sigmund alias <id> <name>` first resolves `<id>` to a concrete run. It then reads the record, extracts `argv`, resolves `argv[0]` to an absolute binary path, and writes either a user recipe or a root profile plus public alias. If the target is a root-public run from a normal user, Sigmund self-elevates before creating the system alias.
+`sigmund alias <id> <name>` first resolves `<id>` to a concrete run. It then reads the record, extracts `argv`, uses the recorded absolute `argv[0]`, and writes either a user recipe or a root profile plus public alias. If the target is a root-public run from a normal user, Sigmund self-elevates before creating the system alias.
+
+This is intentional: `perform_start` resolves the executable before writing the run record. A run started as `../bin/daemon` records the absolute executable path, so an alias created later from another directory does not reinterpret that relative path.
 
 The alias name is also recorded on future runs started through that alias. Later action commands resolve the alias by the label stored on run records, not by recomputing the launch recipe.
 
@@ -102,4 +104,4 @@ For maintainers, the primary functions and structs are `struct profile`, `struct
 
 ## Continue
 
-[Back to Step 5](quickstart.md#step-5-create-an-alias) | [Back to docs index](index.md) | [Top](#profiles-and-aliases) | [Next: Security](security.md) | Branch to: [Store](store.md), [Launcher](launcher.md), [Target resolution](target-resolution.md)
+[Resume quickstart after Step 5: Step 6](quickstart.md#step-6-delegate-one-root-managed-tool) | [Back to docs index](index.md) | [Top](#profiles-and-aliases) | [Next: Security](security.md) | Branch to: [Store](store.md), [Launcher](launcher.md), [Target resolution](target-resolution.md)

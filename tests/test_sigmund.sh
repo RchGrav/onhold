@@ -262,6 +262,17 @@ file_mode() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
 
+resolve_path() {
+  local path="$1" dir base
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$path"
+    return
+  fi
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  (cd "$dir" && printf '%s/%s\n' "$(pwd -P)" "$base")
+}
+
 root_file_exists() {
   as_root test -f "$1"
 }
@@ -359,11 +370,12 @@ pgid_terminated() {
 }
 
 test_lifecycle() {
-  local out id lines
+  local out id lines sleep_bin
+  sleep_bin="$(resolve_path "$(command -v sleep)")" || return 1
   out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
-  printf '%s\n' "$out" | grep -Eq "^sigmund  started  $id[[:space:]]+sleep 300$"
+  printf '%s\n' "$out" | grep -Fqx "sigmund  started  $id   $sleep_bin 300"
   printf '%s\n' "$out" | grep -Eq '^         log      .+/.+\.log$'
   printf '%s\n' "$out" | grep -Eq "^         stop     sigmund stop $id$"
   "$SIGMUND_BIN" list | grep -Eq "^$id[[:space:]].*running"
@@ -849,20 +861,22 @@ system_alias_hash() {
 }
 
 test_alias_profile_map_start_and_stop() {
-  local out id out2 id2 pgid2 store
+  local out id out2 id2 pgid2 store sh_bin
   store="$HOME/.local/state/sigmund"
+  sh_bin="$(resolve_path /bin/sh)" || return 1
   out=$("$SIGMUND_BIN" /bin/sh -c 'while :; do sleep 1; done' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   "$SIGMUND_BIN" alias "$id" web-test >"$TEST_ROOT/alias.out" 2>"$TEST_ROOT/alias.err" || return 1
   [ ! -s "$TEST_ROOT/alias.out" ] || return 1
-  grep -qx "sigmund: pinned 'web-test' -> /bin/sh -c 'while :; do sleep 1; done'" "$TEST_ROOT/alias.err" || return 1
+  grep -Fqx "sigmund: pinned 'web-test' -> $sh_bin -c 'while :; do sleep 1; done'" "$TEST_ROOT/alias.err" || return 1
   [ -f "$store/aliases.json" ] || return 1
   [ ! -f "$store/profiles.json" ] || return 1
   [ ! -d "$store/profiles" ] || return 1
   grep -q '"web-test": {"bin": "' "$store/aliases.json" || return 1
-  grep -q '"args": \["/bin/sh", "-c", "while :; do sleep 1; done"\]' "$store/aliases.json" || return 1
-  "$SIGMUND_BIN" aliases | grep -Eq "^web-test[[:space:]]+user[[:space:]]+/bin/sh -c 'while :; do sleep 1; done'[[:space:]]+-$" || return 1
+  grep -Fq "\"args\": [\"$sh_bin\", \"-c\", \"while :; do sleep 1; done\"]" "$store/aliases.json" || return 1
+  "$SIGMUND_BIN" aliases >"$TEST_ROOT/aliases-list.out" || return 1
+  grep -Eq "^web-test[[:space:]]+user[[:space:]]+.*[[:space:]]+-$" "$TEST_ROOT/aliases-list.out" || return 1
   "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
   "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
 
@@ -874,6 +888,27 @@ test_alias_profile_map_start_and_stop() {
   ! grep -q '"profile_hash":' "$store/$id2.json" || return 1
   "$SIGMUND_BIN" stop web-test >/dev/null || return 1
   pgid_terminated "$pgid2"
+}
+
+test_alias_from_relative_executable_uses_recorded_absolute_argv0() {
+  local app work other store expected out id
+  app="$TEST_ROOT/app"
+  work="$app/work"
+  other="$TEST_ROOT/other"
+  store="$HOME/.local/state/sigmund"
+  mkdir -p "$app/bin" "$work" "$other" || return 1
+  printf '#!/bin/sh\nsleep 300\n' >"$app/bin/daemon" || return 1
+  chmod +x "$app/bin/daemon" || return 1
+  expected="$app/bin/daemon"
+
+  out=$(cd "$work" && "$SIGMUND_BIN" ../bin/daemon 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  grep -Fq "\"argv\": [\"$expected\"]" "$store/$id.json" || return 1
+
+  (cd "$other" && "$SIGMUND_BIN" alias "$id" rel-daemon >"$TEST_ROOT/alias-rel.out" 2>"$TEST_ROOT/alias-rel.err") || return 1
+  grep -Fq "\"rel-daemon\": {\"bin\": \"$expected\", \"args\": [\"$expected\"]}" "$store/aliases.json" || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
 }
 
 test_alias_multi_gate_and_all_stop() {
@@ -941,14 +976,17 @@ test_invalid_alias_names_rejected() {
 }
 
 test_short_hex_alias_name_allowed() {
-  local out id
+  local out id sh_bin
+  sh_bin="$(resolve_path /bin/sh)" || return 1
   out=$("$SIGMUND_BIN" /bin/sh -c ':' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   "$SIGMUND_BIN" alias "$id" db >"$TEST_ROOT/alias-db.out" 2>"$TEST_ROOT/alias-db.err" || return 1
   [ ! -s "$TEST_ROOT/alias-db.out" ] || return 1
-  grep -qx "sigmund: pinned 'db' -> /bin/sh -c :" "$TEST_ROOT/alias-db.err" || return 1
-  "$SIGMUND_BIN" aliases | grep -Eq "^db[[:space:]]+user[[:space:]]+/bin/sh -c :[[:space:]]+-$"
+  grep -Fqx "sigmund: pinned 'db' -> $sh_bin -c :" "$TEST_ROOT/alias-db.err" || return 1
+  "$SIGMUND_BIN" aliases >"$TEST_ROOT/aliases-db.out" || return 1
+  grep -Eq "^db[[:space:]]+user[[:space:]]+" "$TEST_ROOT/aliases-db.out" || return 1
+  grep -Fq "$sh_bin -c :" "$TEST_ROOT/aliases-db.out"
 }
 
 test_system_alias_action_self_elevates_alias() {
@@ -990,8 +1028,9 @@ test_system_alias_start_self_elevates_alias() {
 
 test_grant_revoke_writes_hash_scoped_sudoers() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
-  local safe safe_real out id hash sudoers_dir sudoers_file rc visudo_ok
+  local safe safe_real out id hash sudoers_dir sudoers_file rc visudo_ok sh_bin
   safe="$TEST_ROOT/sigmund-safe"
+  sh_bin="$(resolve_path /bin/sh)" || return 1
   cp "$SIGMUND_REAL_BIN" "$safe" || return 1
   as_root chown 0:0 "$safe" || return 1
   as_root chmod 755 "$safe" || return 1
@@ -1010,7 +1049,7 @@ test_grant_revoke_writes_hash_scoped_sudoers() {
   [ -n "$id" ] || return 1
   as_root "$safe" alias "$id" web-sys >"$TEST_ROOT/root-alias.out" 2>"$TEST_ROOT/root-alias.err" || return 1
   [ ! -s "$TEST_ROOT/root-alias.out" ] || return 1
-  grep -qx "sigmund: pinned 'web-sys' -> /bin/sh -c :" "$TEST_ROOT/root-alias.err" || return 1
+  grep -Fqx "sigmund: pinned 'web-sys' -> $sh_bin -c :" "$TEST_ROOT/root-alias.err" || return 1
   hash=$(system_alias_hash web-sys)
   [ -n "$hash" ] || return 1
   set +e
@@ -1384,6 +1423,7 @@ run_test "public root index rows are redacted in normal list" test_public_root_i
 run_test "normal run does not self-elevate on local/root ID conflict" test_user_local_wins_over_public_root_collision
 run_test "explicit user:<id> targets user-local run" test_explicit_user_target
 run_test "user alias stores a direct recipe and starts/stops by alias" test_alias_profile_map_start_and_stop
+run_test "alias from relative executable keeps absolute recorded argv0" test_alias_from_relative_executable_uses_recorded_absolute_argv0
 run_test "alias start requires --multi when already running and --all stops all" test_alias_multi_gate_and_all_stop
 run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
 run_test "invalid alias names are rejected" test_invalid_alias_names_rejected

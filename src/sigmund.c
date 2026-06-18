@@ -3431,6 +3431,27 @@ static int perform_start(const struct invocation *inv,
         return 1;
     }
 
+    char resolved_exec_path[SIGMUND_PATH_MAX];
+    const char *path_to_resolve = (exec_path && *exec_path) ? exec_path : argv[0];
+    if (resolve_binary_path(path_to_resolve, resolved_exec_path, sizeof(resolved_exec_path)) != 0) {
+        if (errno == ENOENT) {
+            fprintf(stderr, "sigmund: cannot start '%s': command not found\n", argv[0]);
+        } else {
+            fprintf(stderr, "sigmund: cannot start '%s': %s\n", argv[0], strerror(errno));
+        }
+        return 1;
+    }
+
+    char **launch_argv = NULL;
+    if (copy_argv(&launch_argv, argc, argv) != 0) {
+        die_errno("sigmund: failed to prepare argv");
+    }
+    free(launch_argv[0]);
+    launch_argv[0] = strdup(resolved_exec_path);
+    if (!launch_argv[0]) {
+        die_errno("sigmund: failed to prepare argv");
+    }
+
     char id[16], log_path[SIGMUND_PATH_MAX], reserve_path[SIGMUND_PATH_MAX], console_sock[SIGMUND_PATH_MAX], boot_id[128] = {0};
     console_sock[0] = '\0';
     bool has_boot = current_boot_id(boot_id, sizeof(boot_id));
@@ -3450,16 +3471,20 @@ static int perform_start(const struct invocation *inv,
     }
 
     if (gen_id_for_store(store, avoid_public_store, avoid_user_store, id, sizeof(id)) != 0) {
+        free_argv_alloc(launch_argv, argc);
         die_errno("sigmund: failed to generate id");
     }
     if (checked_snprintf(log_path, sizeof(log_path), "%s/%s.log", store->log_dir, id) != 0) {
+        free_argv_alloc(launch_argv, argc);
         die_errno("sigmund: log path too long");
     }
     if (checked_snprintf(reserve_path, sizeof(reserve_path), "%s/.%s.reserve", store->record_dir, id) != 0) {
+        free_argv_alloc(launch_argv, argc);
         die_errno("sigmund: reserve path too long");
     }
     if (console_mode &&
         checked_snprintf(console_sock, sizeof(console_sock), "%s/%s.sock", store->console_dir, id) != 0) {
+        free_argv_alloc(launch_argv, argc);
         die_errno("sigmund: console socket path too long");
     }
 
@@ -3471,6 +3496,7 @@ static int perform_start(const struct invocation *inv,
         if (pipe(pipefd) != 0) {
             int saved = errno;
             unlink(reserve_path);
+            free_argv_alloc(launch_argv, argc);
             errno = saved;
             die_errno("sigmund: pipe failed");
         }
@@ -3480,6 +3506,7 @@ static int perform_start(const struct invocation *inv,
             close(pipefd[0]);
             close(pipefd[1]);
             unlink(reserve_path);
+            free_argv_alloc(launch_argv, argc);
             errno = saved;
             die_errno("sigmund: pipe setup failed");
         }
@@ -3490,6 +3517,7 @@ static int perform_start(const struct invocation *inv,
         close(pipefd[0]);
         close(pipefd[1]);
         unlink(reserve_path);
+        free_argv_alloc(launch_argv, argc);
         errno = saved;
         die_errno("sigmund: fork failed");
     }
@@ -3513,7 +3541,7 @@ static int perform_start(const struct invocation *inv,
             if (nullfd > STDERR_FILENO) {
                 close(nullfd);
             }
-            run_console_broker(pipefd[1], log_path, console_sock, argc, argv, exec_path);
+            run_console_broker(pipefd[1], log_path, console_sock, argc, launch_argv, resolved_exec_path);
             _exit(127);
         }
         int nullfd = open("/dev/null", O_RDONLY);
@@ -3535,11 +3563,7 @@ static int perform_start(const struct invocation *inv,
         if (lfd > 2) {
             close(lfd);
         }
-        if (exec_path && *exec_path) {
-            execv(exec_path, argv);
-        } else {
-            execvp(argv[0], argv);
-        }
+        execv(resolved_exec_path, launch_argv);
         /* No envp variant here: children intentionally inherit Sigmund's environment. */
         int e = errno;
         write_all(pipefd[1], &e, sizeof(e));
@@ -3558,6 +3582,7 @@ static int perform_start(const struct invocation *inv,
         if (console_sock[0]) {
             unlink(console_sock);
         }
+        free_argv_alloc(launch_argv, argc);
         errno = handshake_errno;
         die_errno("sigmund: exec handshake failed");
     }
@@ -3567,15 +3592,16 @@ static int perform_start(const struct invocation *inv,
             continue;
         }
         if (child_errno == ENOENT) {
-            fprintf(stderr, "sigmund: cannot start '%s': command not found\n", argv[0]);
+            fprintf(stderr, "sigmund: cannot start '%s': command not found\n", launch_argv[0]);
         } else {
-            fprintf(stderr, "sigmund: cannot start '%s': %s\n", argv[0], strerror(child_errno));
+            fprintf(stderr, "sigmund: cannot start '%s': %s\n", launch_argv[0], strerror(child_errno));
         }
         unlink(reserve_path);
         unlink(log_path);
         if (console_sock[0]) {
             unlink(console_sock);
         }
+        free_argv_alloc(launch_argv, argc);
         return 1;
     }
 
@@ -3639,14 +3665,14 @@ static int perform_start(const struct invocation *inv,
     }
     read_proc_stat_tokens(pid, NULL, &r.proc_starttime_ticks);
     read_proc_exe(pid, &r.exe_dev, &r.exe_ino);
-    if (format_argv_human(r.cmdline, sizeof(r.cmdline), argc, argv) != 0) {
+    if (format_argv_human(r.cmdline, sizeof(r.cmdline), argc, launch_argv) != 0) {
         snprintf(r.cmdline, sizeof(r.cmdline), "?");
     }
 
     char record_path[SIGMUND_PATH_MAX] = {0};
     if (getenv("SIGMUND_TEST_FAIL_RECORD_WRITE")) {
         errno = EIO;
-    } else if (write_record_atomic(store->record_dir, &r, argc, argv, record_path, sizeof(record_path)) == 0) {
+    } else if (write_record_atomic(store->record_dir, &r, argc, launch_argv, record_path, sizeof(record_path)) == 0) {
         if (store->kind == STORE_SYSTEM_MANAGED) {
             int public_rc = 0;
             if (getenv("SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE")) {
@@ -3669,6 +3695,7 @@ static int perform_start(const struct invocation *inv,
                     unlink(console_sock);
                 }
                 unlink(reserve_path);
+                free_argv_alloc(launch_argv, argc);
                 char public_path[SIGMUND_PATH_MAX];
                 if (checked_snprintf(public_path, sizeof(public_path), "%s/%s.json", store->public_dir, r.id) == 0) {
                     unlink(public_path);
@@ -3695,8 +3722,10 @@ static int perform_start(const struct invocation *inv,
         fflush(stdout);
 
         if (tail) {
+            free_argv_alloc(launch_argv, argc);
             return tail_log_until_exit(&r, false, true);
         }
+        free_argv_alloc(launch_argv, argc);
         return 0;
     }
     {
@@ -3707,6 +3736,7 @@ static int perform_start(const struct invocation *inv,
         if (console_sock[0]) {
             unlink(console_sock);
         }
+        free_argv_alloc(launch_argv, argc);
         errno = saved;
         die_errno("sigmund: failed to write record");
     }

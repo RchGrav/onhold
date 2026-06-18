@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Security](security.md) | [Next: CLI contract](cli-contract.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
 
-Outer loop bridge: this is an optional deep dive for [Step 2: Manage It Later](quickstart.md#step-2-manage-it-later).
+Outer loop bridge: optional deep dive for quickstart Step 2, Manage It Later.
 
 Console mode is for commands that need an interactive terminal after launch. `sigmund --console <cmd...>` starts the run behind a PTY broker, and a later `sigmund console <target>` attaches through a private Unix socket.
 
@@ -96,4 +96,4 @@ For maintainers, the primary functions are `executable_available`, `make_console
 
 ## Continue
 
-[Back to Step 2](quickstart.md#step-2-manage-it-later) | [Back to docs index](index.md) | [Top](#console) | [Next: CLI contract](cli-contract.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)
+[Resume quickstart after Step 2: Step 3](quickstart.md#step-3-understand-automatic-choices) | [Back to docs index](index.md) | [Top](#console) | [Next: CLI contract](cli-contract.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)

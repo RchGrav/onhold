@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Store](store.md) | [Next: Target resolution](target-resolution.md) | Related: [Launcher](launcher.md), [Security](security.md)
 
-Outer loop bridge: this is the deep dive for [Step 2: Manage It Later](quickstart.md#step-2-manage-it-later).
+Outer loop bridge: deep dive for quickstart Step 2, Manage It Later.
 
 Sigmund records process identity at launch and rechecks it before dangerous actions. This is why `sigmund stop <id>` is safer than `kill $PID`: a run ID selects a record, but the record must still match the current process table before Sigmund sends a signal.
 
@@ -105,4 +105,4 @@ For maintainers, the primary functions are `get_boot_id`, `current_boot_id`, `re
 
 ## Continue
 
-[Back to Step 2](quickstart.md#step-2-manage-it-later) | [Back to docs index](index.md) | [Top](#identity-and-validation) | [Next: Target resolution](target-resolution.md) | Branch to: [Launcher](launcher.md), [Security](security.md)
+[Resume quickstart after Step 2: Step 3](quickstart.md#step-3-understand-automatic-choices) | [Back to docs index](index.md) | [Top](#identity-and-validation) | [Next: Target resolution](target-resolution.md) | Branch to: [Launcher](launcher.md), [Security](security.md)

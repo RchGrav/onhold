@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Profiles and aliases](profiles-and-aliases.md) | [Next: Console](console.md) | Related: [Target resolution](target-resolution.md), [Store](store.md)
 
-Outer loop bridge: this is the deep dive for [Step 3: Understand Automatic Choices](quickstart.md#step-3-understand-automatic-choices) and [Step 6: Delegate One Root-Managed Tool](quickstart.md#step-6-delegate-one-root-managed-tool).
+Outer loop bridge: deep dive for quickstart Step 3, Understand Automatic Choices, and Step 6, Delegate One Root-Managed Tool.
 
 Sigmund's root-aware behavior is built around two user-visible rules: normal runs stay user-local unless root/system authority is requested, and privileged actions are re-validated after crossing sudo. A normal user can see that a root-managed run exists without seeing its private command, log path, or process identity.
 
@@ -126,4 +126,4 @@ For maintainers, the primary functions are `detect_invocation`, `resolve_self_ex
 
 ## Continue
 
-[Back to Step 3](quickstart.md#step-3-understand-automatic-choices) | [Back to Step 6](quickstart.md#step-6-delegate-one-root-managed-tool) | [Back to docs index](index.md) | [Top](#security-and-privilege-boundaries) | [Next: Console](console.md) | Branch to: [Target resolution](target-resolution.md), [Profiles and aliases](profiles-and-aliases.md), [Store](store.md)
+[Resume after Step 3: Step 4](quickstart.md#step-4-make-targeting-deterministic) | [Resume after Step 6: Step 7](quickstart.md#step-7-use-it-in-ci) | [Back to docs index](index.md) | [Top](#security-and-privilege-boundaries) | [Next: Console](console.md) | Branch to: [Target resolution](target-resolution.md), [Profiles and aliases](profiles-and-aliases.md), [Store](store.md)

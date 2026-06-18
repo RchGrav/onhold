@@ -267,6 +267,8 @@ profile hashes
 
 Private root records are authoritative. Public records are derived discovery data.
 
+Private run records store the resolved executable path in `argv[0]`. If a command is launched through a relative path, that relative token is resolved before the record is written, so aliases created from the run inherit an absolute launch recipe instead of depending on the alias creator's current directory.
+
 Because Sigmund is daemonless and cannot continuously refresh root-public state after natural process exit, normal `sigmund list` displays public root rows as `unknown` rather than overselling stale `running` hints. Root/private list and root action commands evaluate authoritative state from private records.
 
 `public/aliases.json` is a flat JSON object mapping validated alias names to 64-character profile hashes:

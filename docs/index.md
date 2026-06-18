@@ -19,12 +19,13 @@ The documentation has two layers:
 
 - Outer loop: [Quickstart](quickstart.md), a clean onboarding walkthrough that can be read start to finish.
 - Inner layer: [Technical reference loop](#technical-reference-loop), deep-dive pages for internals, edge cases, data flow, and implementation details.
-- Bridge links: each quickstart step links to its matching deep dive, and each deep dive links back to the exact quickstart step.
+- Bridge links: each quickstart step can detour into a matching deep dive, and each deep dive resumes at the next walkthrough step so the reader does not lose forward motion.
 
 ## Start Here
 
 | If you want to... | Start with | Then go deeper |
 | --- | --- | --- |
+| Install Sigmund | [Installing Sigmund](install.md) | [Using Sigmund in CI](ci.md) |
 | Learn the normal workflow | [Quickstart](quickstart.md) | [Launcher](launcher.md), [Store](store.md) |
 | Use Sigmund in CI | [Using Sigmund in CI](ci.md) | [CLI contract](cli-contract.md), [Identity](identity.md) |
 | Understand target choices and collisions | [Quickstart targeting](quickstart.md#step-4-make-targeting-deterministic) | [Target resolution](target-resolution.md) |
@@ -103,7 +104,8 @@ flowchart TD
 ```mermaid
 flowchart TD
     Quick["Outer loop quickstart"] --> Index["Docs index"]
-    Index --> Launcher["Launcher"]
+    Index --> Install["Install"]
+    Install --> Launcher["Launcher"]
     Launcher --> Store["Store"]
     Store --> Identity["Identity"]
     Identity --> Target["Target resolution"]
@@ -122,38 +124,40 @@ flowchart TD
     classDef state fill:#fef3c7,stroke:#b45309,color:#78350f
     classDef safety fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
     classDef privilege fill:#ede9fe,stroke:#6d28d9,color:#3b0764
-    class Quick,Index,CLI,CI user
+    class Quick,Index,Install,CLI,CI user
     class Launcher,Console launch
     class Store,Profiles state
     class Identity,Target safety
     class Security privilege
 ```
 
-Every subsystem page links back here, back to its matching quickstart step, and forward to the next technical concept, so readers can browse the inner layer as a reference system without losing the outer-loop return path.
+Every subsystem page links back here, names the quickstart step it explains, resumes at the next walkthrough step, and points forward to the next technical concept, so readers can browse the inner layer as a reference system without losing the outer-loop return path.
 
 ## Inner Layer Pages
 
 1. [Quickstart](quickstart.md): user workflow, automatic choices, deterministic targeting, aliases, and scoped root delegation.
-2. [Launcher](launcher.md): starts, fork/setsid/exec, logs, records, and launch rollback.
-3. [Store](store.md): user-local and system-managed state, public redaction, atomic writes, and pruning.
-4. [Identity and validation](identity.md): boot ID, starttime, executable identity, session membership, run states, and signal refusal.
-5. [Target resolution](target-resolution.md): ID, prefix, alias, `user:`, `system:`, ambiguity, and action target expansion.
-6. [Profiles and aliases](profiles-and-aliases.md): reusable launch recipes, SHA-256 fingerprints, alias starts, and `--multi`.
-7. [Security and privilege boundaries](security.md): `--system`, sudo self-elevation, capability argv, and managed sudoers.
-8. [Console](console.md): PTY console starts, private sockets, `socat` attach, and log teeing.
-9. [CLI contract](cli-contract.md): parser behavior, stdout/stderr, flags, no-op behavior, and exit codes.
-10. [Using Sigmund in CI](ci.md): copyable CI patterns for start, readiness, logs, teardown, exit codes, and multiple helpers.
+2. [Installing Sigmund](install.md): one-line install, root/user install mode, platform detection, checksums, and script handoff.
+3. [Launcher](launcher.md): starts, fork/setsid/exec, logs, records, and launch rollback.
+4. [Store](store.md): user-local and system-managed state, public redaction, atomic writes, and pruning.
+5. [Identity and validation](identity.md): boot ID, starttime, executable identity, session membership, run states, and signal refusal.
+6. [Target resolution](target-resolution.md): ID, prefix, alias, `user:`, `system:`, ambiguity, and action target expansion.
+7. [Profiles and aliases](profiles-and-aliases.md): reusable launch recipes, SHA-256 fingerprints, alias starts, and `--multi`.
+8. [Security and privilege boundaries](security.md): `--system`, sudo self-elevation, capability argv, and managed sudoers.
+9. [Console](console.md): PTY console starts, private sockets, `socat` attach, and log teeing.
+10. [CLI contract](cli-contract.md): parser behavior, stdout/stderr, flags, no-op behavior, and exit codes.
+11. [Using Sigmund in CI](ci.md): copyable CI patterns for start, readiness, logs, teardown, exit codes, and multiple helpers.
 
 ## Branch by Question
 
 | If you want to understand... | Read |
 | --- | --- |
+| How to install Sigmund and hand its path to scripts | [Installing Sigmund](install.md) |
 | How a command keeps running after the CI step or shell exits | [Quickstart](quickstart.md), then [Launcher](launcher.md) |
 | Where run IDs, logs, aliases, and public root hints live | [Store](store.md) |
 | Why `stop` is safer than `kill $PID` | [Identity and validation](identity.md) |
 | How IDs, aliases, `user:`, and `system:` choose a target | [Target resolution](target-resolution.md) |
 | How to reuse a recorded command as an alias | [Profiles and aliases](profiles-and-aliases.md) |
-| How to let another user manage one root-run tool | [Quickstart](quickstart.md#delegate-one-root-managed-tool), then [Security](security.md) |
+| How to let another user manage one root-run tool | [Quickstart](quickstart.md#step-6-delegate-one-root-managed-tool), then [Security](security.md) |
 | How to script Sigmund in CI | [Using Sigmund in CI](ci.md), then [CLI contract](cli-contract.md) |
 
 ## Reference

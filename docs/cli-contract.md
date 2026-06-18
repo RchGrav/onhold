@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Console](console.md) | [Next: Using Sigmund in CI](ci.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
 
-Outer loop bridge: this is the deep dive for [Step 2: Manage It Later](quickstart.md#step-2-manage-it-later), [Step 3: Understand Automatic Choices](quickstart.md#step-3-understand-automatic-choices), and [Step 7: Use It In CI](quickstart.md#step-7-use-it-in-ci).
+Outer loop bridge: deep dive for quickstart Step 2, Manage It Later; Step 3, Understand Automatic Choices; and Step 7, Use It In CI.
 
 This page is for people writing scripts around Sigmund. It explains what goes to stdout, what goes to stderr, which flags belong to Sigmund, which flags belong to the child command, and how exit codes should be treated.
 
@@ -123,4 +123,4 @@ For maintainers, the primary functions are `main`, `usage`, `show_help`, `help_p
 
 ## Continue
 
-[Back to Step 2](quickstart.md#step-2-manage-it-later) | [Back to Step 3](quickstart.md#step-3-understand-automatic-choices) | [Back to Step 7](quickstart.md#step-7-use-it-in-ci) | [Back to docs index](index.md) | [Top](#cli-contract) | [Next: Using Sigmund in CI](ci.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)
+[Resume after Step 2: Step 3](quickstart.md#step-3-understand-automatic-choices) | [Resume after Step 3: Step 4](quickstart.md#step-4-make-targeting-deterministic) | [Finish after Step 7](index.md) | [Back to docs index](index.md) | [Top](#cli-contract) | [Next: Using Sigmund in CI](ci.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)

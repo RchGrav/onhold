@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: CLI contract](cli-contract.md) | [Loop: Index](index.md) | Related: [Launcher](launcher.md), [Identity](identity.md)
 
-Outer loop bridge: this is the deep dive for [Step 7: Use It In CI](quickstart.md#step-7-use-it-in-ci).
+Outer loop bridge: deep dive for quickstart Step 7, Use It In CI.
 
 Sigmund is useful in CI when one step needs to start a long-running helper and later steps need to inspect or stop it. Examples include databases, web servers, emulators, local object stores, test daemons, and language-specific dev servers. It gives CI scripts a durable run ID, a log, and safe process-group teardown without bringing in `tmux`, `systemd`, a custom supervisor, or hand-managed PID files.
 
@@ -15,6 +15,31 @@ The important CI contract is simple:
 - `sigmund stop <id>` validates the recorded process group, sends `SIGTERM`, then escalates to `SIGKILL` if needed.
 - `sigmund prune <id>` removes past run state after teardown.
 
+## Install in CI
+
+Use the installer handoff file when a workflow needs to install Sigmund and use it in later commands without relying on shell startup files:
+
+```yaml
+- name: Install Sigmund
+  shell: bash
+  run: |
+    set -Eeuo pipefail
+    curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh |
+      SIGMUND_INSTALL_DIR="$PWD/.bin" \
+      SIGMUND_ENV_FILE="$PWD/.sigmund-env" \
+      sh
+    cat "$PWD/.sigmund-env" >> "$GITHUB_ENV"
+
+- name: Check Sigmund
+  shell: bash
+  run: |
+    "$SIGMUND_BIN" --version
+```
+
+`SIGMUND_INSTALL_DIR` chooses a job-local install directory. `SIGMUND_ENV_FILE` tells the installer to write `SIGMUND_BIN` and a matching `PATH` update for later steps. Appending that file to `$GITHUB_ENV` makes both values available to the rest of the job.
+
+For a runnable shell example that installs Sigmund and uv, starts a web server, creates a durable alias, and restarts that alias from another directory, see [examples/uv-webserver-alias.sh](../examples/uv-webserver-alias.sh).
+
 ## Recipes
 
 ### Start a helper in one step and use it later
@@ -26,7 +51,7 @@ This is the basic CI problem: a shell step exits, but the helper should keep run
   shell: bash
   run: |
     set -Eeuo pipefail
-    api_id="$(./sigmund npm run start:api)"
+    api_id="$("$SIGMUND_BIN" npm run start:api)"
     echo "API_RUN_ID=$api_id" >> "$GITHUB_ENV"
 
 - name: Test against API
@@ -46,7 +71,7 @@ Benefit: the later step gets a stable Sigmund run ID instead of relying on `$!`,
   if: failure()
   shell: bash
   run: |
-    ./sigmund dump "$API_RUN_ID" || true
+    "$SIGMUND_BIN" dump "$API_RUN_ID" || true
 ```
 
 Benefit: logs are captured from the file Sigmund created at launch, so you do not need to redirect output by hand or keep a background `tail` alive.
@@ -59,9 +84,9 @@ Benefit: logs are captured from the file Sigmund created at launch, so you do no
   shell: bash
   run: |
     set +e
-    ./sigmund stop "$API_RUN_ID"
+    "$SIGMUND_BIN" stop "$API_RUN_ID"
     stop_rc=$?
-    ./sigmund prune "$API_RUN_ID" || true
+    "$SIGMUND_BIN" prune "$API_RUN_ID" || true
     exit "$stop_rc"
 ```
 
@@ -170,14 +195,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Sigmund
-        run: make
+      - name: Install Sigmund
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh |
+            SIGMUND_INSTALL_DIR="$PWD/.bin" \
+            SIGMUND_ENV_FILE="$PWD/.sigmund-env" \
+            sh
+          cat "$PWD/.sigmund-env" >> "$GITHUB_ENV"
 
       - name: Start web helper
         shell: bash
         run: |
           set -Eeuo pipefail
-          run_id="$(./sigmund python3 -m http.server 8765)"
+          run_id="$("$SIGMUND_BIN" python3 -m http.server 8765)"
           echo "WEB_RUN_ID=$run_id" >> "$GITHUB_ENV"
 
       - name: Wait for web helper
@@ -190,7 +222,7 @@ jobs:
             fi
             sleep 1
           done
-          ./sigmund dump "$WEB_RUN_ID" || true
+          "$SIGMUND_BIN" dump "$WEB_RUN_ID" || true
           exit 1
 
       - name: Run integration tests
@@ -205,16 +237,16 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          ./sigmund dump "$WEB_RUN_ID" || true
+          "$SIGMUND_BIN" dump "$WEB_RUN_ID" || true
 
       - name: Stop helper
         if: always()
         shell: bash
         run: |
           set +e
-          ./sigmund stop "$WEB_RUN_ID"
+          "$SIGMUND_BIN" stop "$WEB_RUN_ID"
           stop_rc=$?
-          ./sigmund prune "$WEB_RUN_ID" || true
+          "$SIGMUND_BIN" prune "$WEB_RUN_ID" || true
           exit "$stop_rc"
 ```
 
@@ -226,17 +258,18 @@ Use this shape in any CI system that runs POSIX shell:
 
 ```bash
 set -Eeuo pipefail
+SIGMUND_BIN="${SIGMUND_BIN:-sigmund}"
 
-run_id="$(sigmund ./your-server --port 9000)"
+run_id="$("$SIGMUND_BIN" ./your-server --port 9000)"
 printf '%s\n' "$run_id" > .sigmund-your-server-id
 
 cleanup() {
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    sigmund dump "$run_id" || true
+    "$SIGMUND_BIN" dump "$run_id" || true
   fi
-  sigmund stop "$run_id" || true
-  sigmund prune "$run_id" || true
+  "$SIGMUND_BIN" stop "$run_id" || true
+  "$SIGMUND_BIN" prune "$run_id" || true
   exit "$rc"
 }
 trap cleanup EXIT
@@ -258,21 +291,23 @@ This keeps the run ID in a shell variable for same-step tests and in a file if a
 Start each service separately and stop each ID during teardown:
 
 ```bash
-api_id="$(sigmund npm run start:api)"
-worker_id="$(sigmund npm run start:worker)"
-redis_id="$(sigmund redis-server --port 6379)"
+SIGMUND_BIN="${SIGMUND_BIN:-sigmund}"
+
+api_id="$("$SIGMUND_BIN" npm run start:api)"
+worker_id="$("$SIGMUND_BIN" npm run start:worker)"
+redis_id="$("$SIGMUND_BIN" redis-server --port 6379)"
 
 cleanup() {
   rc=$?
   [ "$rc" -eq 0 ] || {
-    sigmund dump "$api_id" || true
-    sigmund dump "$worker_id" || true
-    sigmund dump "$redis_id" || true
+    "$SIGMUND_BIN" dump "$api_id" || true
+    "$SIGMUND_BIN" dump "$worker_id" || true
+    "$SIGMUND_BIN" dump "$redis_id" || true
   }
-  sigmund stop "$api_id" "$worker_id" "$redis_id" || true
-  sigmund prune "$api_id" || true
-  sigmund prune "$worker_id" || true
-  sigmund prune "$redis_id" || true
+  "$SIGMUND_BIN" stop "$api_id" "$worker_id" "$redis_id" || true
+  "$SIGMUND_BIN" prune "$api_id" || true
+  "$SIGMUND_BIN" prune "$worker_id" || true
+  "$SIGMUND_BIN" prune "$redis_id" || true
   exit "$rc"
 }
 trap cleanup EXIT
@@ -330,4 +365,4 @@ For maintainers, the primary functions are `perform_start`, `cmd_dump_action`, `
 
 ## Continue
 
-[Back to Step 7](quickstart.md#step-7-use-it-in-ci) | [Back to docs index](index.md) | [Top](#using-sigmund-in-ci) | [Loop to start](index.md) | Branch to: [CLI contract](cli-contract.md), [Launcher](launcher.md), [Identity](identity.md)
+[Finish after Step 7](index.md) | [Back to docs index](index.md) | [Top](#using-sigmund-in-ci) | [Loop to start](index.md) | Branch to: [CLI contract](cli-contract.md), [Launcher](launcher.md), [Identity](identity.md)

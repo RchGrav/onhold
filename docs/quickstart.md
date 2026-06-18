@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Technical reference loop](index.md#technical-reference-loop) | [Using Sigmund in CI](ci.md)
 
-This is the outer onboarding loop. Read it straight through to understand the product workflow without being pulled into internals. At the end of each step, either continue to the next step or open the matching deep dive.
+This is the outer onboarding loop. Read it straight through to understand the product workflow without being pulled into internals. At the end of each step, keep reading for the next step or open the matching deep dive.
 
 ## Step 1: Start One Thing
 
@@ -40,7 +40,7 @@ flowchart LR
 
 Sigmund is doing the process bookkeeping for you: session isolation, log capture, durable identity, and a safe cleanup handle.
 
-Continue: [Step 2: Manage It Later](#step-2-manage-it-later)
+Next: Step 2 shows how to inspect, stop, and prune the run you just created.
 
 Dig deeper: [Launcher](launcher.md) explains how the child starts; [Store](store.md) explains where the run ID, log, and record live.
 
@@ -85,7 +85,7 @@ flowchart LR
 
 The important promise is that Sigmund does not blindly send a signal to whatever process currently has a PID. It checks the stored identity first and refuses when the evidence is stale or unknown.
 
-Continue: [Step 3: Understand Automatic Choices](#step-3-understand-automatic-choices)
+Next: Step 3 explains how Sigmund decides whether a command is user-local, system-managed, or a management action.
 
 Dig deeper: [Identity and validation](identity.md) explains the safety checks; [CLI contract](cli-contract.md) explains commands, stdout/stderr, and exit codes; [Console](console.md) explains attachable PTY runs.
 
@@ -130,7 +130,7 @@ flowchart TD
 
 This automatic choice keeps the common path short while making privileged state explicit.
 
-Continue: [Step 4: Make Targeting Deterministic](#step-4-make-targeting-deterministic)
+Next: Step 4 shows how to make targeting deterministic when names or IDs could overlap.
 
 Dig deeper: [CLI contract](cli-contract.md) explains parsing; [Security](security.md) explains root/system invocation.
 
@@ -176,7 +176,7 @@ flowchart LR
 
 Use `user:` and `system:` when you want the tool to do exactly what you said instead of applying the normal local-first lookup rule.
 
-Continue: [Step 5: Create an Alias](#step-5-create-an-alias)
+Next: Step 5 turns a recorded run into a reusable alias.
 
 Dig deeper: [Target resolution](target-resolution.md) explains IDs, prefixes, aliases, `user:`, `system:`, ambiguity, and `--all`.
 
@@ -217,7 +217,7 @@ flowchart LR
 
 Aliases are how Sigmund turns an ephemeral run into a repeatable workflow without becoming a full service manager.
 
-Continue: [Step 6: Delegate One Root-Managed Tool](#step-6-delegate-one-root-managed-tool)
+Next: Step 6 shows how root can delegate one registered tool without granting broad root access.
 
 Dig deeper: [Profiles and aliases](profiles-and-aliases.md) explains user recipes, system profile hashes, alias matching, `--multi`, and `--all`.
 
@@ -230,7 +230,7 @@ Action:
 ```bash
 sudo sigmund --system /usr/bin/redis-server /etc/redis.conf
 sudo sigmund alias <run-id> cache
-sudo sigmund grant cache alice start stop tail dump
+sudo sigmund grant cache alice start,stop,tail,dump
 ```
 
 Then Alice can run:
@@ -265,7 +265,7 @@ flowchart LR
 
 This is the pattern for giving a user operational control over one root-managed helper without handing them the rest of the machine.
 
-Continue: [Step 7: Use It In CI](#step-7-use-it-in-ci)
+Next: Step 7 shows how to use the same run ID contract in CI.
 
 Dig deeper: [Security and privilege boundaries](security.md) explains sudo self-elevation, capability argv, and managed sudoers files.
 
@@ -313,7 +313,7 @@ flowchart LR
 
 This is the smallest useful CI shape: start, save the ID, run work, dump logs on failure, stop on exit.
 
-Continue: [Back to documentation index](index.md)
+Finish: [Back to documentation index](index.md)
 
 Dig deeper: [Using Sigmund in CI](ci.md) has copyable recipes; [CLI contract](cli-contract.md) explains script-safe output and exit codes.
 

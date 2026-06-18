@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Index](index.md) | [Next: Store](store.md) | Related: [Identity](identity.md), [Console](console.md), [CLI contract](cli-contract.md)
 
-Outer loop bridge: this is the deep dive for [Step 1: Start One Thing](quickstart.md#step-1-start-one-thing).
+Outer loop bridge: deep dive for quickstart Step 1, Start One Thing.
 
 When you run `sigmund <cmd...>`, the launcher turns that command into a detached run with a short ID and a log. This is the piece that lets a helper survive after the CI step or shell that started it exits.
 
@@ -107,4 +107,4 @@ For maintainers, the primary functions are `perform_start`, `perform_explicit_st
 
 ## Continue
 
-[Back to Step 1](quickstart.md#step-1-start-one-thing) | [Back to docs index](index.md) | [Top](#launcher) | [Next: Store](store.md) | Branch to: [Console](console.md), [CLI contract](cli-contract.md), [Identity](identity.md)
+[Resume quickstart after Step 1: Step 2](quickstart.md#step-2-manage-it-later) | [Back to docs index](index.md) | [Top](#launcher) | [Next: Store](store.md) | Branch to: [Console](console.md), [CLI contract](cli-contract.md), [Identity](identity.md)

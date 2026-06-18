@@ -12,6 +12,28 @@ sigmund tail "$run_id"
 sigmund stop "$run_id"
 ```
 
+## Install
+
+One-line installer for supported release targets:
+
+```sh
+curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh
+```
+
+Normal users install to `$HOME/.local/bin/sigmund`; root installs to `/usr/local/bin/sigmund`. If the install directory is not on your current `PATH`, the installer prints the export command and still tells you the absolute binary path.
+
+For scripts and CI, ask the installer to write an environment handoff file:
+
+```sh
+curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh |
+  SIGMUND_ENV_FILE="$PWD/.sigmund-env" sh
+. "$PWD/.sigmund-env"
+
+"$SIGMUND_BIN" --version
+```
+
+More install modes and platform-selection details are in [Installing Sigmund](docs/install.md).
+
 ## Why Sigmund?
 
 - It keeps helper processes alive after the shell or CI step that launched them exits.
@@ -136,8 +158,10 @@ Advanced command forms, parser rules, exit codes, targeting rules, console mode,
 
 Start here:
 
+- [Installing Sigmund](docs/install.md): one-line install, CI handoff, platform detection, and checksums.
 - [Quickstart](docs/quickstart.md): the guided onboarding loop.
 - [Using Sigmund in CI](docs/ci.md): copyable CI recipes and workflow examples.
+- [Examples](examples/README.md): runnable scripts, including a Sigmund + uv alias demo.
 - [Documentation index](docs/index.md): the two-layer navigation model.
 
 Go deeper:
