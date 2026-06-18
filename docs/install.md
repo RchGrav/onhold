@@ -16,16 +16,12 @@ If the system has `wget` instead of `curl`:
 wget -qO- https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh
 ```
 
-Normal users install to:
+By default, the installer uses `/usr/local/bin` when the current process can write there. That covers root installs and machines where `/usr/local/bin` is intentionally group-writable.
+
+When `/usr/local/bin` is not writable, it falls back to:
 
 ```text
 $HOME/.local/bin/sigmund
-```
-
-Root installs to:
-
-```text
-/usr/local/bin/sigmund
 ```
 
 Run the same installer through root when you want a system install:
@@ -33,6 +29,21 @@ Run the same installer through root when you want a system install:
 ```sh
 curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sudo sh
 ```
+
+You can also force a system install from a normal shell. This targets `/usr/local/bin` and asks for a `sudo` password only if the current process cannot write there:
+
+```sh
+curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh -s -- --system
+```
+
+For CI or scripted use, the equivalent environment switch is:
+
+```sh
+curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh |
+  SIGMUND_INSTALL_SYSTEM=1 sh
+```
+
+The installed binary is written with mode `0755`. For the default root-owned system install, ownership is set to `root:root` where the platform allows it.
 
 If the install directory is not on the current `PATH`, the installer still verifies the binary by absolute path, updates a future shell profile for normal users, and prints the export command to use immediately:
 
@@ -78,10 +89,10 @@ curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.s
 By default the installer uses the latest GitHub release. Pin a release when reproducibility matters:
 
 ```sh
-curl -LsSf https://github.com/RchGrav/sigmund/releases/download/v0.3.1/install.sh | sh
+curl -LsSf https://github.com/RchGrav/sigmund/releases/download/vX.Y.Z/install.sh | sh
 ```
 
-You can also run the latest installer against a specific release by setting `SIGMUND_VERSION`; `SIGMUND_VERSION=0.3.1` and `SIGMUND_VERSION=v0.3.1` are equivalent.
+You can also run the latest installer against a specific release by setting `SIGMUND_VERSION`; values with and without the leading `v` are equivalent.
 
 ## Selection logic
 

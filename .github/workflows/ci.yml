@@ -66,6 +66,11 @@ jobs:
           make CC=clang STATIC_LDFLAGS= CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
           make clean
           make test CC=clang STATIC_LDFLAGS= CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
+      - name: Smoke-test installer selection on macOS
+        run: |
+          version="$(cat VERSION)"
+          SIGMUND_VERSION="$version" SIGMUND_INSTALL_DRY_RUN=1 sh install.sh
+          SIGMUND_VERSION="$version" SIGMUND_INSTALL_DRY_RUN=1 sh install.sh --system
 
   sanitizers:
     runs-on: ubuntu-latest

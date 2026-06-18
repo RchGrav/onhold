@@ -20,7 +20,13 @@ One-line installer for supported release targets:
 curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh
 ```
 
-Normal users install to `$HOME/.local/bin/sigmund`; root installs to `/usr/local/bin/sigmund`. If the install directory is not on your current `PATH`, the installer prints the export command and still tells you the absolute binary path.
+The installer uses `/usr/local/bin/sigmund` when it can write there, and otherwise falls back to `$HOME/.local/bin/sigmund`. If the install directory is not on your current `PATH`, the installer prints the export command and still tells you the absolute binary path.
+
+To force a system install, use `--system`; the installer prompts through `sudo` only if it cannot write `/usr/local/bin` directly:
+
+```sh
+curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh -s -- --system
+```
 
 For scripts and CI, ask the installer to write an environment handoff file:
 

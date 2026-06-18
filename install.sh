@@ -6,6 +6,7 @@ REPO_NAME="${SIGMUND_REPO_NAME:-sigmund}"
 GITHUB_BASE="${SIGMUND_GITHUB_BASE:-https://github.com}"
 GITHUB_API="${SIGMUND_GITHUB_API:-https://api.github.com}"
 INSTALLER_VERSION="${SIGMUND_INSTALLER_VERSION:-latest}"
+INSTALL_SYSTEM="${SIGMUND_INSTALL_SYSTEM:-0}"
 
 note() {
   printf '%s\n' "$*" >&2
@@ -14,6 +15,21 @@ note() {
 die() {
   note "sigmund installer: error: $*"
   exit 1
+}
+
+usage() {
+  cat >&2 <<'EOF'
+usage: install.sh [version] [--system]
+
+Options:
+  --system    Install to /usr/local/bin, using sudo if needed.
+  -h, --help  Show this help.
+
+Environment:
+  SIGMUND_VERSION         Version or tag to install.
+  SIGMUND_INSTALL_SYSTEM  Set to 1 to behave like --system.
+  SIGMUND_INSTALL_DIR     Custom install directory.
+EOF
 }
 
 need_cmd() {
@@ -157,26 +173,6 @@ select_artifact() {
   esac
 }
 
-embedded_checksum() {
-  key=$1
-  case "$key" in
-    v0.3.0:sigmund-0.3.0-linux-amd64-gnu-dynamic.tar.gz) printf '%s\n' 9bab289d444a75e41007ef1fbf5655f9ba06355c81457c18c0e1eedc74b9e09c ;;
-    v0.3.0:sigmund-0.3.0-linux-amd64-gnu-static.tar.gz) printf '%s\n' 57bf0ec8ba6f1a3b1813f563c3e6c2663777b57286dea148ae052e7365ed7c82 ;;
-    v0.3.0:sigmund-0.3.0-linux-amd64-musl-static.tar.gz) printf '%s\n' 46f44de89cd830bba39c90e71f61d84da313ff661f004fac4a52c25e9b9b7fce ;;
-    v0.3.0:sigmund-0.3.0-linux-arm64-gnu-dynamic.tar.gz) printf '%s\n' 00a189c8e40dbcd4a4f4bebc95c4b7da9ef8ceb9caedc9f9911799d37928b5a7 ;;
-    v0.3.0:sigmund-0.3.0-linux-arm64-gnu-static.tar.gz) printf '%s\n' 893b552fc3037ca7131349d8068b16de155272e262ebd94e2b1fb0f3a34d8f45 ;;
-    v0.3.0:sigmund-0.3.0-linux-arm64-musl-static.tar.gz) printf '%s\n' df29e41bbe4787cd274325d20eeb44ea3a97e758595b40482a01142db896828c ;;
-    v0.3.0:sigmund-0.3.0-linux-armhf-gnu-dynamic.tar.gz) printf '%s\n' eabb648577717c6ae8188ca63b090af7e1e911dd6a30acf4822a595077a25309 ;;
-    v0.3.0:sigmund-0.3.0-linux-armhf-gnu-static.tar.gz) printf '%s\n' bb193688043731f1dcea1e9061e931ef14a60c9d085a6af4087ee7eae2aae135 ;;
-    v0.3.0:sigmund-0.3.0-linux-armhf-musl-static.tar.gz) printf '%s\n' 678cd05a643dc9f4127989c24da4ef1b5127eadc7a3880e74eb4b6c45efff4d0 ;;
-    v0.3.0:sigmund-0.3.0-linux-mipsel-musl-static.tar.gz) printf '%s\n' 1b283553a0819e8cd80e5ee253cb9d0eba56943875697ae002f157246e0f8862 ;;
-    v0.3.0:sigmund-0.3.0-linux-riscv64-musl-static.tar.gz) printf '%s\n' 8ce78f295fe3d162037e20f0cea326cb88308fa8a9a938abd40f5e19927030ab ;;
-    v0.3.0:sigmund-0.3.0-macos-arm64.tar.gz) printf '%s\n' 07fd9af4d5ca8337689e0cae16e2b4f54d40981a75fe3cce7c9850bcf1633cc5 ;;
-    v0.3.0:sigmund-0.3.0-macos-x86_64.tar.gz) printf '%s\n' 05c96d06177688f5ead010b87b4c1aa2a44e22b25dfcf98e39cb34ce718bfa87 ;;
-    *) return 1 ;;
-  esac
-}
-
 release_body_checksum() {
   tag=$1
   artifact=$2
@@ -219,6 +215,88 @@ current_uid() {
   else
     printf '%s\n' 1
   fi
+}
+
+truthy() {
+  case "$1" in
+    1|yes|true|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+can_write_dir() {
+  dir=$1
+  [ -d "$dir" ] && [ -w "$dir" ] && [ -x "$dir" ]
+}
+
+default_install_dir() {
+  if [ "$(current_uid)" -eq 0 ]; then
+    printf '%s\n' /usr/local/bin
+  elif can_write_dir /usr/local/bin; then
+    printf '%s\n' /usr/local/bin
+  else
+    [ -n "${HOME:-}" ] || die "HOME is not set; set SIGMUND_INSTALL_DIR"
+    printf '%s\n' "$HOME/.local/bin"
+  fi
+}
+
+ensure_install_dir() {
+  dir=$1
+  created=0
+  if [ ! -d "$dir" ]; then
+    created=1
+  fi
+  mkdir -p "$dir" || die "could not create install directory: $dir"
+  [ -d "$dir" ] || die "install path is not a directory: $dir"
+  [ -w "$dir" ] || die "install directory is not writable: $dir"
+  [ -x "$dir" ] || die "install directory is not searchable: $dir"
+  if [ "$created" -eq 1 ]; then
+    chmod 0755 "$dir" 2>/dev/null || true
+  fi
+}
+
+install_needs_sudo() {
+  dir=$1
+  if [ "$(current_uid)" -eq 0 ]; then
+    return 1
+  fi
+  can_write_dir "$dir" && return 1
+  return 0
+}
+
+install_binary_user() {
+  bin=$1
+  target=$2
+  install_dir=$3
+
+  ensure_install_dir "$install_dir"
+  cp "$bin" "$target.tmp.$$"
+  chmod 0755 "$target.tmp.$$"
+  if [ "$(current_uid)" -eq 0 ] && [ "$install_dir" = /usr/local/bin ]; then
+    chown 0:0 "$target.tmp.$$" 2>/dev/null || true
+  fi
+  mv "$target.tmp.$$" "$target"
+}
+
+install_binary_sudo() {
+  bin=$1
+  target=$2
+  install_dir=$3
+  tmp_target="$target.tmp.$$"
+
+  need_cmd sudo
+  sudo -v
+  if ! sudo test -d "$install_dir"; then
+    sudo mkdir -p "$install_dir"
+    sudo chmod 0755 "$install_dir" 2>/dev/null || true
+  fi
+  sudo test -d "$install_dir" || die "install path is not a directory: $install_dir"
+  sudo test -w "$install_dir" || die "install directory is not writable through sudo: $install_dir"
+  sudo rm -f "$tmp_target"
+  sudo cp "$bin" "$tmp_target"
+  sudo chmod 0755 "$tmp_target"
+  sudo chown 0:0 "$tmp_target" 2>/dev/null || true
+  sudo mv "$tmp_target" "$target"
 }
 
 shell_quote() {
@@ -269,7 +347,33 @@ maybe_update_profile() {
   note "updated shell profile for future shells: $profile"
 }
 
-tag=${1:-${SIGMUND_VERSION:-$INSTALLER_VERSION}}
+version_arg=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --system)
+      INSTALL_SYSTEM=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      [ "$#" -eq 0 ] || die "unexpected argument after --: $1"
+      break
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      [ -z "$version_arg" ] || die "multiple version arguments provided"
+      version_arg=$1
+      ;;
+  esac
+  shift
+done
+
+tag=${version_arg:-${SIGMUND_VERSION:-$INSTALLER_VERSION}}
 if [ "$tag" = latest ]; then
   tag=$(latest_tag)
   [ -n "$tag" ] || die "could not resolve latest release tag"
@@ -287,19 +391,38 @@ fi
 artifact=$(select_artifact "$version_no_v" "$os" "$arch" "$libc")
 url="$GITHUB_BASE/$REPO_OWNER/$REPO_NAME/releases/download/$tag/$artifact"
 
+if [ "${SIGMUND_INSTALL_DIR:-}" ] && truthy "$INSTALL_SYSTEM"; then
+  die "SIGMUND_INSTALL_DIR cannot be combined with --system or SIGMUND_INSTALL_SYSTEM=1"
+fi
+
+install_mode=user
 if [ "${SIGMUND_INSTALL_DIR:-}" ]; then
   install_dir=$SIGMUND_INSTALL_DIR
-elif [ "$(current_uid)" -eq 0 ]; then
+  install_mode=custom
+elif truthy "$INSTALL_SYSTEM"; then
   install_dir=/usr/local/bin
+  install_mode=system
 else
-  install_dir=$HOME/.local/bin
+  install_dir=$(default_install_dir)
+  if [ "$install_dir" = /usr/local/bin ]; then
+    install_mode=system
+  fi
 fi
 target="$install_dir/sigmund"
+use_sudo=0
+if [ "$install_mode" = system ] && install_needs_sudo "$install_dir"; then
+  use_sudo=1
+fi
+privilege_note=
+if [ "$use_sudo" -eq 1 ]; then
+  privilege_note=" with sudo"
+fi
 
 note "sigmund installer"
 note "  detected: $os $arch${libc:+ $libc}"
 note "  version:  $tag"
 note "  artifact: $artifact"
+note "  mode:     $install_mode$privilege_note"
 note "  install:  $target"
 
 if [ "${SIGMUND_INSTALL_DRY_RUN:-0}" = 1 ]; then
@@ -319,18 +442,16 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 archive="$tmp/$artifact"
 download "$url" "$archive"
 
-expected=$(embedded_checksum "$tag:$artifact" || true)
-if [ -z "$expected" ]; then
-  expected=$(release_body_checksum "$tag" "$artifact" || true)
+expected=
+sums="$tmp/SHA256SUMS"
+if download "$GITHUB_BASE/$REPO_OWNER/$REPO_NAME/releases/download/$tag/SHA256SUMS" "$sums" 2>/dev/null; then
+  expected=$(awk -v artifact="$artifact" '$2 == artifact || $2 == "*" artifact { print $1; exit }' "$sums")
 fi
 if [ -n "$expected" ] && [ "${#expected}" -ne 64 ]; then
   expected=
 fi
 if [ -z "$expected" ]; then
-  sums="$tmp/SHA256SUMS"
-  if download "$GITHUB_BASE/$REPO_OWNER/$REPO_NAME/releases/download/$tag/SHA256SUMS" "$sums" 2>/dev/null; then
-    expected=$(awk -v artifact="$artifact" '$2 == artifact || $2 == "*" artifact { print $1; exit }' "$sums")
-  fi
+  expected=$(release_body_checksum "$tag" "$artifact" || true)
 fi
 if [ -n "$expected" ] && [ "${#expected}" -ne 64 ]; then
   expected=
@@ -355,12 +476,10 @@ tar -xzf "$archive" -C "$extract"
 bin=$(find "$extract" -type f -name sigmund | head -n 1)
 [ -n "$bin" ] || die "archive did not contain sigmund binary"
 
-mkdir -p "$install_dir"
-cp "$bin" "$target.tmp.$$"
-chmod 0755 "$target.tmp.$$"
-mv "$target.tmp.$$" "$target"
-if [ "$(current_uid)" -eq 0 ]; then
-  chown 0:0 "$target" 2>/dev/null || true
+if [ "$use_sudo" -eq 1 ]; then
+  install_binary_sudo "$bin" "$target" "$install_dir"
+else
+  install_binary_user "$bin" "$target" "$install_dir"
 fi
 
 version=$("$target" --version 2>/dev/null || true)
