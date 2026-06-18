@@ -1,8 +1,10 @@
 # Launcher
 
-[Docs index](index.md) | [Previous: Index](index.md) | [Next: Store](store.md) | Related: [Identity](identity.md), [Console](console.md), [CLI contract](cli-contract.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Index](index.md) | [Next: Store](store.md) | Related: [Identity](identity.md), [Console](console.md), [CLI contract](cli-contract.md)
 
-The launcher is the path from a CLI start request to a recorded, detached child process. In `src/sigmund.c`, this is centered on `perform_start`, with `perform_explicit_start`, `cmd_start_action`, `perform_profile_start`, `read_exec_handshake`, and `rollback_spawned_group` handling the surrounding cases.
+Outer loop bridge: this is the deep dive for [Step 1: Start One Thing](quickstart.md#step-1-start-one-thing).
+
+When you run `sigmund <cmd...>`, the launcher turns that command into a detached run with a short ID and a log. This is the piece that lets a helper survive after the CI step or shell that started it exits.
 
 The end result of a successful start is a bare 8-hex run ID on stdout, a private JSON record, a log file, and optionally a console socket. Human status goes through `sig_note`, which writes to stderr unless `--quiet` is set.
 
@@ -99,10 +101,10 @@ For non-console runs, stdin is `/dev/null` and stdout/stderr append to `<id>.log
 
 The fork/setsid/exec path gives Sigmund the part `nohup` and `setsid` users usually want: a child that outlives the shell's teardown. The record and handshake provide the part a bare background process does not: a durable ID whose process group can later be validated before signaling. Because there is no daemon, the launch path must record enough identity immediately, and it must roll back if it cannot make the record authoritative.
 
-## Source anchors
+## Implementation map
 
-Primary functions: `perform_start`, `perform_explicit_start`, `cmd_start_action`, `perform_profile_start`, `read_exec_handshake`, `rollback_spawned_group`, `tail_log_until_exit`, and `write_record_atomic`.
+For maintainers, the primary functions are `perform_start`, `perform_explicit_start`, `cmd_start_action`, `perform_profile_start`, `read_exec_handshake`, `rollback_spawned_group`, `tail_log_until_exit`, and `write_record_atomic`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#launcher) | [Next: Store](store.md) | Branch to: [Console](console.md), [CLI contract](cli-contract.md), [Identity](identity.md)
+[Back to Step 1](quickstart.md#step-1-start-one-thing) | [Back to docs index](index.md) | [Top](#launcher) | [Next: Store](store.md) | Branch to: [Console](console.md), [CLI contract](cli-contract.md), [Identity](identity.md)

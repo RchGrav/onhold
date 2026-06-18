@@ -1,13 +1,15 @@
 # Profiles and aliases
 
-[Docs index](index.md) | [Previous: Target resolution](target-resolution.md) | [Next: Security](security.md) | Related: [Store](store.md), [Launcher](launcher.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Target resolution](target-resolution.md) | [Next: Security](security.md) | Related: [Store](store.md), [Launcher](launcher.md)
 
-Aliases turn a recorded command into a reusable launch target. The implementation has two storage modes:
+Outer loop bridge: this is the deep dive for [Step 5: Create an Alias](quickstart.md#step-5-create-an-alias).
+
+Aliases turn a recorded command into a reusable launch target. Users get a friendly name such as `web`, while Sigmund keeps enough recipe information to start that same command again later.
+
+There are two storage modes:
 
 - User-local aliases store a private launch recipe directly in the user's `aliases.json`.
 - System-managed aliases expose a public alias-to-hash mapping while keeping the protected launch recipe in root-private `profiles.json`.
-
-The key functions are `cmd_alias_action`, `profile_hash_for_argv`, `write_profile_atomic`, `alias_upsert_recipe`, `alias_upsert_hash`, `resolve_start_profile_target`, and `cmd_start_action`.
 
 ## From run to alias
 
@@ -94,10 +96,10 @@ Aliases give a daemonless tool a small amount of durable intent without becoming
 
 The validate-before-signal constraint still applies after aliasing. Aliases select candidate runs by recorded label, and signal actions validate those concrete run records before touching their process groups.
 
-## Source anchors
+## Implementation map
 
-Primary functions and structs: `struct profile`, `struct alias_entry`, `profile_hash_for_argv`, `resolve_binary_path`, `cmd_alias_action`, `write_profile_atomic`, `write_profiles_atomic`, `alias_upsert_recipe`, `alias_upsert_hash`, `resolve_start_profile_target`, `count_running_alias`, `perform_profile_start`, and `cmd_start_action`.
+For maintainers, the primary functions and structs are `struct profile`, `struct alias_entry`, `profile_hash_for_argv`, `resolve_binary_path`, `cmd_alias_action`, `write_profile_atomic`, `write_profiles_atomic`, `alias_upsert_recipe`, `alias_upsert_hash`, `resolve_start_profile_target`, `count_running_alias`, `perform_profile_start`, and `cmd_start_action`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#profiles-and-aliases) | [Next: Security](security.md) | Branch to: [Store](store.md), [Launcher](launcher.md), [Target resolution](target-resolution.md)
+[Back to Step 5](quickstart.md#step-5-create-an-alias) | [Back to docs index](index.md) | [Top](#profiles-and-aliases) | [Next: Security](security.md) | Branch to: [Store](store.md), [Launcher](launcher.md), [Target resolution](target-resolution.md)

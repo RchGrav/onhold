@@ -1,10 +1,12 @@
 # Security and privilege boundaries
 
-[Docs index](index.md) | [Previous: Profiles and aliases](profiles-and-aliases.md) | [Next: Console](console.md) | Related: [Target resolution](target-resolution.md), [Store](store.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Profiles and aliases](profiles-and-aliases.md) | [Next: Console](console.md) | Related: [Target resolution](target-resolution.md), [Store](store.md)
 
-Sigmund's root-aware behavior is built around two rules: normal state stays user-local unless root/system authority is requested, and privileged actions are re-validated after crossing sudo. There is no daemon and no shell command payload.
+Outer loop bridge: this is the deep dive for [Step 3: Understand Automatic Choices](quickstart.md#step-3-understand-automatic-choices) and [Step 6: Delegate One Root-Managed Tool](quickstart.md#step-6-delegate-one-root-managed-tool).
 
-The primary functions are `detect_invocation`, `elevate_with_sudo_canonical`, `elevate_with_sudo_targets`, `elevate_start_token`, `verify_system_alias_cap`, `cmd_elevated_capability_action`, and `cmd_grant_revoke_action`.
+Sigmund's root-aware behavior is built around two user-visible rules: normal runs stay user-local unless root/system authority is requested, and privileged actions are re-validated after crossing sudo. A normal user can see that a root-managed run exists without seeing its private command, log path, or process identity.
+
+There is no daemon and no shell command payload. When Sigmund needs sudo, it re-execs itself with a controlled argv shape and then rechecks private root state before acting.
 
 ## Invocation context
 
@@ -118,10 +120,10 @@ The sudo boundary is narrow and argv-based. Sigmund never asks sudo to run an in
 
 The single-binary constraint also explains managed sudoers. There is no daemon authorization API to query, so the durable authorization object is a sudoers file whose command pattern points back to the same Sigmund executable and a fixed profile hash.
 
-## Source anchors
+## Implementation map
 
-Primary functions: `detect_invocation`, `resolve_self_executable_path`, `elevate_with_sudo_canonical`, `elevate_with_sudo_parsed`, `elevate_with_sudo_targets`, `elevate_start_token`, `verify_system_alias_cap`, `ensure_run_recorded_under_alias`, `cmd_elevated_capability_action`, `validate_sigmund_self_for_sudoers`, `build_sudoers_line`, `write_sudoers_template_file`, `unlink_sudoers_template_file`, and `cmd_grant_revoke_action`.
+For maintainers, the primary functions are `detect_invocation`, `resolve_self_executable_path`, `elevate_with_sudo_canonical`, `elevate_with_sudo_parsed`, `elevate_with_sudo_targets`, `elevate_start_token`, `verify_system_alias_cap`, `ensure_run_recorded_under_alias`, `cmd_elevated_capability_action`, `validate_sigmund_self_for_sudoers`, `build_sudoers_line`, `write_sudoers_template_file`, `unlink_sudoers_template_file`, and `cmd_grant_revoke_action`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#security-and-privilege-boundaries) | [Next: Console](console.md) | Branch to: [Target resolution](target-resolution.md), [Profiles and aliases](profiles-and-aliases.md), [Store](store.md)
+[Back to Step 3](quickstart.md#step-3-understand-automatic-choices) | [Back to Step 6](quickstart.md#step-6-delegate-one-root-managed-tool) | [Back to docs index](index.md) | [Top](#security-and-privilege-boundaries) | [Next: Console](console.md) | Branch to: [Target resolution](target-resolution.md), [Profiles and aliases](profiles-and-aliases.md), [Store](store.md)

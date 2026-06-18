@@ -1,8 +1,10 @@
 # Target resolution
 
-[Docs index](index.md) | [Previous: Identity](identity.md) | [Next: Profiles and aliases](profiles-and-aliases.md) | Related: [Security](security.md), [CLI contract](cli-contract.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Identity](identity.md) | [Next: Profiles and aliases](profiles-and-aliases.md) | Related: [Security](security.md), [CLI contract](cli-contract.md)
 
-Target resolution answers one question: which concrete store and run ID does the user's token name? It does not decide whether the process is safe to signal; that is the identity validator's job.
+Outer loop bridge: this is the deep dive for [Step 4: Make Targeting Deterministic](quickstart.md#step-4-make-targeting-deterministic).
+
+Target resolution answers one user-facing question: when you type `sigmund stop web`, `sigmund tail 7f3`, or `sigmund dump system:api`, which concrete run did you mean? It does not decide whether the process is safe to signal; that is the identity validator's job.
 
 The resolver is split because Sigmund has several addressing forms and two authority contexts. `resolve_target` is used for alias creation, while `resolve_action_token` is used for action commands that may expand one alias into multiple concrete targets.
 
@@ -99,10 +101,10 @@ The resolver is conservative about authority. It avoids surprising privilege esc
 
 The daemonless constraint also shapes ambiguity behavior. Without a daemon to arbitrate a "current" alias run, Sigmund must either identify one candidate, apply an explicit `--all`, or refuse with candidates.
 
-## Source anchors
+## Implementation map
 
-Primary functions and structs: `parse_id_token`, `valid_target_atom`, `resolve_target`, `resolve_action_token`, `append_private_alias_targets`, `append_public_alias_elevation_target`, `collect_private_alias_matches`, `collect_public_alias_matches`, `record_matches_alias_intent`, `report_alias_ambiguity`, and `struct resolved_target`.
+For maintainers, the primary functions and structs are `parse_id_token`, `valid_target_atom`, `resolve_target`, `resolve_action_token`, `append_private_alias_targets`, `append_public_alias_elevation_target`, `collect_private_alias_matches`, `collect_public_alias_matches`, `record_matches_alias_intent`, `report_alias_ambiguity`, and `struct resolved_target`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#target-resolution) | [Next: Profiles and aliases](profiles-and-aliases.md) | Branch to: [Security](security.md), [CLI contract](cli-contract.md)
+[Back to Step 4](quickstart.md#step-4-make-targeting-deterministic) | [Back to docs index](index.md) | [Top](#target-resolution) | [Next: Profiles and aliases](profiles-and-aliases.md) | Branch to: [Security](security.md), [CLI contract](cli-contract.md)

@@ -23,10 +23,13 @@ This repository includes durable review artifacts:
 
 - [`CHANGELOG.md`](CHANGELOG.md): file-by-file changes and verification history, including the root-managed state / sudo self-elevation update.
 - [`REVIEW.md`](REVIEW.md): review process, rationale, verification commands, and known limitations.
-- [`docs/index.md`](docs/index.md): navigable developer documentation entry point with subsystem reading paths.
+- [`docs/quickstart.md`](docs/quickstart.md): user workflow from first start through deterministic targeting, aliases, and scoped root delegation.
+- [`docs/index.md`](docs/index.md): navigable guide to how Sigmund works, with task-based paths for users and maintainers.
 - [`docs/SPEC.md`](docs/SPEC.md): current implementation contract.
 
 ## Quickstart
+
+For a user-first explanation of what Sigmund does after you invoke it, how it chooses user-local versus root-managed state, how to make targeting deterministic, and how root-scoped grants work, start with the [quickstart](docs/quickstart.md).
 
 ### Build
 

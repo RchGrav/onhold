@@ -1,8 +1,12 @@
 # CLI contract
 
-[Docs index](index.md) | [Previous: Console](console.md) | [Next: Using Sigmund in CI](ci.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Console](console.md) | [Next: Using Sigmund in CI](ci.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
 
-Sigmund's CLI contract is defined in `main`, `usage`, `show_help`, the `help_*` functions, and command handlers. The important rule for scripts is that stdout carries machine data and stderr carries human status or diagnostics.
+Outer loop bridge: this is the deep dive for [Step 2: Manage It Later](quickstart.md#step-2-manage-it-later), [Step 3: Understand Automatic Choices](quickstart.md#step-3-understand-automatic-choices), and [Step 7: Use It In CI](quickstart.md#step-7-use-it-in-ci).
+
+This page is for people writing scripts around Sigmund. It explains what goes to stdout, what goes to stderr, which flags belong to Sigmund, which flags belong to the child command, and how exit codes should be treated.
+
+The most important rule for scripts is that stdout carries machine data and stderr carries human status or diagnostics.
 
 ## Parser shape
 
@@ -113,10 +117,10 @@ The parser protects the raw-command use case while still giving Sigmund a struct
 
 The stdout/stderr split exists because detached starts are commonly used in CI. A script can capture `run_id="$(sigmund ...)"` without scraping banners, while humans still get useful context on stderr.
 
-## Source anchors
+## Implementation map
 
-Primary functions: `main`, `usage`, `show_help`, `help_profiles`, `help_targets`, `help_access`, `help_system`, `help_scripting`, `help_console`, `help_action`, `is_sigmund_owned_command`, `command_accepts_target_tokens`, `cmd_start_action`, `cmd_list_normal`, `cmd_list_system`, `cmd_signal_action`, `cmd_tail_action`, `cmd_dump_action`, `cmd_console_action`, `cmd_prune_action`, `cmd_alias_action`, `cmd_aliases_action`, and `cmd_grant_revoke_action`.
+For maintainers, the primary functions are `main`, `usage`, `show_help`, `help_profiles`, `help_targets`, `help_access`, `help_system`, `help_scripting`, `help_console`, `help_action`, `is_sigmund_owned_command`, `command_accepts_target_tokens`, `cmd_start_action`, `cmd_list_normal`, `cmd_list_system`, `cmd_signal_action`, `cmd_tail_action`, `cmd_dump_action`, `cmd_console_action`, `cmd_prune_action`, `cmd_alias_action`, `cmd_aliases_action`, and `cmd_grant_revoke_action`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#cli-contract) | [Next: Using Sigmund in CI](ci.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)
+[Back to Step 2](quickstart.md#step-2-manage-it-later) | [Back to Step 3](quickstart.md#step-3-understand-automatic-choices) | [Back to Step 7](quickstart.md#step-7-use-it-in-ci) | [Back to docs index](index.md) | [Top](#cli-contract) | [Next: Using Sigmund in CI](ci.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)

@@ -1,10 +1,12 @@
 # Console
 
-[Docs index](index.md) | [Previous: Security](security.md) | [Next: CLI contract](cli-contract.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Security](security.md) | [Next: CLI contract](cli-contract.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
 
-Console mode starts a run behind a PTY broker and lets a later `sigmund console <target>` attach through a private Unix socket. It is optional, requires `socat`, and does not replace normal logging.
+Outer loop bridge: this is an optional deep dive for [Step 2: Manage It Later](quickstart.md#step-2-manage-it-later).
 
-The main functions are `make_console_listener`, `open_console_pty`, `run_console_broker`, `run_socat_console`, `attach_console_record`, and `cmd_console_action`.
+Console mode is for commands that need an interactive terminal after launch. `sigmund --console <cmd...>` starts the run behind a PTY broker, and a later `sigmund console <target>` attaches through a private Unix socket.
+
+It is optional, requires `socat`, and does not replace normal logging. The same run still has a log for `tail` and `dump`.
 
 ## Start and attach
 
@@ -88,10 +90,10 @@ Console output is still tee'd to the normal log. That means `sigmund tail <targe
 
 Sigmund remains daemonless by making the broker a per-run child, not a global service. The socket path in the private record is enough for later attachment, and the same target resolver plus validator protects root-managed and user-local console access. The normal log remains the durable, scriptable output channel; the console is only the interactive channel.
 
-## Source anchors
+## Implementation map
 
-Primary functions: `executable_available`, `make_console_listener`, `open_console_pty`, `broker_cleanup_and_exit`, `broker_fail_errno`, `run_console_broker`, `run_socat_console`, `attach_console_record`, `cmd_console_action`, and `record_matches_alias_intent`.
+For maintainers, the primary functions are `executable_available`, `make_console_listener`, `open_console_pty`, `broker_cleanup_and_exit`, `broker_fail_errno`, `run_console_broker`, `run_socat_console`, `attach_console_record`, `cmd_console_action`, and `record_matches_alias_intent`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#console) | [Next: CLI contract](cli-contract.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)
+[Back to Step 2](quickstart.md#step-2-manage-it-later) | [Back to docs index](index.md) | [Top](#console) | [Next: CLI contract](cli-contract.md) | Branch to: [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md)

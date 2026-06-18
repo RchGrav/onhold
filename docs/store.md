@@ -1,8 +1,12 @@
 # Store
 
-[Docs index](index.md) | [Previous: Launcher](launcher.md) | [Next: Identity](identity.md) | Related: [Profiles and aliases](profiles-and-aliases.md), [Security](security.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Launcher](launcher.md) | [Next: Identity](identity.md) | Related: [Profiles and aliases](profiles-and-aliases.md), [Security](security.md)
 
-Sigmund has two stores: a user-local store for normal starts and a system-managed store for root, sudo, and `--system` starts. The store layer is defined by `struct store_paths` and initialized by `init_user_store_from_home`, `ensure_user_store_for_current_user`, `init_system_store`, and `ensure_system_store`.
+Outer loop bridge: this is the deep dive for [Step 1: Start One Thing](quickstart.md#step-1-start-one-thing).
+
+The store is where Sigmund puts the facts users rely on later: run IDs, logs, aliases, root-public discovery hints, and optional console sockets. If `sigmund tail <id>` or `sigmund stop <id>` works after the original shell is gone, it is because this state survived on disk.
+
+Sigmund has two stores: a user-local store for normal starts and a system-managed store for root, sudo, and `--system` starts.
 
 The store is the replacement for a daemon's memory. Every future command has to recover intent from files, then validate live process state separately.
 
@@ -109,10 +113,10 @@ Pruning is storage cleanup plus safety. `prune_one_run` removes records only whe
 
 The store makes a daemonless process manager possible: every command can rediscover known runs from disk. The split between public discovery and private authority preserves root confidentiality while still allowing normal users to target root-managed runs through a controlled sudo boundary. Atomic writes prevent half-records from becoming false authority for later validate-before-signal decisions.
 
-## Source anchors
+## Implementation map
 
-Primary functions and structs: `struct store_paths`, `struct record`, `struct public_index`, `init_user_store_from_home`, `ensure_user_store_for_current_user`, `init_system_store`, `ensure_system_store`, `write_record_atomic`, `write_public_index_atomic`, `load_record`, `load_public_index`, `prune_one_run`, and `cmd_prune_store_all`.
+For maintainers, the primary functions and structs are `struct store_paths`, `struct record`, `struct public_index`, `init_user_store_from_home`, `ensure_user_store_for_current_user`, `init_system_store`, `ensure_system_store`, `write_record_atomic`, `write_public_index_atomic`, `load_record`, `load_public_index`, `prune_one_run`, and `cmd_prune_store_all`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#store) | [Next: Identity](identity.md) | Branch to: [Profiles and aliases](profiles-and-aliases.md), [Security](security.md)
+[Back to Step 1](quickstart.md#step-1-start-one-thing) | [Back to docs index](index.md) | [Top](#store) | [Next: Identity](identity.md) | Branch to: [Profiles and aliases](profiles-and-aliases.md), [Security](security.md)

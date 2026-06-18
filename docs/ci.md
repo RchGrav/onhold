@@ -1,6 +1,8 @@
 # Using Sigmund in CI
 
-[Docs index](index.md) | [Previous: CLI contract](cli-contract.md) | [Loop: Index](index.md) | Related: [Launcher](launcher.md), [Identity](identity.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: CLI contract](cli-contract.md) | [Loop: Index](index.md) | Related: [Launcher](launcher.md), [Identity](identity.md)
+
+Outer loop bridge: this is the deep dive for [Step 7: Use It In CI](quickstart.md#step-7-use-it-in-ci).
 
 Sigmund is useful in CI when one step needs to start a long-running helper and later steps need to inspect or stop it. Examples include databases, web servers, emulators, local object stores, test daemons, and language-specific dev servers. It gives CI scripts a durable run ID, a log, and safe process-group teardown without bringing in `tmux`, `systemd`, a custom supervisor, or hand-managed PID files.
 
@@ -322,10 +324,10 @@ Later commands such as `sigmund stop system:<id>` may self-elevate through sudo 
 - Do not use `--system` just to make a run visible. Use it only for root-managed helpers.
 - Do not assume a public root row is authoritative liveness. Root/private validation happens when the action runs.
 
-## Source anchors
+## Implementation map
 
-Primary functions: `perform_start`, `cmd_dump_action`, `cmd_signal_action`, `do_signal_action`, `cmd_prune_action`, `help_scripting`, and `main`.
+For maintainers, the primary functions are `perform_start`, `cmd_dump_action`, `cmd_signal_action`, `do_signal_action`, `cmd_prune_action`, `help_scripting`, and `main`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#using-sigmund-in-ci) | [Loop to start](index.md) | Branch to: [CLI contract](cli-contract.md), [Launcher](launcher.md), [Identity](identity.md)
+[Back to Step 7](quickstart.md#step-7-use-it-in-ci) | [Back to docs index](index.md) | [Top](#using-sigmund-in-ci) | [Loop to start](index.md) | Branch to: [CLI contract](cli-contract.md), [Launcher](launcher.md), [Identity](identity.md)

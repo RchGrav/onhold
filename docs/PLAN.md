@@ -1,12 +1,12 @@
-# Sigmund developer documentation plan
+# Sigmund documentation plan
 
-[Docs index](index.md) | [Specification](SPEC.md) | [Repository README](../README.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Specification](SPEC.md) | [Repository README](../README.md)
 
 Phase 1 status: reviewed and approved for Phase 2.
 
 Phase 2 status: delivered in the linked subsystem pages.
 
-This plan is based on a full read of `src/sigmund.c`. Phase 2 should write the actual developer documentation under `docs/` without changing `README.md`. The code remains the source of truth; `docs/SPEC.md` is useful context, but every behavioral claim in the new design docs must be verified against `src/sigmund.c`.
+This plan is based on a full read of `src/sigmund.c`. Phase 2 should write the actual documentation under `docs/` and keep it useful for users first, with implementation detail available for maintainers. The code remains the source of truth; `docs/SPEC.md` is useful context, but every behavioral claim in the docs must be verified against `src/sigmund.c`.
 
 ## Proposed file tree
 
@@ -26,7 +26,7 @@ docs/
   SPEC.md
 ```
 
-`README.md` now links into `docs/index.md` as the developer documentation entry point.
+`README.md` now links into `docs/index.md` as the documentation entry point.
 
 I do not plan to create `docs/roadmap.md` in Phase 2 unless a planned behavior must be mentioned. If any source-adjacent note describes behavior that is not implemented in `src/sigmund.c`, it should either be omitted from the current-design docs or quarantined in `docs/roadmap.md` with a clear `planned - not yet implemented` label.
 
@@ -153,4 +153,4 @@ Before treating Phase 2 as complete:
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#sigmund-developer-documentation-plan) | [Specification](SPEC.md)
+[Back to docs index](index.md) | [Quickstart](quickstart.md) | [Top](#sigmund-documentation-plan) | [Specification](SPEC.md)

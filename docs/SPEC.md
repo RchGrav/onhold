@@ -1,6 +1,6 @@
 # Sigmund Specification
 
-[Docs index](index.md) | [Documentation plan](PLAN.md) | [Repository README](../README.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Documentation plan](PLAN.md) | [Repository README](../README.md)
 
 This document describes the current Sigmund implementation contract: user-local state, root-managed state, public redacted discovery, alias/profile resolution, sudo-aware target resolution, argv-preserving fork/wait self-elevation, and process-safety behavior.
 
@@ -720,4 +720,4 @@ This implementation does not add root log visibility for normal users, global al
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#sigmund-specification) | [Documentation plan](PLAN.md)
+[Back to docs index](index.md) | [Quickstart](quickstart.md) | [Top](#sigmund-specification) | [Documentation plan](PLAN.md)

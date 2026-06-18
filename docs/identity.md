@@ -1,10 +1,12 @@
 # Identity and validation
 
-[Docs index](index.md) | [Previous: Store](store.md) | [Next: Target resolution](target-resolution.md) | Related: [Launcher](launcher.md), [Security](security.md)
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Store](store.md) | [Next: Target resolution](target-resolution.md) | Related: [Launcher](launcher.md), [Security](security.md)
 
-Sigmund records process identity at launch and rechecks it before dangerous actions. This is the validate-before-signal model: a run ID selects a record, but the record must still match the current process table before Sigmund sends a signal.
+Outer loop bridge: this is the deep dive for [Step 2: Manage It Later](quickstart.md#step-2-manage-it-later).
 
-The main source functions are `eval_state`, `do_signal_action`, `do_print_signal_command`, `read_proc_stat_tokens`, `read_proc_exe`, `group_session_liveness`, and `count_session_escapees`.
+Sigmund records process identity at launch and rechecks it before dangerous actions. This is why `sigmund stop <id>` is safer than `kill $PID`: a run ID selects a record, but the record must still match the current process table before Sigmund sends a signal.
+
+If the evidence is stale or inconclusive, Sigmund refuses. That refusal is intentional user protection, not a cleanup failure to hide.
 
 ## Recorded identity
 
@@ -97,10 +99,10 @@ PID reuse is the core hazard. A daemon could keep richer live state, but Sigmund
 
 The session scan exists because the process group leader can exit while useful descendants remain. That is common in launcher and shell-wrapper workloads. Treating same-session live group members as running lets Sigmund clean up the workload it started without pretending the leader PID alone is authoritative.
 
-## Source anchors
+## Implementation map
 
-Primary functions: `get_boot_id`, `current_boot_id`, `read_process_ids_state`, `group_session_liveness`, `count_session_escapees`, `report_session_escapees`, `read_proc_stat_tokens`, `read_proc_exe`, `leader_present`, `group_exists`, `eval_state`, `do_signal_action`, and `do_print_signal_command`.
+For maintainers, the primary functions are `get_boot_id`, `current_boot_id`, `read_process_ids_state`, `group_session_liveness`, `count_session_escapees`, `report_session_escapees`, `read_proc_stat_tokens`, `read_proc_exe`, `leader_present`, `group_exists`, `eval_state`, `do_signal_action`, and `do_print_signal_command`.
 
 ## Continue
 
-[Back to docs index](index.md) | [Top](#identity-and-validation) | [Next: Target resolution](target-resolution.md) | Branch to: [Launcher](launcher.md), [Security](security.md)
+[Back to Step 2](quickstart.md#step-2-manage-it-later) | [Back to docs index](index.md) | [Top](#identity-and-validation) | [Next: Target resolution](target-resolution.md) | Branch to: [Launcher](launcher.md), [Security](security.md)

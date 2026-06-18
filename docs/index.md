@@ -1,50 +1,89 @@
 # Sigmund documentation index
 
-[Repository README](../README.md) | [Specification](SPEC.md)
+[Repository README](../README.md) | [Outer onboarding loop](quickstart.md) | [Technical reference loop](#technical-reference-loop) | [Specification](SPEC.md)
 
-This is the top-level developer documentation for `src/sigmund.c`. Start here, branch into the subsystem that matches the code you are changing, then use each page's related links to move sideways through the logic. Every subsystem page links back here and forward to the next major concept, so the documentation forms a loop instead of a dead end.
+This is the top-level guide to how Sigmund works. Start with the [quickstart](quickstart.md): it walks from the first command to deterministic targeting, aliases, and scoped root delegation with simple diagrams, and links into the deeper subsystem pages as each concept appears.
 
-Sigmund is a daemonless process launcher and recorder. It starts a command in a new session, writes a durable run record and log path, and later uses that record to inspect, tail, stop, kill, or prune the tracked process group. The design is intentionally "more than nohup, less than systemd": there is no resident supervisor, but Sigmund records enough identity to validate a target before it sends a signal.
+Sigmund is a daemonless process launcher and recorder. It starts a command in a new session, writes a durable run record and log path, and later uses that record to inspect, tail, stop, kill, attach, or prune the tracked process group.
 
-The two constraints that shape the code are:
+The philosophy is simple:
 
-- Validate before signal: an action must prove that the recorded PID/process group still matches the intended run, or refuse the action.
-- Daemonless single binary: all state must be recoverable from files and the current process table because no daemon is refreshing state in the background.
+- Make the easy path easy: `sigmund <cmd...>` gives users a run ID, log, and safe cleanup path.
+- Make automatic choices predictable: invocation shape decides user-local versus system-managed behavior.
+- Make precision available: `user:<target>`, `system:<target>`, aliases, and grants let users say exactly what they mean.
+- Validate before signal: if Sigmund cannot prove a recorded process group is still the intended run, it refuses instead of guessing.
+
+## Navigation Model
+
+The documentation has two layers:
+
+- Outer loop: [Quickstart](quickstart.md), a clean onboarding walkthrough that can be read start to finish.
+- Inner layer: [Technical reference loop](#technical-reference-loop), deep-dive pages for internals, edge cases, data flow, and implementation details.
+- Bridge links: each quickstart step links to its matching deep dive, and each deep dive links back to the exact quickstart step.
+
+## Start Here
+
+| If you want to... | Start with | Then go deeper |
+| --- | --- | --- |
+| Learn the normal workflow | [Quickstart](quickstart.md) | [Launcher](launcher.md), [Store](store.md) |
+| Use Sigmund in CI | [Using Sigmund in CI](ci.md) | [CLI contract](cli-contract.md), [Identity](identity.md) |
+| Understand target choices and collisions | [Quickstart targeting](quickstart.md#step-4-make-targeting-deterministic) | [Target resolution](target-resolution.md) |
+| Create reusable names | [Quickstart aliases](quickstart.md#step-5-create-an-alias) | [Profiles and aliases](profiles-and-aliases.md) |
+| Delegate one root-managed tool safely | [Quickstart delegation](quickstart.md#step-6-delegate-one-root-managed-tool) | [Security](security.md) |
+
+## Core Flow
+
+```mermaid
+flowchart LR
+    Start["sigmund <cmd...>"] --> RunId["stdout: run ID"]
+    Start --> Log["stderr: human status"]
+    Start --> Record["private run record"]
+    Record --> Later["tail, dump, stop, kill, console, prune"]
+    Later --> Resolve["resolve target"]
+    Resolve --> Validate["validate recorded identity"]
+    Validate --> Act["act or refuse"]
+
+    classDef user fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef state fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef safety fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    classDef action fill:#dcfce7,stroke:#15803d,color:#14532d
+    class Start,RunId,Log user
+    class Record state
+    class Later,Resolve action
+    class Validate,Act safety
+```
+
+That is the promise Sigmund makes to users: a simple launch command turns into a durable handle, and later management commands use that handle carefully instead of relying on a hand-copied PID.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    User["CLI invocation"] --> Main["main"]
-    Main --> Parse["Parse raw or owned command"]
-    Parse --> Start["Start path"]
-    Parse --> Action["Action path"]
-    Parse --> Access["Grant or revoke"]
+    User["CLI invocation"] --> Parse["Invocation parser"]
+    Parse --> Start["Start command"]
+    Parse --> Manage["Manage existing run"]
+    Parse --> Access["Grant or revoke access"]
 
-    Start --> Launcher["fork, setsid, exec"]
+    Start --> Launcher["setsid and exec"]
     Launcher --> Log["Run log"]
-    Launcher --> Record["Private run record"]
+    Launcher --> Record["Private record"]
     Launcher --> Public["Root public index"]
-    Launcher --> Console["Optional console broker"]
+    Launcher --> Console["Optional console"]
 
-    Action --> Resolver["Target resolver"]
+    Manage --> Resolver["Target resolver"]
     Resolver --> UserStore["User store"]
     Resolver --> Public
-    Resolver --> Sudo["sudo self-elevation"]
+    Resolver --> Sudo["sudo when system target needs root"]
     Sudo --> RootAction["Root Sigmund"]
     RootAction --> RootStore["System store"]
 
-    Action --> Validator["State validator"]
+    Manage --> Validator["Identity validator"]
     RootAction --> Validator
-    Validator --> Signal["TERM or KILL group"]
+    Validator --> Signal["Signal process group"]
     Validator --> Refuse["Refuse stale or unknown"]
 
-    Access --> Sudoers["Managed sudoers file"]
+    Access --> Sudoers["Managed sudoers rule"]
     Sudoers --> Sudo
-
-    UserStore --> Record
-    RootStore --> Record
-    RootStore --> Public
 
     classDef entry fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
     classDef launch fill:#dcfce7,stroke:#15803d,color:#14532d
@@ -52,80 +91,70 @@ flowchart TD
     classDef safety fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
     classDef privilege fill:#ede9fe,stroke:#6d28d9,color:#3b0764
 
-    class User,Main,Parse entry
+    class User,Parse entry
     class Start,Launcher,Console launch
     class Log,Record,Public,UserStore,RootStore store
-    class Action,Resolver,Validator,Signal,Refuse safety
+    class Manage,Resolver,Validator,Signal,Refuse safety
     class Access,Sudo,Sudoers,RootAction privilege
 ```
 
-`main` is the dispatch center. It distinguishes raw command starts from Sigmund-owned commands, builds the invocation context, initializes the relevant store, and routes to start, list, action, alias, or grant/revoke handlers. Starts flow through `perform_start`. Actions flow through target resolution and then, for signal-bearing commands, through `do_signal_action`. Root-managed public records are deliberately redacted discovery hints; private records remain authoritative.
-
-## Reading Paths
+## Technical Reference Loop
 
 ```mermaid
 flowchart TD
-    Index["Docs index"] --> Launcher["Launcher"]
-    Index --> Store["Store"]
-    Index --> Identity["Identity"]
-    Index --> Target["Target resolution"]
-    Index --> Profiles["Profiles and aliases"]
-    Index --> Security["Security"]
-    Index --> Console["Console"]
-    Index --> CLI["CLI contract"]
+    Quick["Outer loop quickstart"] --> Index["Docs index"]
+    Index --> Launcher["Launcher"]
+    Launcher --> Store["Store"]
+    Store --> Identity["Identity"]
+    Identity --> Target["Target resolution"]
+    Target --> Profiles["Profiles and aliases"]
+    Profiles --> Security["Security"]
+    Security --> Console["Console"]
+    Console --> CLI["CLI contract"]
     CLI --> CI["Using Sigmund in CI"]
-
-    Launcher --> Store
-    Store --> Identity
-    Identity --> Target
-    Target --> Security
-    Target --> Profiles
-    Profiles --> Launcher
-    Security --> Target
-    Console --> Launcher
-    Console --> Target
-    CI --> CLI
+    CI --> Quick
     CI --> Index
+    Target --> Quick
+    Security --> Quick
 
-    classDef entry fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef user fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
     classDef launch fill:#dcfce7,stroke:#15803d,color:#14532d
     classDef state fill:#fef3c7,stroke:#b45309,color:#78350f
     classDef safety fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
     classDef privilege fill:#ede9fe,stroke:#6d28d9,color:#3b0764
-    classDef script fill:#ccfbf1,stroke:#0f766e,color:#134e4a
-
-    class Index entry
+    class Quick,Index,CLI,CI user
     class Launcher,Console launch
     class Store,Profiles state
     class Identity,Target safety
     class Security privilege
-    class CLI,CI script
 ```
 
-## Main Loop
+Every subsystem page links back here, back to its matching quickstart step, and forward to the next technical concept, so readers can browse the inner layer as a reference system without losing the outer-loop return path.
 
-1. [Launcher](launcher.md): starts, fork/setsid/exec, logs, records, and launch rollback.
-2. [Store](store.md): user-local and system-managed state, record shape, public redaction, atomic writes, and pruning.
-3. [Identity and validation](identity.md): boot ID, starttime, executable identity, session membership, run states, and signal refusal.
-4. [Target resolution](target-resolution.md): ID, prefix, alias, `user:`, `system:`, ambiguity, and action target expansion.
-5. [Profiles and aliases](profiles-and-aliases.md): reusable launch recipes, SHA-256 fingerprints, alias starts, and `--multi`.
-6. [Security and privilege boundaries](security.md): `--system`, sudo self-elevation, capability argv, and managed sudoers.
-7. [Console](console.md): PTY console starts, private sockets, `socat` attach, and log teeing.
-8. [CLI contract](cli-contract.md): parser behavior, stdout/stderr, flags, no-op behavior, and exit codes.
-9. [Using Sigmund in CI](ci.md): copyable CI patterns for start, readiness, logs, teardown, exit codes, and multiple helpers.
+## Inner Layer Pages
 
-## Branch by Task
+1. [Quickstart](quickstart.md): user workflow, automatic choices, deterministic targeting, aliases, and scoped root delegation.
+2. [Launcher](launcher.md): starts, fork/setsid/exec, logs, records, and launch rollback.
+3. [Store](store.md): user-local and system-managed state, public redaction, atomic writes, and pruning.
+4. [Identity and validation](identity.md): boot ID, starttime, executable identity, session membership, run states, and signal refusal.
+5. [Target resolution](target-resolution.md): ID, prefix, alias, `user:`, `system:`, ambiguity, and action target expansion.
+6. [Profiles and aliases](profiles-and-aliases.md): reusable launch recipes, SHA-256 fingerprints, alias starts, and `--multi`.
+7. [Security and privilege boundaries](security.md): `--system`, sudo self-elevation, capability argv, and managed sudoers.
+8. [Console](console.md): PTY console starts, private sockets, `socat` attach, and log teeing.
+9. [CLI contract](cli-contract.md): parser behavior, stdout/stderr, flags, no-op behavior, and exit codes.
+10. [Using Sigmund in CI](ci.md): copyable CI patterns for start, readiness, logs, teardown, exit codes, and multiple helpers.
 
-| If you are changing... | Start with | Then read |
-| --- | --- | --- |
-| Process launch, logs, or tailing | [Launcher](launcher.md) | [Store](store.md), [Identity](identity.md), [CLI contract](cli-contract.md) |
-| JSON records, public index, pruning | [Store](store.md) | [Identity](identity.md), [Target resolution](target-resolution.md) |
-| Signal safety or process-state checks | [Identity](identity.md) | [Launcher](launcher.md), [Target resolution](target-resolution.md) |
-| IDs, aliases, `user:`/`system:` lookup | [Target resolution](target-resolution.md) | [Profiles and aliases](profiles-and-aliases.md), [Security](security.md) |
-| Alias start behavior or profile hashes | [Profiles and aliases](profiles-and-aliases.md) | [Store](store.md), [Security](security.md) |
-| Sudo, grants, or root-managed actions | [Security](security.md) | [Target resolution](target-resolution.md), [Profiles and aliases](profiles-and-aliases.md) |
-| Interactive console support | [Console](console.md) | [Launcher](launcher.md), [Target resolution](target-resolution.md), [Security](security.md) |
-| Scripting or CI behavior | [CLI contract](cli-contract.md) | [Using Sigmund in CI](ci.md), [Launcher](launcher.md) |
+## Branch by Question
+
+| If you want to understand... | Read |
+| --- | --- |
+| How a command keeps running after the CI step or shell exits | [Quickstart](quickstart.md), then [Launcher](launcher.md) |
+| Where run IDs, logs, aliases, and public root hints live | [Store](store.md) |
+| Why `stop` is safer than `kill $PID` | [Identity and validation](identity.md) |
+| How IDs, aliases, `user:`, and `system:` choose a target | [Target resolution](target-resolution.md) |
+| How to reuse a recorded command as an alias | [Profiles and aliases](profiles-and-aliases.md) |
+| How to let another user manage one root-run tool | [Quickstart](quickstart.md#delegate-one-root-managed-tool), then [Security](security.md) |
+| How to script Sigmund in CI | [Using Sigmund in CI](ci.md), then [CLI contract](cli-contract.md) |
 
 ## Reference
 
@@ -133,6 +162,6 @@ flowchart TD
 - [Documentation plan and review notes](PLAN.md)
 - [Repository README](../README.md)
 
-## Source Anchors
+## Implementation map
 
-The main source anchors for this overview are `main`, `perform_start`, `write_record_atomic`, `write_public_index_atomic`, `resolve_action_token`, `eval_state`, `do_signal_action`, `elevate_with_sudo_canonical`, and `cmd_elevated_capability_action` in `src/sigmund.c`.
+For maintainers, the main source anchors for this overview are `main`, `perform_start`, `write_record_atomic`, `write_public_index_atomic`, `resolve_action_token`, `eval_state`, `do_signal_action`, `elevate_with_sudo_canonical`, and `cmd_elevated_capability_action` in `src/sigmund.c`.
