@@ -806,6 +806,132 @@ test_console_round_trip_and_log_tee() {
   }
 }
 
+build_console_protocol_helper() {
+  local helper="$TEST_ROOT/console_protocol_helper"
+  [ -x "$helper" ] && { printf '%s\n' "$helper"; return 0; }
+  cat >"$TEST_ROOT/console_protocol_helper.c" <<'EOF'
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+static int write_all(int fd, const void *buf, size_t n) {
+  const unsigned char *p = (const unsigned char *)buf;
+  while (n > 0) {
+    ssize_t w = write(fd, p, n);
+    if (w < 0 && errno == EINTR) continue;
+    if (w <= 0) return -1;
+    p += (size_t)w;
+    n -= (size_t)w;
+  }
+  return 0;
+}
+
+static int write_frame(int fd, unsigned char type, const char *payload) {
+  size_t len = payload ? strlen(payload) : 0;
+  unsigned char header[3];
+  if (len > UINT16_MAX) return -1;
+  header[0] = type;
+  header[1] = (unsigned char)((len >> 8) & 0xff);
+  header[2] = (unsigned char)(len & 0xff);
+  if (write_all(fd, header, sizeof(header)) != 0) return -1;
+  return len == 0 ? 0 : write_all(fd, payload, len);
+}
+
+int main(int argc, char **argv) {
+  if (argc != 4) return 64;
+  const char *sock_path = argv[1];
+  const char *input = argv[2];
+  const char *expect = argv[3];
+
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return 2;
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  if (strlen(sock_path) >= sizeof(addr.sun_path)) return 3;
+  strcpy(addr.sun_path, sock_path);
+  if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) return 4;
+  if (write_all(fd, "SIGMUND1", 8) != 0) return 5;
+  if (write_frame(fd, 'D', input) != 0) return 6;
+
+  char seen[8192];
+  size_t seen_len = 0;
+  memset(seen, 0, sizeof(seen));
+  for (;;) {
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    struct timeval tv;
+    tv.tv_sec = 3;
+    tv.tv_usec = 0;
+    int sr = select(fd + 1, &rfds, NULL, NULL, &tv);
+    if (sr < 0 && errno == EINTR) continue;
+    if (sr <= 0) return 7;
+    char buf[512];
+    ssize_t n = read(fd, buf, sizeof(buf));
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) return 8;
+    if (write_all(STDOUT_FILENO, buf, (size_t)n) != 0) return 9;
+    size_t copy = (size_t)n;
+    if (copy > sizeof(seen) - seen_len - 1) copy = sizeof(seen) - seen_len - 1;
+    memcpy(seen + seen_len, buf, copy);
+    seen_len += copy;
+    seen[seen_len] = '\0';
+    if (strstr(seen, expect)) break;
+  }
+
+  if (write_frame(fd, 'X', NULL) != 0) return 10;
+  close(fd);
+  return 0;
+}
+EOF
+  "${CC:-cc}" -std=c99 -Wall -Wextra -Werror "$TEST_ROOT/console_protocol_helper.c" -o "$helper"
+  printf '%s\n' "$helper"
+}
+
+test_console_can_reattach_after_detach() {
+  local out id store record sock helper
+  out=$("$SIGMUND_REAL_BIN" --console /bin/sh -c 'while read line; do echo "seen:$line"; [ "$line" = done ] && exit 0; done' 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  store="$HOME/.local/state/sigmund"
+  record="$store/$id.json"
+  sock=$(sed -n 's/.*"console_sock":[[:space:]]*"\([^"]*\)".*/\1/p' "$record" | head -n1)
+  [ -n "$sock" ] || { cat "$record" >&2; return 1; }
+
+  helper=$(build_console_protocol_helper) || return 1
+  "$helper" "$sock" 'first
+' 'seen:first' >"$TEST_ROOT/console-first.out" 2>"$TEST_ROOT/console-first.err" || {
+    cat "$TEST_ROOT/console-first.out" "$TEST_ROOT/console-first.err" >&2
+    return 1
+  }
+  grep -q 'seen:first' "$TEST_ROOT/console-first.out" || { cat "$TEST_ROOT/console-first.out" >&2; return 1; }
+
+  printf 'done\n' | "$SIGMUND_REAL_BIN" console "$id" >"$TEST_ROOT/console-second.out" 2>"$TEST_ROOT/console-second.err" || {
+    cat "$TEST_ROOT/console-second.out" "$TEST_ROOT/console-second.err" >&2
+    return 1
+  }
+  grep -q 'seen:done' "$TEST_ROOT/console-second.out" || { cat "$TEST_ROOT/console-second.out" >&2; return 1; }
+  sleep 0.2
+  grep -q 'seen:first' "$store/$id.log" || { cat "$store/$id.log" >&2; return 1; }
+  grep -q 'seen:done' "$store/$id.log" || { cat "$store/$id.log" >&2; return 1; }
+  "$SIGMUND_REAL_BIN" prune "$id" >/dev/null || return 1
+  path_absent_soon "$sock" || {
+    ls -la "$store" "$store/console" "$(dirname "$sock")" >&2 || true
+    return 1
+  }
+}
+
 test_prune_by_id() {
   local out1 out2 id1 id2 store
   out1=$("$SIGMUND_BIN" true 2>&1) || return 1
@@ -1495,6 +1621,7 @@ run_test "tail <id> prints finished log output" test_tail_finished_log_prints_ex
 run_test "--console works without an external attach tool" test_console_does_not_require_external_attach_tool
 run_test "console reports a normal run has no console" test_console_reports_non_console_run
 run_test "console attach round-trips and tees to the log" test_console_round_trip_and_log_tee
+run_test "console can reattach after detach" test_console_can_reattach_after_detach
 run_test "prune <id> removes exactly one run record/output" test_prune_by_id
 run_test "prune all removes prunable while preserving running" test_prune_all_keeps_running
 run_test "transactional launch rollback on record write failure" test_transactional_record_write_failure

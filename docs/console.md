@@ -73,7 +73,7 @@ flowchart LR
 
 ## Detach Without Stopping
 
-Press `Ctrl-]` while attached with `sigmund console <target>` to release the console and return to your local shell. This closes only the attach client; the broker, PTY, and target process keep running so you can reattach later with the same command.
+Press `Ctrl-]` while attached with `sigmund console <target>` to release the console and return to your local shell. This closes only the attach client; the broker, PTY, and target process keep running so you can reattach later with the same `sigmund console <target>` command.
 
 Do not use `Ctrl-C` when you mean detach. `Ctrl-C` is delivered to the attached process and may interrupt or stop it. Typing `exit` exits the shell or program inside the console.
 

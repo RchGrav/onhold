@@ -918,6 +918,7 @@ static void sig_note(const struct invocation *inv, const char *fmt, ...) {
 #define CONSOLE_ATTACH_MAGIC_LEN 8
 #define CONSOLE_FRAME_DATA 'D'
 #define CONSOLE_FRAME_RESIZE 'W'
+#define CONSOLE_FRAME_DETACH 'X'
 #define CONSOLE_FRAME_HEADER_LEN 3
 #define CONSOLE_ATTACH_DETACH 0x1d
 
@@ -1002,6 +1003,8 @@ static int broker_process_framed_client(struct console_client_state *state, int 
             }
         } else if (type == CONSOLE_FRAME_RESIZE) {
             (void)apply_pty_size(master, payload, len);
+        } else if (type == CONSOLE_FRAME_DETACH) {
+            return 1;
         }
 
         memmove(state->pending, state->pending + frame_len, state->pending_len - frame_len);
@@ -1382,7 +1385,8 @@ static void run_console_broker(int parent_pipe,
             unsigned char buf[4096];
             ssize_t n = read(client, buf, sizeof(buf));
             if (n > 0) {
-                if (broker_process_client_input(&client_state, master, buf, (size_t)n) != 0) {
+                int input_rc = broker_process_client_input(&client_state, master, buf, (size_t)n);
+                if (input_rc != 0) {
                     close(client);
                     client = -1;
                     client_input_closed = false;
@@ -5977,6 +5981,9 @@ static int run_native_console(const char *sock_path) {
                         }
                         if ((size_t)i > write_start &&
                             write_console_frame(sock, CONSOLE_FRAME_DATA, buf + write_start, (uint16_t)((size_t)i - write_start)) != 0) {
+                            rc = 3;
+                        }
+                        if (rc == 0 && write_console_frame(sock, CONSOLE_FRAME_DETACH, NULL, 0) != 0) {
                             rc = 3;
                         }
                         goto out;
