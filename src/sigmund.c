@@ -554,6 +554,16 @@ static int chown_root_if_root(const char *path) {
     return 0;
 }
 
+static int chown_if_root(const char *path, uid_t uid, gid_t gid) {
+    if (geteuid() != 0) {
+        return 0;
+    }
+    if (chown(path, uid, gid) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int parse_uid_env(const char *s, uid_t *out) {
     if (!s || !*s) {
         return -1;
@@ -625,6 +635,40 @@ static int ensure_user_store_for_current_user(struct store_paths *store) {
         return -1;
     }
     return 0;
+}
+
+static int ensure_user_store_from_home_owned(const char *home, uid_t uid, gid_t gid, struct store_paths *store) {
+    char local_dir[SIGMUND_PATH_MAX], state_dir[SIGMUND_PATH_MAX];
+    if (init_user_store_from_home(home, store) != 0) {
+        return -1;
+    }
+    if (checked_snprintf(local_dir, sizeof(local_dir), "%s/.local", home) != 0 ||
+        checked_snprintf(state_dir, sizeof(state_dir), "%s/.local/state", home) != 0) {
+        return -1;
+    }
+    if (mkdir_p0700(store->base) != 0 ||
+        chmod(local_dir, 0700) != 0 ||
+        chown_if_root(local_dir, uid, gid) != 0 ||
+        chmod(state_dir, 0700) != 0 ||
+        chown_if_root(state_dir, uid, gid) != 0 ||
+        chmod(store->base, 0700) != 0 ||
+        chown_if_root(store->base, uid, gid) != 0) {
+        return -1;
+    }
+    if (mkdir_p0700(store->console_dir) != 0 ||
+        chmod(store->console_dir, 0700) != 0 ||
+        chown_if_root(store->console_dir, uid, gid) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int ensure_invoking_user_store(const struct invocation *inv, struct store_paths *store) {
+    if (!inv || !inv->have_sudo_user || !inv->invoking_home[0]) {
+        errno = EINVAL;
+        return -1;
+    }
+    return ensure_user_store_from_home_owned(inv->invoking_home, inv->invoking_uid, inv->invoking_gid, store);
 }
 
 static int init_system_store(struct store_paths *store) {
@@ -2376,6 +2420,62 @@ static int resolve_binary_path(const char *argv0, char *out, size_t n) {
     return -1;
 }
 
+static bool path_is_within_dir(const char *path, const char *dir) {
+    if (!path || !*path || !dir || !*dir) {
+        return false;
+    }
+    char resolved_dir[SIGMUND_PATH_MAX];
+    if (!realpath(dir, resolved_dir)) {
+        return false;
+    }
+    size_t len = strlen(resolved_dir);
+    while (len > 1 && resolved_dir[len - 1] == '/') {
+        resolved_dir[--len] = '\0';
+    }
+    return strcmp(path, resolved_dir) == 0 ||
+           (strncmp(path, resolved_dir, len) == 0 && path[len] == '/');
+}
+
+static const char *explicit_start_argv0(bool owned, const char *command, int argc, char **argv) {
+    if (argc <= 0 || !argv || !argv[0]) {
+        return NULL;
+    }
+    if (!owned) {
+        return argv[0];
+    }
+    if (command && strcmp(command, "start") == 0) {
+        return argv[0];
+    }
+    return NULL;
+}
+
+static bool start_target_is_within_invoking_home(const struct invocation *inv,
+                                                 bool owned,
+                                                 const char *command,
+                                                 int argc,
+                                                 char **argv) {
+    const char *target = explicit_start_argv0(owned, command, argc, argv);
+    if (!target || !*target) {
+        return false;
+    }
+
+    const char *home = NULL;
+    if (inv && inv->euid_root && inv->have_sudo_user && inv->invoking_home[0]) {
+        home = inv->invoking_home;
+    } else {
+        home = getenv("HOME");
+    }
+    if (!home || !*home) {
+        return false;
+    }
+
+    char resolved[SIGMUND_PATH_MAX];
+    if (resolve_binary_path(target, resolved, sizeof(resolved)) != 0) {
+        return false;
+    }
+    return path_is_within_dir(resolved, home);
+}
+
 static int read_owned_file_no_symlink(const char *path, char **out) {
     *out = NULL;
     int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -3670,9 +3770,39 @@ static int perform_start(const struct invocation *inv,
     }
 
     char record_path[SIGMUND_PATH_MAX] = {0};
+    bool chown_user_local_artifacts = store->kind == STORE_USER_LOCAL && inv && inv->euid_root && inv->have_sudo_user;
     if (getenv("SIGMUND_TEST_FAIL_RECORD_WRITE")) {
         errno = EIO;
     } else if (write_record_atomic(store->record_dir, &r, argc, launch_argv, record_path, sizeof(record_path)) == 0) {
+        if (chown_user_local_artifacts) {
+            int chown_rc = 0;
+            if (record_path[0] &&
+                chown(record_path, inv->invoking_uid, inv->invoking_gid) != 0) {
+                chown_rc = -1;
+            }
+            if (chown(log_path, inv->invoking_uid, inv->invoking_gid) != 0) {
+                chown_rc = -1;
+            }
+            if (console_sock[0] && path_exists(console_sock) &&
+                chown(console_sock, inv->invoking_uid, inv->invoking_gid) != 0) {
+                chown_rc = -1;
+            }
+            if (chown_rc != 0) {
+                int saved = errno ? errno : EIO;
+                rollback_spawned_group(pid, pid);
+                if (record_path[0]) {
+                    unlink(record_path);
+                }
+                unlink(log_path);
+                if (console_sock[0]) {
+                    unlink(console_sock);
+                }
+                unlink(reserve_path);
+                free_argv_alloc(launch_argv, argc);
+                errno = saved;
+                die_errno("sigmund: failed to set user-local ownership");
+            }
+        }
         if (store->kind == STORE_SYSTEM_MANAGED) {
             int public_rc = 0;
             if (getenv("SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE")) {
@@ -6086,6 +6216,29 @@ static int cmd_start_action(const struct invocation *inv,
     return perform_explicit_start(inv, fallback_store, tail, console_mode, argc, argv);
 }
 
+static int ensure_start_store_for_command(const struct invocation *inv,
+                                          bool requested_system,
+                                          bool owned,
+                                          const char *command,
+                                          int argc,
+                                          char **argv,
+                                          struct store_paths *store) {
+    bool wants_system_store = (inv && inv->euid_root) || requested_system;
+
+    if (wants_system_store &&
+        start_target_is_within_invoking_home(inv, owned, command, argc, argv)) {
+        if (inv && inv->euid_root && inv->have_sudo_user) {
+            return ensure_invoking_user_store(inv, store);
+        }
+        return ensure_user_store_for_current_user(store);
+    }
+
+    if (wants_system_store) {
+        return ensure_system_store(store);
+    }
+    return ensure_user_store_for_current_user(store);
+}
+
 static bool command_accepts_target_tokens(const char *command) {
     return command && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                        !strcmp(command, "tail") || !strcmp(command, "dump") ||
@@ -7499,28 +7652,24 @@ int main(int argc, char **argv) {
 
     if (!owned) {
         struct store_paths start_store;
-        if (inv.euid_root || requested_system) {
-            if (ensure_system_store(&start_store) != 0) {
-                die_errno("sigmund: failed to init system storage");
+        if (ensure_start_store_for_command(&inv, requested_system, false, NULL, cmd_argc, cmd_argv, &start_store) != 0) {
+            if ((inv.euid_root || requested_system) &&
+                start_target_is_within_invoking_home(&inv, false, NULL, cmd_argc, cmd_argv)) {
+                die_errno("sigmund: failed to init invoking-user storage");
             }
-        } else {
-            if (ensure_user_store_for_current_user(&start_store) != 0) {
-                die_errno("sigmund: failed to init user storage");
-            }
+            die_errno("sigmund: failed to init start storage");
         }
         return perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL);
     }
 
     if (!strcmp(command, "start")) {
         struct store_paths start_store;
-        if (inv.euid_root || requested_system) {
-            if (ensure_system_store(&start_store) != 0) {
-                die_errno("sigmund: failed to init system storage");
+        if (ensure_start_store_for_command(&inv, requested_system, true, command, cmd_argc, cmd_argv, &start_store) != 0) {
+            if ((inv.euid_root || requested_system) &&
+                start_target_is_within_invoking_home(&inv, true, command, cmd_argc, cmd_argv)) {
+                die_errno("sigmund: failed to init invoking-user storage");
             }
-        } else {
-            if (ensure_user_store_for_current_user(&start_store) != 0) {
-                die_errno("sigmund: failed to init user storage");
-            }
+            die_errno("sigmund: failed to init start storage");
         }
         int rc = cmd_start_action(&inv, &user_store, &system_store, argv[0], &start_store, tail, console_mode, multi, multi_count, cmd_argc, cmd_argv);
         free(cmd_argv);

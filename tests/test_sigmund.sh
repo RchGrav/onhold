@@ -285,6 +285,10 @@ root_file_mode() {
   as_root stat -c '%a' "$1" 2>/dev/null || as_root stat -f '%Lp' "$1"
 }
 
+root_file_owner() {
+  as_root stat -c '%u:%g' "$1" 2>/dev/null || as_root stat -f '%u:%g' "$1"
+}
+
 sha256_stdin() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum | awk '{print $1}'
@@ -1341,6 +1345,59 @@ test_sudo_start_writes_system_store_with_invoking_metadata() {
   root_grep '"invoked_via_sudo": true' "$json"
 }
 
+make_home_executable() {
+  local app="$ACTOR_HOME/bin/home-tool"
+  mkdir -p "$ACTOR_HOME/bin" || return 1
+  cat > "$app" <<'SH'
+#!/bin/sh
+printf 'home-tool\n'
+SH
+  chmod 755 "$app" || return 1
+  if [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ]; then
+    as_root chown "$TEST_UID:$TEST_GID" "$ACTOR_HOME/bin" "$app" || return 1
+  fi
+  printf '%s\n' "$app"
+}
+
+assert_home_system_start_is_user_local() {
+  local out="$1" id json log owner
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  json="$ACTOR_HOME/.local/state/sigmund/$id.json"
+  log="$ACTOR_HOME/.local/state/sigmund/$id.log"
+  root_file_exists "$json" || return 1
+  root_file_exists "$log" || return 1
+  root_path_absent "$SIGMUND_TEST_SYSTEM_STATE_DIR/runs/$id.json" || return 1
+  root_path_absent "$SIGMUND_TEST_SYSTEM_STATE_DIR/logs/$id.log" || return 1
+  root_path_absent "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/$id.json" || return 1
+  owner=$(root_file_owner "$json") || return 1
+  [ "$owner" = "$TEST_UID:$TEST_GID" ] || return 1
+  owner=$(root_file_owner "$log") || return 1
+  [ "$owner" = "$TEST_UID:$TEST_GID" ] || return 1
+}
+
+test_sudo_system_start_of_home_executable_uses_user_store() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
+  local app out
+  app=$(make_home_executable) || return 1
+  out=$(as_sudo_from_user "$SIGMUND_REAL_BIN" --system "$app" 2>&1) || return 1
+  assert_home_system_start_is_user_local "$out"
+}
+
+test_home_elevated_run_alias_stays_user_local() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
+  local app out id aliases
+  app=$(make_home_executable) || return 1
+  out=$(as_sudo_from_user "$SIGMUND_REAL_BIN" --system "$app" 2>&1) || return 1
+  assert_home_system_start_is_user_local "$out" || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  as_user "$SIGMUND_REAL_BIN" alias "$id" home-elevated >/dev/null || return 1
+  aliases="$ACTOR_HOME/.local/state/sigmund/aliases.json"
+  root_file_exists "$aliases" || return 1
+  root_grep '"home-elevated"' "$aliases" || return 1
+  root_path_absent "$SIGMUND_TEST_SYSTEM_STATE_DIR/public/aliases.json" || return 1
+}
+
 test_sudo_context_can_stop_unique_user_local_run() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || return 0
   local out id pgid
@@ -1418,6 +1475,8 @@ run_test "long command appears in list, truncated with ..." test_long_command_li
 run_test "normal start writes user-local state" test_normal_start_writes_user_local_state
 run_test "root starts use system store and public state is unknown" test_root_start_writes_system_store_and_public_unknown
 run_test "sudo start writes system state with invoking-user metadata" test_sudo_start_writes_system_store_with_invoking_metadata
+run_test "sudo --system home executable uses invoking-user store" test_sudo_system_start_of_home_executable_uses_user_store
+run_test "alias for elevated home executable stays user-local" test_home_elevated_run_alias_stays_user_local
 run_test "sudo context can stop unique invoking-user local run" test_sudo_context_can_stop_unique_user_local_run
 run_test "public root index rows are redacted in normal list" test_public_root_index_list_is_redacted
 run_test "normal run does not self-elevate on local/root ID conflict" test_user_local_wins_over_public_root_collision
