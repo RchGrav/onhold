@@ -899,7 +899,7 @@ test_alias_from_relative_executable_uses_recorded_absolute_argv0() {
   mkdir -p "$app/bin" "$work" "$other" || return 1
   printf '#!/bin/sh\nsleep 300\n' >"$app/bin/daemon" || return 1
   chmod +x "$app/bin/daemon" || return 1
-  expected="$app/bin/daemon"
+  expected="$(resolve_path "$app/bin/daemon")" || return 1
 
   out=$(cd "$work" && "$SIGMUND_BIN" ../bin/daemon 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
