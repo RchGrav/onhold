@@ -1,6 +1,8 @@
 # Sigmund developer documentation plan
 
-Phase 1 status: ready for review.
+Phase 1 status: reviewed and approved for Phase 2.
+
+Phase 2 status: delivered in the linked subsystem pages.
 
 This plan is based on a full read of `src/sigmund.c`. Phase 2 should write the actual developer documentation under `docs/` without changing `README.md`. The code remains the source of truth; `docs/SPEC.md` is useful context, but every behavioral claim in the new design docs must be verified against `src/sigmund.c`.
 
@@ -25,6 +27,12 @@ docs/
 `README.md` is intentionally excluded. It already exists at the repository root and should remain unchanged.
 
 I do not plan to create `docs/roadmap.md` in Phase 2 unless a planned behavior must be mentioned. If any source-adjacent note describes behavior that is not implemented in `src/sigmund.c`, it should either be omitted from the current-design docs or quarantined in `docs/roadmap.md` with a clear `planned - not yet implemented` label.
+
+## Critical plan review
+
+The planned tree remains the right size for the current implementation. I considered adding separate lifecycle, listing, pruning, and sudoers pages, but that would make the documentation track source concerns less clearly. Lifecycle belongs with the launcher and identity validator, listing and pruning belong with the CLI contract plus store model, and sudoers belongs with the broader privilege-boundary page. Keeping those topics inside the pages below should make the docs easier to navigate while still covering every required behavior.
+
+No planned behavior needs to be documented as current behavior, so `docs/roadmap.md` is not needed for Phase 2.
 
 ## Source map
 
