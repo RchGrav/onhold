@@ -1,28 +1,9 @@
 # Changelog
 
-## 0.3.6 - Self-contained demo and release refresh
+## 0.3.6 - Record-scan fix and demo asset
 
-This point release refreshes the published binaries and adds a first-run demo
-that lets users try Sigmund without installing it to their system.
-
-### Added
-
-- Added a self-contained interactive demo script published as `demo.sh` with
-  each release. The demo creates temporary state, pulls in a Sigmund binary when
-  needed, walks through start/list/dump/stop/prune/alias behavior, and cleans up
-  after itself.
-- Added `examples/interactive-demo/` with a readable, commented source version
-  of the demo and a short explanation of what to expect.
-- Added `make check` as an alias for `make test`.
-
-### Changed
-
-- Release publishing now includes `demo.sh` in the release assets and checksum
-  file.
-- The release workflow now gates publishing on the test job and limits write
-  permissions to the publishing job.
-- The README now points users to the demo as a safe, temporary way to see how
-  Sigmund works before installing it.
+This point release rebuilds the published binaries because the Sigmund runtime
+changed after 0.3.5.
 
 ### Fixed
 
@@ -30,6 +11,23 @@ that lets users try Sigmund without installing it to their system.
   not reported as a corrupt run record.
 - Documented the secured installed binary requirement next to the quickstart
   `grant` example.
+
+### Added
+
+- Added `demo.sh` as a self-contained release asset for trying Sigmund in a
+  temporary sandbox.
+- Added `examples/interactive-demo/` with the source version of the demo.
+- Added `make check` as an alias for `make test`.
+
+### Release notes
+
+The binary archives were rebuilt for the `aliases.json` record-scan fix in
+`src/sigmund.c`. The demo and documentation updates are support material
+included with the release, not the reason the runtime binaries needed to
+change.
+
+Full changelog:
+https://github.com/RchGrav/sigmund/compare/v0.3.5...v0.3.6
 
 ## 0.3.0 - Alias capability profiles and stable fingerprints
 

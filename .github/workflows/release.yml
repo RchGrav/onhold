@@ -223,6 +223,9 @@ jobs:
       - name: Prepare installer
         run: bash ./.github/scripts/prepare_installer.sh "${{ needs.version.outputs.tag }}" dist
 
+      - name: Prepare release notes
+        run: bash ./.github/scripts/release_notes_from_changelog.sh "${{ needs.version.outputs.tag }}" dist/RELEASE_NOTES.md
+
       - name: Generate SHA256SUMS
         run: |
           cd dist
@@ -232,7 +235,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: dist/RELEASE_NOTES.md
+          overwrite_files: true
           files: |
             dist/install.sh
             dist/demo.sh
