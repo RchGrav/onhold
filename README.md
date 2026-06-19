@@ -1,8 +1,4 @@
-# sigmund
-
-[![CI](https://github.com/RchGrav/sigmund/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RchGrav/sigmund/actions/workflows/ci.yml)
-
-Every push runs the full suite on Linux (gcc + clang, user and root harnesses) and macOS (arm64 + x86_64), under ASan/UBSan and cppcheck.
+# sigmund   [![CI](https://github.com/RchGrav/sigmund/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RchGrav/sigmund/actions/workflows/ci.yml)
 
 What comes to mind when you hear the name _sigmund_?
 
