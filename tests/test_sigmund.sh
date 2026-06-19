@@ -740,13 +740,13 @@ test_console_does_not_require_external_attach_tool() {
   local fake_path out id store record sock
   fake_path="$TEST_ROOT/no-tools"
   mkdir -p "$fake_path" || return 1
-  out=$(env PATH="$fake_path" "$SIGMUND_REAL_BIN" --console /bin/sh -c 'read line; echo "native:$line"' 2>&1) || {
+  out=$(as_user /usr/bin/env PATH="$fake_path" "$SIGMUND_REAL_BIN" --console /bin/sh -c 'read line; echo "native:$line"' 2>&1) || {
     printf '%s\n' "$out" >&2
     return 1
   }
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
-  printf 'ping\n' | env PATH="$fake_path" "$SIGMUND_REAL_BIN" console "$id" >"$TEST_ROOT/console-native.out" 2>"$TEST_ROOT/console-native.err" || {
+  printf 'ping\n' | as_user /usr/bin/env PATH="$fake_path" "$SIGMUND_REAL_BIN" console "$id" >"$TEST_ROOT/console-native.out" 2>"$TEST_ROOT/console-native.err" || {
     cat "$TEST_ROOT/console-native.out" "$TEST_ROOT/console-native.err" >&2
     return 1
   }
@@ -755,7 +755,7 @@ test_console_does_not_require_external_attach_tool() {
   record="$store/$id.json"
   sock=$(sed -n 's/.*"console_sock":[[:space:]]*"\([^"]*\)".*/\1/p' "$record" | head -n1)
   [ -n "$sock" ] || { cat "$record" >&2; return 1; }
-  "$SIGMUND_REAL_BIN" prune "$id" >/dev/null || return 1
+  "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
   path_absent_soon "$sock" || {
     ls -la "$store" "$store/console" "$(dirname "$sock")" >&2 || true
     return 1
@@ -776,7 +776,7 @@ test_console_reports_non_console_run() {
 
 test_console_round_trip_and_log_tee() {
   local out id store record sock
-  out=$("$SIGMUND_REAL_BIN" --console /bin/sh -c 'read line; echo "got:$line"' 2>&1) || {
+  out=$("$SIGMUND_BIN" --console /bin/sh -c 'read line; echo "got:$line"' 2>&1) || {
     printf '%s\n' "$out" >&2
     return 1
   }
@@ -787,19 +787,19 @@ test_console_round_trip_and_log_tee() {
   grep -q '"console_sock": "' "$record" || { cat "$record" >&2; return 1; }
   sock=$(sed -n 's/.*"console_sock":[[:space:]]*"\([^"]*\)".*/\1/p' "$record" | head -n1)
   [ -n "$sock" ] || { cat "$record" >&2; return 1; }
-  "$SIGMUND_REAL_BIN" list >"$TEST_ROOT/console-list.out" || return 1
+  "$SIGMUND_BIN" list >"$TEST_ROOT/console-list.out" || return 1
   grep -Eq "^$id[[:space:]]+running[[:space:]]+.*[[:space:]]console[[:space:]]" "$TEST_ROOT/console-list.out" || {
     cat "$TEST_ROOT/console-list.out" >&2
     return 1
   }
-  printf 'ping\n' | "$SIGMUND_REAL_BIN" console "$id" >"$TEST_ROOT/console.out" 2>"$TEST_ROOT/console.err" || {
+  printf 'ping\n' | "$SIGMUND_BIN" console "$id" >"$TEST_ROOT/console.out" 2>"$TEST_ROOT/console.err" || {
     cat "$TEST_ROOT/console.out" "$TEST_ROOT/console.err" >&2
     return 1
   }
   grep -q 'got:ping' "$TEST_ROOT/console.out" || { cat "$TEST_ROOT/console.out" >&2; return 1; }
   sleep 0.2
   grep -q 'got:ping' "$store/$id.log" || { cat "$store/$id.log" >&2; return 1; }
-  "$SIGMUND_REAL_BIN" prune "$id" >/dev/null || return 1
+  "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
   path_absent_soon "$sock" || {
     ls -la "$store" "$store/console" "$(dirname "$sock")" >&2 || true
     return 1
@@ -898,7 +898,7 @@ EOF
 
 test_console_can_reattach_after_detach() {
   local out id store record sock helper
-  out=$("$SIGMUND_REAL_BIN" --console /bin/sh -c 'while read line; do echo "seen:$line"; [ "$line" = done ] && exit 0; done' 2>&1) || {
+  out=$("$SIGMUND_BIN" --console /bin/sh -c 'while read line; do echo "seen:$line"; [ "$line" = done ] && exit 0; done' 2>&1) || {
     printf '%s\n' "$out" >&2
     return 1
   }
@@ -910,14 +910,14 @@ test_console_can_reattach_after_detach() {
   [ -n "$sock" ] || { cat "$record" >&2; return 1; }
 
   helper=$(build_console_protocol_helper) || return 1
-  "$helper" "$sock" 'first
+  as_user "$helper" "$sock" 'first
 ' 'seen:first' >"$TEST_ROOT/console-first.out" 2>"$TEST_ROOT/console-first.err" || {
     cat "$TEST_ROOT/console-first.out" "$TEST_ROOT/console-first.err" >&2
     return 1
   }
   grep -q 'seen:first' "$TEST_ROOT/console-first.out" || { cat "$TEST_ROOT/console-first.out" >&2; return 1; }
 
-  printf 'done\n' | "$SIGMUND_REAL_BIN" console "$id" >"$TEST_ROOT/console-second.out" 2>"$TEST_ROOT/console-second.err" || {
+  printf 'done\n' | "$SIGMUND_BIN" console "$id" >"$TEST_ROOT/console-second.out" 2>"$TEST_ROOT/console-second.err" || {
     cat "$TEST_ROOT/console-second.out" "$TEST_ROOT/console-second.err" >&2
     return 1
   }
@@ -926,7 +926,7 @@ test_console_can_reattach_after_detach() {
   sleep 0.2
   grep -q 'seen:first' "$store/$id.log" || { cat "$store/$id.log" >&2; return 1; }
   grep -q 'seen:done' "$store/$id.log" || { cat "$store/$id.log" >&2; return 1; }
-  "$SIGMUND_REAL_BIN" prune "$id" >/dev/null || return 1
+  "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
   path_absent_soon "$sock" || {
     ls -la "$store" "$store/console" "$(dirname "$sock")" >&2 || true
     return 1

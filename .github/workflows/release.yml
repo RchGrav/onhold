@@ -181,6 +181,11 @@ jobs:
       - name: Validate runner architecture
         run: test "$(uname -m)" = "${{ matrix.uname_m }}"
 
+      - name: Run macOS-specific tests
+        env:
+          SIGMUND_EXPECT_UNAME_M: ${{ matrix.uname_m }}
+        run: bash ./.github/scripts/test_macos_ci.sh
+
       - name: Build macOS binary
         run: |
           make clean
