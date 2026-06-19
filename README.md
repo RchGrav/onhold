@@ -159,7 +159,3 @@ Sigmund is not a service supervisor. It does not restart processes after reboot,
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
-
-## Build
-
-[![CI](https://github.com/RchGrav/sigmund/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RchGrav/sigmund/actions/workflows/ci.yml)
