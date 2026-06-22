@@ -13,6 +13,7 @@ struct sha256_ctx {
 };
 
 void die_errno(const char *msg);
+void sig_note(const struct invocation *inv, const char *fmt, ...);
 int checked_snprintf(char *dst, size_t n, const char *fmt, ...);
 bool has_suffix(const char *s, const char *suffix);
 bool valid_id(const char *id);

@@ -5,6 +5,16 @@
 static int append_cmd_escaped(char *dst, size_t n, size_t *off, const char *arg);
 static bool cmd_arg_needs_quotes(const char *arg);
 
+void sig_note(const struct invocation *inv, const char *fmt, ...) {
+    if (inv && inv->quiet) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
 void die_errno(const char *msg) {
     int e = errno;
     fprintf(stderr, "%s: %s\n", msg, strerror(e));
