@@ -15,8 +15,8 @@ VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || printf '%s-%
 VERSION_CPPFLAG := -DSIGMUND_VERSION=\"$(VERSION)\"
 
 # Every translation unit. wildcard is portable in GNU make; one glob per layer
-# directory (GNU make has no portable recursive **). New TUs are picked up
-# automatically as the layers are carved out of src/sigmund.c.
+# directory (GNU make has no portable recursive **). main.c + cli.c sit directly
+# under src/; the layers live in src/<layer>/.
 SRCS := $(wildcard src/*.c) \
         $(wildcard src/core/*.c) \
         $(wildcard src/platform/*.c) \
@@ -24,6 +24,9 @@ SRCS := $(wildcard src/*.c) \
         $(wildcard src/console/*.c) \
         $(wildcard src/access/*.c) \
         $(wildcard src/runtime/*.c)
+
+# The profile-hash compatibility test links only the layers the hash depends on.
+HASH_VECTOR_SRCS := $(wildcard src/core/*.c) $(wildcard src/platform/*.c) $(wildcard src/store/*.c)
 
 # Separate object trees per build "personality" so the test objects (built with
 # -DSIGMUND_TESTING and a different SIGMUND_BOOT_ID_PATH) can never be linked
@@ -54,11 +57,17 @@ obj-test/%.o: src/%.c
 test: $(TEST_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(TEST_LDFLAGS) -o sigmund $(TEST_OBJS)
 	@bash tests/test_sigmund.sh
+	@$(MAKE) hash-vector
+
+# Guards the profile-hash capability key against accidental framing changes.
+hash-vector:
+	$(CC) $(ALL_CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o hash-vector tests/profile_hash_vector.c $(HASH_VECTOR_SRCS)
+	@./hash-vector
 
 check: test
 
 clean:
-	rm -f sigmund sigmund-dynamic
+	rm -f sigmund sigmund-dynamic hash-vector
 	rm -rf obj obj-test
 
-.PHONY: all clean test check
+.PHONY: all clean test check hash-vector

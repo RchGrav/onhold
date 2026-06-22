@@ -83,4 +83,22 @@ jobs:
       - name: Install cppcheck
         run: sudo apt-get update && sudo apt-get install -y cppcheck
       - name: Static analysis for suspicious patterns before release
-        run: cppcheck --enable=warning,performance,portability --error-exitcode=1 --suppress=missingIncludeSystem --std=c11 src/sigmund.c
+        run: cppcheck --enable=warning,performance,portability --error-exitcode=1 --suppress=missingIncludeSystem --std=c11 -Iinclude src/
+
+  layer-dependencies:
+    name: Enforce layer dependency direction
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: No lower layer may include a higher-layer header
+        run: |
+          set -eu
+          fail=0
+          viol() { if grep -rlE "#include \"sigmund/($2)\\.h\"" $1 2>/dev/null; then echo "DAG violation in: $1 (forbidden: $2)"; fail=1; fi; }
+          viol "src/core include/sigmund/core.h"                                            'platform|store|console|access|runtime|cli'
+          viol "src/platform include/sigmund/platform.h"                                    'store|console|access|runtime|cli'
+          viol "src/store include/sigmund/store.h"                                          'console|access|runtime|cli'
+          viol "src/console include/sigmund/console.h include/sigmund/console_internal.h"   'access|runtime|cli'
+          viol "src/access include/sigmund/access.h"                                        'runtime|cli'
+          viol "src/runtime include/sigmund/runtime.h include/sigmund/runtime_internal.h"   'cli'
+          test "$fail" -eq 0 && echo "layer dependency direction OK"

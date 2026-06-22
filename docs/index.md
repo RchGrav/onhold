@@ -172,4 +172,14 @@ Every subsystem page links back here, names the quickstart step it explains, res
 
 ## Implementation map
 
-For maintainers, the main source anchors for this overview are `main`, `perform_start`, `write_record_atomic`, `write_public_index_atomic`, `resolve_action_token`, `eval_state`, `do_signal_action`, `elevate_with_sudo_canonical`, and `cmd_elevated_capability_action` in `src/sigmund.c`.
+For maintainers, the source is organized by layer under `src/` (with public APIs in
+`include/sigmund/`): `core/` (primitives, JSON, SHA-256), `platform/` (OS facts),
+`store/` (durable state), `console/` (attachable PTY), `access/` (privilege and
+sudoers), `runtime/` (product behavior), and `cli.c` + `main.c`. The main source
+anchors for this overview are `main` (`src/main.c`), `sigmund_perform_start`
+(`src/runtime/start.c`), `sigmund_write_record_atomic` /
+`sigmund_write_public_index_atomic` (`src/store/record.c`),
+`sigmund_resolve_action_token` (`src/runtime/resolve.c`), `sigmund_eval_state`
+(`src/runtime/state.c`), `sigmund_do_signal_action` (`src/runtime/signal.c`),
+`sigmund_elevate_with_sudo_canonical` (`src/access/elevate.c`), and
+`sigmund_cmd_elevated_capability_action` (`src/runtime/commands.c`).
