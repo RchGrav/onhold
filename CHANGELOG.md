@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.8 - Console sockets bound relative to the private store
+
+This point release rebuilds the published binaries; the only runtime change
+since 0.3.7 is how console sockets are created.
+
+### Fixed
+
+- Console sockets are always created inside the run's private, 0700-owned store
+  console directory and are bound/connected through a short name relative to
+  that directory. A long store path no longer exceeds the AF_UNIX socket address
+  limit, and the socket is never placed under a predictable `/tmp` path. The PTY
+  broker restores its working directory before launching the target, so the
+  launched process still runs in the caller's working directory.
+
+### Release notes
+
+No command-behavior change for normal-length paths; this hardens and unifies
+where the console socket lives. The Linux and macOS suites pass, including new
+coverage that the socket resides in the store console directory and that the
+launched process runs in the caller's working directory.
+
+Full changelog:
+https://github.com/RchGrav/sigmund/compare/v0.3.7...v0.3.8
+
 ## 0.3.7 - Cross-platform test-validated binaries
 
 This release uses the same Sigmund runtime implementation as 0.3.6. It is the
