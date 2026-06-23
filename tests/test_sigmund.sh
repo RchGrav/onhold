@@ -1925,6 +1925,121 @@ test_signal_exit_code_map() {
   "$SIGMUND_BIN" kill "$id" >/dev/null 2>&1 || true
 }
 
+test_signal_refuses_tampered_pgid() {
+  local out id rec rc
+  out=$("$SIGMUND_BIN" /bin/sleep 300 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  rec="$HOME/.local/state/sigmund/$id.json"
+  # A record whose pgid is tampered to <=1 must never be signaled -- kill(-pgid)
+  # with pgid<=1 would hit pid 1 / the whole session. valid_record rejects it, so
+  # stop refuses with exit 5 and the real process is left untouched.
+  sed -i.bak 's/"pgid":[[:space:]]*[0-9][0-9]*/"pgid":1/' "$rec" || return 1
+  set +e; "$SIGMUND_BIN" stop "$id" >/dev/null 2>&1; rc=$?; set -e
+  mv "$rec.bak" "$rec" 2>/dev/null || true
+  "$SIGMUND_BIN" stop "$id" >/dev/null 2>&1 || true
+  [ "$rc" -eq 5 ] || { echo "stop on tampered pgid<=1: rc=$rc (want 5 refused)" >&2; return 1; }
+}
+
+test_elevated_child_signal_maps_to_128_plus_sig() {
+  local rc fakesudo
+  write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z || return 1
+  fakesudo="$TEST_ROOT/fakebin-sig/sudo"
+  mkdir -p "$TEST_ROOT/fakebin-sig" || return 1
+  printf '#!/usr/bin/env bash\nkill -TERM $$\nsleep 5\n' >"$fakesudo" || return 1
+  chmod 755 "$TEST_ROOT/fakebin-sig" "$fakesudo" || return 1
+  export SIGMUND_TEST_SUDO_PROG="$fakesudo"
+  set +e; "$SIGMUND_BIN" kill abc12345 >/dev/null 2>&1; rc=$?; set -e
+  [ "$rc" -eq 143 ] || { echo "signal-killed sudo child: rc=$rc (want 143 = 128+SIGTERM)" >&2; return 1; }
+}
+
+test_public_index_write_rollback() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
+  local rc pids leftover
+  set +e
+  SIGMUND_TEST_FAIL_PUBLIC_INDEX_WRITE=1 as_root "$SIGMUND_REAL_BIN" bash -c 'exec -a sigmund_pubidx_test sleep 60' >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || { echo "public-index rollback start: rc=$rc (want 1)" >&2; return 1; }
+  pids=$(ps -eo pid=,args= | awk '/sigmund_pubidx_test/ && !/awk/ {print $1}')
+  [ -z "$pids" ] || { echo "leaked process after public-index rollback" >&2; return 1; }
+  leftover=$(as_root sh -c 'ls "$1"/runs/*.json "$1"/public/*.json 2>/dev/null' sh "$SIGMUND_TEST_SYSTEM_STATE_DIR" 2>/dev/null || true)
+  [ -z "$leftover" ] || { echo "leftover state after rollback: $leftover" >&2; return 1; }
+}
+
+test_quiet_suppresses_banner_keeps_id() {
+  local out id
+  out=$("$SIGMUND_BIN" --quiet /bin/sleep 300 2>"$TEST_ROOT/q.err") || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { echo "no id from --quiet start" >&2; return 1; }
+  [ "$out" = "$id" ] || { echo "--quiet stdout is not the bare id: [$out]" >&2; return 1; }
+  [ ! -s "$TEST_ROOT/q.err" ] || { echo "--quiet start wrote to stderr:" >&2; cat "$TEST_ROOT/q.err" >&2; return 1; }
+  "$SIGMUND_BIN" --quiet stop "$id" >/dev/null 2>"$TEST_ROOT/q2.err" || return 1
+  [ ! -s "$TEST_ROOT/q2.err" ] || { echo "--quiet stop wrote to stderr" >&2; return 1; }
+}
+
+test_run_id_prefix_resolution() {
+  local out id pgid pfx got
+  out=$("$SIGMUND_BIN" sleep 300 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  pgid=$(record_pgid "$id")
+  [ -n "$id" ] && [ -n "$pgid" ] || return 1
+  pfx=$(printf '%s' "$id" | cut -c1-4)
+  got=$("$SIGMUND_BIN" stop --print "$pfx") || { echo "id-prefix did not resolve" >&2; return 1; }
+  [ "$got" = "kill -TERM -- -$pgid" ] || { echo "prefix resolved to wrong run: [$got]" >&2; return 1; }
+  "$SIGMUND_BIN" stop "$id" >/dev/null 2>&1 || true
+}
+
+test_ambiguous_tail_exits_6_without_all_hint() {
+  local id1 id2
+  id1=$("$SIGMUND_BIN" sleep 60 2>&1 | extract_id) || return 1
+  "$SIGMUND_BIN" alias "$id1" web-amb >/dev/null || return 1
+  "$SIGMUND_BIN" stop "$id1" >/dev/null; "$SIGMUND_BIN" prune "$id1" >/dev/null
+  id1=$("$SIGMUND_BIN" start web-amb 2>&1 | extract_id); [ -n "$id1" ] || return 1
+  id2=$("$SIGMUND_BIN" start web-amb --multi 2>&1 | extract_id); [ -n "$id2" ] || return 1
+  local rc
+  set +e; "$SIGMUND_BIN" tail web-amb >/dev/null 2>"$TEST_ROOT/amb.err"; rc=$?; set -e
+  [ "$rc" -eq 6 ] || { echo "ambiguous tail: rc=$rc (want 6)" >&2; return 1; }
+  grep -q 'matches more than one' "$TEST_ROOT/amb.err" || { cat "$TEST_ROOT/amb.err" >&2; return 1; }
+  # tail is not an --all command; the --all disambiguation hint must NOT appear
+  ! grep -q -- '--all' "$TEST_ROOT/amb.err" || { echo "tail ambiguity wrongly suggested --all" >&2; return 1; }
+  "$SIGMUND_BIN" stop web-amb --all >/dev/null 2>&1 || true
+}
+
+test_misc_action_guards() {
+  local rc
+  set +e; "$SIGMUND_BIN" --console stop deadbeef >/dev/null 2>"$TEST_ROOT/c.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "--console stop: rc=$rc (want 5)" >&2; return 1; }
+  grep -q 'only to starts' "$TEST_ROOT/c.err" || { cat "$TEST_ROOT/c.err" >&2; return 1; }
+  set +e; "$SIGMUND_BIN" help bogustopic >/dev/null 2>"$TEST_ROOT/h.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "help bogustopic: rc=$rc (want 5)" >&2; return 1; }
+  grep -q 'unknown help topic' "$TEST_ROOT/h.err" || { cat "$TEST_ROOT/h.err" >&2; return 1; }
+  "$SIGMUND_BIN" list -l >"$TEST_ROOT/l.out" 2>&1 || { echo "list -l failed" >&2; return 1; }
+  grep -q 'STARTED_AT' "$TEST_ROOT/l.out" || { echo "list -l missing ISO header" >&2; return 1; }
+}
+
+test_grant_revoke_argument_refusals() {
+  local rc
+  # non-root cannot grant (privilege refusal)
+  set +e; "$SIGMUND_BIN" grant web-sys "$TEST_USER" start >/dev/null 2>"$TEST_ROOT/ng.err"; rc=$?; set -e
+  [ "$rc" -ne 0 ] || { echo "non-root grant unexpectedly succeeded" >&2; return 1; }
+  # root: invalid action and invalid subject are rejected
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
+  grant_fixture || return 1
+  set +e; as_root "$GRANT_SAFE" grant web-sys "$TEST_USER" bogusaction >/dev/null 2>"$TEST_ROOT/ba.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "bad action: rc=$rc (want 5)" >&2; cat "$TEST_ROOT/ba.err" >&2; return 1; }
+  set +e; as_root "$GRANT_SAFE" grant web-sys 'bad..subject' start >/dev/null 2>"$TEST_ROOT/bs.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "bad subject: rc=$rc (want 5)" >&2; cat "$TEST_ROOT/bs.err" >&2; return 1; }
+}
+
+run_test "stop refuses a record with a tampered pgid<=1 (exit 5)" test_signal_refuses_tampered_pgid
+run_test "signal-killed elevation child maps to 128+sig" test_elevated_child_signal_maps_to_128_plus_sig
+run_test "public-index write failure rolls back the start" test_public_index_write_rollback
+run_test "--quiet prints bare id and silences stderr" test_quiet_suppresses_banner_keeps_id
+run_test "run id prefix resolves to the full run" test_run_id_prefix_resolution
+run_test "ambiguous tail exits 6 without an --all hint" test_ambiguous_tail_exits_6_without_all_hint
+run_test "action/help/list argument guards" test_misc_action_guards
+run_test "grant/revoke argument and privilege refusals" test_grant_revoke_argument_refusals
 run_test "stop maps kill failures to exit codes 3/4/0" test_signal_exit_code_map
 run_test "system store directory modes are private (0700/0755)" test_system_store_directory_modes
 run_test "system store tightens a pre-existing loose dir" test_system_store_tightens_preexisting_loose_dir
