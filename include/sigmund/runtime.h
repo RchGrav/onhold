@@ -51,6 +51,12 @@ int sigmund_cmd_dump_action(const struct sigmund_invocation *inv,
                            const struct sigmund_store *system_store,
                            const char *program,
                            const char *id_token);
+int sigmund_cmd_view_action(const struct sigmund_invocation *inv,
+                           const struct sigmund_store *user_store,
+                           const struct sigmund_store *system_store,
+                           const char *program,
+                           int argc,
+                           char **argv);
 int sigmund_cmd_console_action(const struct sigmund_invocation *inv,
                               const struct sigmund_store *user_store,
                               const struct sigmund_store *system_store,

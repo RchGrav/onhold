@@ -23,7 +23,8 @@ SRCS := $(wildcard src/*.c) \
         $(wildcard src/store/*.c) \
         $(wildcard src/console/*.c) \
         $(wildcard src/access/*.c) \
-        $(wildcard src/runtime/*.c)
+        $(wildcard src/runtime/*.c) \
+        $(wildcard src/viewer/*.c)
 
 # The profile-hash compatibility test links only the layers the hash depends on.
 HASH_VECTOR_SRCS := $(wildcard src/core/*.c) $(wildcard src/platform/*.c) $(wildcard src/store/*.c)
@@ -61,6 +62,7 @@ test: $(TEST_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(TEST_LDFLAGS) -o sigmund $(TEST_OBJS)
 	cp sigmund mund
 	@bash tests/test_sigmund.sh
+	@$(MAKE) viewer-filter-test
 	@$(MAKE) hash-vector
 	@bash tests/test_version_makefile.sh
 	@bash tests/test_release_installer.sh
@@ -69,6 +71,10 @@ test: $(TEST_OBJS)
 hash-vector:
 	$(CC) $(ALL_CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o hash-vector tests/profile_hash_vector.c $(HASH_VECTOR_SRCS)
 	@./hash-vector
+
+viewer-filter-test:
+	$(CC) $(ALL_CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o viewer-filter-test tests/viewer_filter_test.c src/viewer/filter.c
+	@./viewer-filter-test
 
 print-version:
 	@printf '%s\n' '$(VERSION)'
@@ -86,7 +92,7 @@ lint:
 	@bash scripts/lint_layers.sh
 
 clean:
-	rm -f sigmund mund sigmund-dynamic hash-vector
+	rm -f sigmund mund sigmund-dynamic hash-vector viewer-filter-test
 	rm -rf obj obj-test
 
-.PHONY: all clean test check ci lint hash-vector print-version
+.PHONY: all clean test check ci lint hash-vector viewer-filter-test print-version

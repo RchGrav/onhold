@@ -36,6 +36,7 @@ static const struct sigmund_cli_command_spec command_specs[] = {
     {"status", 0, 1, 0, "usage: mund status [profile|target]", "status"},
     {"inspect", 1, 1, 0, "usage: mund inspect <target>", "inspect"},
     {"dump", 1, 1, 0, "usage: sigmund dump <target>", "dump"},
+    {"view", 1, -1, 0, "usage: mund view <target> [--filter TEXT] [--similar TEXT] [--limit N]", "view"},
     {"console", 1, 1, 0, "usage: sigmund console <target>", "console"},
     {"prune", 0, 1, SIGMUND_CLI_ALLOW_ALL, "usage: sigmund prune [target|all] [--all]", "prune"},
     {"alias", 2, 3, 0, "usage: sigmund alias <id> <name> [-v]", "alias"},
@@ -175,6 +176,8 @@ static int help_action(const char *action) {
         printf("usage: sigmund console <target>\n\nAttach to a running console-enabled run.\n");
     } else if (!strcmp(action, "dump")) {
         printf("usage: sigmund dump <target>\n\nPrint a run log and exit.\n");
+    } else if (!strcmp(action, "view")) {
+        printf("usage: mund view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--debug-stats]\n\nPrint the first lazily discovered matching log lines. --filter is literal; --similar may be repeated with example lines.\n");
     } else if (!strcmp(action, "prune")) {
         printf("usage: sigmund prune [target|all] [--all]\n\nClear removable past run data. Running valid runs are never pruned.\n");
     } else if (!strcmp(action, "alias")) {

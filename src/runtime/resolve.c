@@ -199,7 +199,7 @@ bool sigmund_record_matches_alias_intent(const char *command, const struct sigmu
     if (!strcmp(command, "console")) {
         return st == STATE_RUNNING && r->has_console;
     }
-    if (!strcmp(command, "dump")) {
+    if (!strcmp(command, "dump") || !strcmp(command, "view")) {
         return r->has_log;
     }
     if (!strcmp(command, "prune")) {

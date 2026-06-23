@@ -7,6 +7,7 @@
 #include "sigmund/store.h"
 #include "sigmund/console.h"
 #include "sigmund/access.h"
+#include "sigmund/log_viewer.h"
 
 static volatile sig_atomic_t g_tail_interrupted = 0;
 
@@ -392,4 +393,174 @@ int sigmund_cmd_dump_action(const struct sigmund_invocation *inv,
     close(fd);
     free(targets);
     return 0;
+}
+
+static bool parse_view_limit(const char *s, size_t *out) {
+    if (!s || !*s) return false;
+    char *end = NULL;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (end == s || *end != '\0' || errno != 0 || v < 1 || v > 10000) return false;
+    *out = (size_t)v;
+    return true;
+}
+
+static int print_view_result(const struct sigmund_log_filter_result *result, bool debug_stats) {
+    for (size_t i = 0; i < result->line_count; i++) {
+        size_t n = strlen(result->lines[i]);
+        if (sigmund_write_all(STDOUT_FILENO, result->lines[i], n) != 0) {
+            sigmund_die_errno("sigmund: failed writing viewed output");
+        }
+        if (n == 0 || result->lines[i][n - 1] != '\n') {
+            if (sigmund_write_all(STDOUT_FILENO, "\n", 1) != 0) {
+                sigmund_die_errno("sigmund: failed writing viewed output");
+            }
+        }
+    }
+    if (debug_stats) {
+        fprintf(stderr,
+                "mund view: bytes_read=%zu lines_scanned=%zu matches=%zu visible=%zu eof=%s\n",
+                result->bytes_read,
+                result->lines_scanned,
+                result->match_count,
+                result->line_count,
+                result->reached_eof ? "yes" : "no");
+    }
+    return 0;
+}
+
+static int elevate_view_target(const char *program,
+                               const struct sigmund_resolved_target *target,
+                               const struct sigmund_log_filter_options *opts,
+                               bool debug_stats) {
+    const char *prefix = target->scope == RESOLVE_SYSTEM_MANAGED ? "system:" : "user:";
+    char token[sizeof("system:") + sizeof(target->id)];
+    snprintf(token, sizeof(token), "%s%s", prefix, target->id);
+
+    int canonical_argc = 2 + (opts->literal ? 2 : 0) + (int)(opts->similar_example_count * 2) +
+                         (opts->max_results ? 2 : 0) + (debug_stats ? 1 : 0);
+    char **canon = calloc((size_t)canonical_argc, sizeof(char *));
+    char limit_buf[32];
+    if (!canon) return 3;
+
+    int n = 0;
+    canon[n++] = "view";
+    canon[n++] = token;
+    if (opts->literal) {
+        canon[n++] = "--filter";
+        canon[n++] = (char *)opts->literal;
+    }
+    for (size_t i = 0; i < opts->similar_example_count; i++) {
+        canon[n++] = "--similar";
+        canon[n++] = (char *)opts->similar_examples[i];
+    }
+    if (opts->max_results) {
+        snprintf(limit_buf, sizeof(limit_buf), "%zu", opts->max_results);
+        canon[n++] = "--limit";
+        canon[n++] = limit_buf;
+    }
+    if (debug_stats) {
+        canon[n++] = "--debug-stats";
+    }
+    int rc = sigmund_elevate_with_sudo_canonical(program, n, canon);
+    free(canon);
+    return rc;
+}
+
+int sigmund_cmd_view_action(const struct sigmund_invocation *inv,
+                           const struct sigmund_store *user_store,
+                           const struct sigmund_store *system_store,
+                           const char *program,
+                           int argc,
+                           char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "usage: mund view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--debug-stats]\n");
+        return 5;
+    }
+
+    struct sigmund_log_filter_options opts;
+    sigmund_log_filter_options_init(&opts);
+    bool debug_stats = false;
+    const char *target_token = NULL;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--filter")) {
+            if (++i >= argc) {
+                fprintf(stderr, "usage: mund view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--debug-stats]\n");
+                return 5;
+            }
+            opts.literal = argv[i];
+        } else if (!strcmp(argv[i], "--similar")) {
+            if (++i >= argc || opts.similar_example_count >= SIGMUND_LOG_VIEWER_MAX_EXAMPLES) {
+                fprintf(stderr, "usage: mund view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--debug-stats]\n");
+                return 5;
+            }
+            opts.similar_examples[opts.similar_example_count++] = argv[i];
+        } else if (!strcmp(argv[i], "--limit")) {
+            if (++i >= argc || !parse_view_limit(argv[i], &opts.max_results)) {
+                fprintf(stderr, "sigmund: error: invalid --limit\n");
+                return 5;
+            }
+            opts.visible_capacity = opts.max_results;
+        } else if (!strcmp(argv[i], "--debug-stats")) {
+            debug_stats = true;
+        } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+            printf("usage: mund view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--debug-stats]\n");
+            return 0;
+        } else if (!target_token) {
+            target_token = argv[i];
+        } else {
+            fprintf(stderr, "usage: mund view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--debug-stats]\n");
+            return 5;
+        }
+    }
+    if (!target_token) {
+        fprintf(stderr, "usage: mund view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--debug-stats]\n");
+        return 5;
+    }
+
+    struct sigmund_resolved_target *targets = NULL;
+    int ntargets = 0;
+    int rc = sigmund_resolve_action_token(inv, user_store, system_store, "view", target_token, false, &targets, &ntargets);
+    if (rc != 0) {
+        free(targets);
+        return rc;
+    }
+    if (ntargets == 0) {
+        free(targets);
+        sigmund_sig_note(inv, "sigmund: nothing to view\n");
+        return 0;
+    }
+    struct sigmund_resolved_target target = targets[0];
+    if (target.needs_elevation) {
+        rc = elevate_view_target(program, &target, &opts, debug_stats);
+        free(targets);
+        return rc;
+    }
+    struct sigmund_run_record r;
+    char path[SIGMUND_PATH_MAX];
+    if (sigmund_load_record_by_id(target.store.record_dir, target.id, &r, path, sizeof(path)) != 0) {
+        free(targets);
+        return 5;
+    }
+    if (!r.has_log) {
+        fprintf(stderr, "sigmund: record has no log path: %s\n", target.id);
+        free(targets);
+        return 5;
+    }
+    int fd = open(r.log_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        free(targets);
+        sigmund_die_errno("sigmund: failed to open log for view");
+    }
+    struct sigmund_log_filter_result result;
+    if (sigmund_log_filter_fd(fd, &opts, &result) != 0) {
+        close(fd);
+        free(targets);
+        sigmund_die_errno("sigmund: failed while filtering log");
+    }
+    close(fd);
+    rc = print_view_result(&result, debug_stats);
+    sigmund_log_filter_result_free(&result);
+    free(targets);
+    return rc;
 }

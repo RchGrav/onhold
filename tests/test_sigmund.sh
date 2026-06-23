@@ -765,6 +765,22 @@ test_log_capture() {
   grep -q 'out' "$log" && grep -q 'err' "$log"
 }
 
+
+
+test_log_view_filter_cli() {
+  local out id viewed stats similar
+  out=$("$SIGMUND_BIN" bash -c 'echo alpha; echo "needle one"; echo "warn database connection timeout retrying"; echo omega; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.4
+  viewed=$("$SIGMUND_BIN" view "$id" --filter needle --limit 1) || return 1
+  [ "$viewed" = "needle one" ] || return 1
+  similar=$("$SIGMUND_BIN" view "$id" --similar "error database connection timeout" --limit 1) || return 1
+  printf '%s\n' "$similar" | grep -q 'database connection timeout' || return 1
+  stats=$("$SIGMUND_BIN" view "$id" --filter needle --limit 1 --debug-stats 2>&1 >/dev/null) || return 1
+  printf '%s\n' "$stats" | grep -Eq 'bytes_read=[0-9]+ .*visible=1'
+}
+
 test_start_follow_short_form() {
   local out id
   out=$("$SIGMUND_BIN" -f bash -c 'echo follow-short' 2>&1) || return 1
@@ -2490,6 +2506,7 @@ run_test "mund unified CLI surface" test_mund_unified_cli_surface
 run_test "mund shell runs scripted commands" test_mund_shell_scripted_commands
 run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture
+run_test "view filters run logs literally and by similarity" test_log_view_filter_cli
 run_test "-f starts and follows output" test_start_follow_short_form
 run_test "tail <id> tails an existing run log" test_tail_verb_existing_id
 run_test "persistent stale records remain visible and dumpable" test_persistent_stale_records

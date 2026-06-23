@@ -550,9 +550,9 @@ int main(int argc, char **argv) {
 
     if (!inv.euid_root || is_list || (owned && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                                                !strcmp(command, "tail") || !strcmp(command, "dump") ||
-                                               !strcmp(command, "prune") || !strcmp(command, "console") ||
-                                               !strcmp(command, "aliases") || !strcmp(command, "profile") ||
-                                               !strcmp(command, "show")))) {
+                                               !strcmp(command, "view") || !strcmp(command, "prune") ||
+                                               !strcmp(command, "console") || !strcmp(command, "aliases") ||
+                                               !strcmp(command, "profile") || !strcmp(command, "show")))) {
         if (!inv.euid_root) {
             if (sigmund_ensure_user_store_for_current_user(&user_store) != 0) {
                 sigmund_die_errno("sigmund: failed to init user storage");
@@ -779,6 +779,11 @@ int main(int argc, char **argv) {
             return 5;
         }
         int rc = sigmund_cmd_dump_action(&inv, &user_store, &system_store, argv[0], cmd_argv[0]);
+        free(cmd_argv);
+        return rc;
+    }
+    if (!strcmp(command, "view")) {
+        int rc = sigmund_cmd_view_action(&inv, &user_store, &system_store, argv[0], cmd_argc, cmd_argv);
         free(cmd_argv);
         return rc;
     }
