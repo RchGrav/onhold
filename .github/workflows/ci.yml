@@ -25,12 +25,12 @@ jobs:
           make sigmund-dynamic CC=${{ matrix.cc }} CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
           make test CC=${{ matrix.cc }} CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
 
-  root-runner-test:
-    name: Linux root-runner harness
+  privilege-delegation-test:
+    name: Linux privilege-delegation lane (non-root, elevates per-test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Run the same test suite with the harness process starting as root
+      - name: Run the suite as a non-root user that sudo-elevates per test (skips are failures)
         run: bash scripts/test_root.sh
 
   macos-runtime:

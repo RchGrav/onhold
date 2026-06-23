@@ -33,4 +33,12 @@ RUN arch="$(uname -m)" \
  && ln -s /opt/zig/zig /usr/local/bin/zig \
  && rm /tmp/zig.tar.xz \
  && zig version
+
+# A non-root user with passwordless sudo, mirroring a GitHub Actions runner, so
+# scripts/linux.sh's privilege-delegation lane runs the suite exactly as CI does:
+# as a normal user that elevates per-test. Running it as root would erase the
+# SUDO_* provenance those tests exist to check.
+RUN useradd -m -s /bin/bash ci \
+ && echo 'ci ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ci \
+ && chmod 0440 /etc/sudoers.d/ci
 WORKDIR /work

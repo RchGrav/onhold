@@ -26,7 +26,7 @@ done
 # packaged tarballs land back on the host (everything else writes only inside).
 out_host=""
 case "${1:-}" in
-  root)            inner_cmd='bash scripts/test_root.sh' ;;
+  root)            inner_cmd='chown -R ci:ci /work/sigmund && exec sudo -u ci -H bash /work/sigmund/scripts/test_root.sh' ;;
   release)         shift
                    out_host="${1:-dist}"
                    mkdir -p "$out_host"
