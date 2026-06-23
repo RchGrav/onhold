@@ -16,7 +16,8 @@ archive_name="sigmund-${version}-${target}.tar.gz"
 rm -rf "${stage_dir}"
 mkdir -p "${stage_dir}" "${output_dir}"
 cp "${binary_path}" "${stage_dir}/sigmund"
-chmod +x "${stage_dir}/sigmund"
+cp "${binary_path}" "${stage_dir}/mund"
+chmod +x "${stage_dir}/sigmund" "${stage_dir}/mund"
 
 shopt -s nullglob
 for file in LICENSE* README*; do

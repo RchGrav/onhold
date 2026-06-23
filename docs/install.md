@@ -2,7 +2,7 @@
 
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Using Sigmund in CI](ci.md) | [Repository README](../README.md)
 
-Sigmund publishes small release artifacts for supported Linux and macOS targets. The installer detects your platform, chooses the matching artifact, verifies it against the release `SHA256SUMS`, validates the archive layout, installs the `sigmund` binary, and prints the absolute path it installed. It refuses to install when checksums are missing, malformed, or mismatched.
+Sigmund publishes small release artifacts for supported Linux and macOS targets. The installer detects your platform, chooses the matching artifact, verifies it against the release `SHA256SUMS`, validates the archive layout, installs both compatibility binary names (`sigmund` and `mund`), and prints the absolute paths it installed. It refuses to install when checksums are missing, malformed, or mismatched.
 
 ## One-line install
 
@@ -22,6 +22,7 @@ When `/usr/local/bin` is not writable, it falls back to:
 
 ```text
 $HOME/.local/bin/sigmund
+$HOME/.local/bin/mund
 ```
 
 Run the same installer through root when you want a system install:
@@ -60,17 +61,18 @@ curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.s
   SIGMUND_ENV_FILE="$PWD/.sigmund-env" sh
 . "$PWD/.sigmund-env"
 
-"$SIGMUND_BIN" --version
+"$MUND_BIN" --version
 ```
 
 The handoff file exports:
 
 ```sh
 SIGMUND_BIN=/absolute/path/to/sigmund
+MUND_BIN=/absolute/path/to/mund
 PATH=/install/dir:$PATH
 ```
 
-Use `"$SIGMUND_BIN"` inside automation when you need a deterministic path that does not depend on shell startup files.
+Use `"$MUND_BIN"` for the 0.4.0 operator CLI, or `"$SIGMUND_BIN"` when you intentionally need the compatibility name, without depending on shell startup files.
 
 ## Custom install directory
 
@@ -81,7 +83,7 @@ curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.s
   sh
 . "$PWD/.sigmund-env"
 
-"$SIGMUND_BIN" --help
+"$MUND_BIN" --help
 ```
 
 ## Pinned version
@@ -152,7 +154,7 @@ The installer fails clearly instead of guessing when the platform is unsupported
 
 Every release must include a `SHA256SUMS` asset next to the tarballs and installer. The installer does not trust release-note text or optional sidecar checksum files as a fallback; if `SHA256SUMS` is missing or does not contain a valid 64-hex SHA-256 entry for the selected artifact, installation stops before extraction.
 
-Release tarballs are expected to place the executable at the archive root as `sigmund`. The installer rejects archives that omit that root-level binary or contain unsafe absolute/parent-directory paths, rather than searching recursively for the first file named `sigmund`.
+Release tarballs are expected to place executables at the archive root as both `sigmund` and `mund`. The installer rejects archives that omit either root-level binary or contain unsafe absolute/parent-directory paths, rather than searching recursively for the first matching file.
 
 ## Manual build
 
@@ -162,7 +164,7 @@ If no release artifact matches your platform, build from source:
 git clone https://github.com/RchGrav/sigmund.git
 cd sigmund
 make
-./sigmund --version
+./mund --version
 ```
 
 On Linux, the default `Makefile` link mode is `STATIC_LDFLAGS=-static`. With a glibc compiler, that creates the same kind of GNU static binary described above: useful, but still subject to glibc NSS runtime caveats. For a dynamic glibc build, run `make STATIC_LDFLAGS=` or build the `sigmund-dynamic` target. For a true standalone-style Linux build, use a musl-targeting compiler and keep static linking enabled.

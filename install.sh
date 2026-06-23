@@ -231,10 +231,11 @@ validate_archive_layout() {
         if (parts[i] == "..") bad = 1
       }
       sub(/^\.\//, "", p)
-      if (p == "sigmund") found = 1
+      if (p == "sigmund") found_sigmund = 1
+      if (p == "mund") found_mund = 1
     }
     END {
-      if (bad || !found) exit 1
+      if (bad || !found_sigmund || !found_mund) exit 1
     }
   '
 }
@@ -320,11 +321,13 @@ shell_quote() {
 
 write_env_file() {
   env_file=$1
-  bin_path=$2
-  install_dir=$3
+  sigmund_bin_path=$2
+  mund_bin_path=$3
+  install_dir=$4
   mkdir -p "$(dirname "$env_file")"
   {
-    printf 'export SIGMUND_BIN=%s\n' "$(shell_quote "$bin_path")"
+    printf 'export SIGMUND_BIN=%s\n' "$(shell_quote "$sigmund_bin_path")"
+    printf 'export MUND_BIN=%s\n' "$(shell_quote "$mund_bin_path")"
     printf 'export PATH=%s:"$PATH"\n' "$(shell_quote "$install_dir")"
   } >"$env_file"
 }
@@ -424,6 +427,7 @@ else
   fi
 fi
 target="$install_dir/sigmund"
+mund_target="$install_dir/mund"
 use_sudo=0
 if [ "$install_mode" = system ] && install_needs_sudo "$install_dir"; then
   use_sudo=1
@@ -439,6 +443,7 @@ note "  version:  $tag"
 note "  artifact: $artifact"
 note "  mode:     $install_mode$privilege_note"
 note "  install:  $target"
+note "            $mund_target"
 
 if [ "${SIGMUND_INSTALL_DRY_RUN:-0}" = 1 ]; then
   note "dry run: no files changed"
@@ -475,19 +480,25 @@ extract="$tmp/extract"
 mkdir -p "$extract"
 tar -xzf "$archive" -C "$extract"
 bin="$extract/sigmund"
+mund_bin="$extract/mund"
 [ -f "$bin" ] && [ ! -L "$bin" ] || die "archive did not contain expected root sigmund binary"
+[ -f "$mund_bin" ] && [ ! -L "$mund_bin" ] || die "archive did not contain expected root mund binary"
 
 if [ "$use_sudo" -eq 1 ]; then
   install_binary_sudo "$bin" "$target" "$install_dir"
+  install_binary_sudo "$mund_bin" "$mund_target" "$install_dir"
 else
   install_binary_user "$bin" "$target" "$install_dir"
+  install_binary_user "$mund_bin" "$mund_target" "$install_dir"
 fi
 
 version=$("$target" --version 2>/dev/null || true)
 [ -n "$version" ] || die "installed binary did not run: $target --version"
+mund_version=$("$mund_target" --version 2>/dev/null || true)
+[ -n "$mund_version" ] || die "installed binary did not run: $mund_target --version"
 
 if [ "${SIGMUND_ENV_FILE:-}" ]; then
-  write_env_file "$SIGMUND_ENV_FILE" "$target" "$install_dir"
+  write_env_file "$SIGMUND_ENV_FILE" "$target" "$mund_target" "$install_dir"
   note "wrote environment handoff: $SIGMUND_ENV_FILE"
 fi
 
@@ -497,12 +508,14 @@ fi
 
 note "installed sigmund $version"
 note "binary: $target"
+note "binary: $mund_target"
 if path_contains_dir "$install_dir"; then
-  note "run: sigmund --help"
+  note "run: mund --help"
 else
   note "current shell PATH does not include $install_dir"
-  note "run now: $target --help"
+  note "run now: $mund_target --help"
   note "or export: PATH=$install_dir:\$PATH"
 fi
 
 printf 'SIGMUND_BIN=%s\n' "$target"
+printf 'MUND_BIN=%s\n' "$mund_target"

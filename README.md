@@ -20,13 +20,13 @@ sigmund prune "$run_id"
 
 ## Install
 
-The one-line installer detects Linux or macOS, chooses the matching release artifact, verifies it against the release `SHA256SUMS`, validates the archive layout, and installs `sigmund`. It refuses to install when checksums are missing or malformed.
+The one-line installer detects Linux or macOS, chooses the matching release artifact, verifies it against the release `SHA256SUMS`, validates the archive layout, and installs both `sigmund` and the 0.4.0 `mund` operator CLI. It refuses to install when checksums are missing or malformed.
 
 ```sh
 curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh
 ```
 
-By default, the installer uses `/usr/local/bin/sigmund` when it can write there, and otherwise falls back to `$HOME/.local/bin/sigmund`.
+By default, the installer uses `/usr/local/bin/{sigmund,mund}` when it can write there, and otherwise falls back to `$HOME/.local/bin/{sigmund,mund}`.
 
 Force a system install to `/usr/local/bin`:
 
@@ -48,7 +48,7 @@ curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.s
   SIGMUND_ENV_FILE="$PWD/.sigmund-env" sh
 . "$PWD/.sigmund-env"
 
-"$SIGMUND_BIN" --version
+"$MUND_BIN" --version
 ```
 
 More install modes are in [Installing Sigmund](docs/install.md).
@@ -65,7 +65,7 @@ Requires a C11 compiler and POSIX process APIs. Linux and macOS are supported.
 
 ```bash
 make
-./sigmund --help
+./mund --help
 ```
 
 On Linux, `make` defaults to `-static` with the host compiler. With a glibc toolchain, that produces a GNU static binary with the NSS caveat above, not a fully standalone artifact. Use a musl-targeting compiler for true standalone Linux builds, or clear `STATIC_LDFLAGS` when you intentionally want a dynamic GNU build. On macOS, `make` builds a normal dynamically linked binary.

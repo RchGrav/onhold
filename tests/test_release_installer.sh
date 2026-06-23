@@ -24,7 +24,8 @@ if [ "${1:-}" = "--version" ]; then
 fi
 exit 0
 SH
-      chmod 0755 "$stage/sigmund"
+      cp "$stage/sigmund" "$stage/mund"
+      chmod 0755 "$stage/sigmund" "$stage/mund"
       ;;
     missing-root-binary)
       mkdir -p "$stage/bin"
@@ -106,6 +107,7 @@ test_installer_fail_closed() {
   printf '%s  %s\n' "$sum" "$artifact" >"$release_dir/SHA256SUMS"
   run_installer "$root" "$install_dir" >"$tmp/good.out" 2>"$tmp/good.err"
   [ "$("$install_dir/sigmund" --version)" = "v1.2.3" ]
+  [ "$("$install_dir/mund" --version)" = "v1.2.3" ]
 }
 
 test_package_tarball_deterministic_when_gnu_tar() {
@@ -122,6 +124,9 @@ SH
   out1="$tmp/pkg1"
   out2="$tmp/pkg2"
   a1="$(.github/scripts/package_tarball.sh linux-amd64-gnu-static 1.2.3 "$bin" "$out1")"
+  tar -tzf "$a1" | sed 's#^./##' | sort >"$tmp/pkg-files.txt"
+  grep -qx 'sigmund' "$tmp/pkg-files.txt"
+  grep -qx 'mund' "$tmp/pkg-files.txt"
   sleep 1
   a2="$(.github/scripts/package_tarball.sh linux-amd64-gnu-static 1.2.3 "$bin" "$out2")"
   s1="$(sha256_file "$a1")"

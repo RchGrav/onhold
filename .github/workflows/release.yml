@@ -254,4 +254,6 @@ jobs:
             "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ needs.version.outputs.tag }}/install.sh" |
             SIGMUND_INSTALL_DIR="$install_tmp/bin" SIGMUND_UPDATE_PROFILE=0 sh
           installed_version="$("$install_tmp/bin/sigmund" --version)"
+          mund_version="$("$install_tmp/bin/mund" --version)"
           test "$installed_version" = "${{ needs.version.outputs.tag }}"
+          test "$mund_version" = "${{ needs.version.outputs.tag }}"
