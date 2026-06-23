@@ -1,0 +1,19 @@
+# Reproducible Linux build+test environment for sigmund, mirroring the GitHub CI
+# toolchain (ubuntu-latest). Used by scripts/linux.sh to run scripts/ci.sh (or
+# the root-runner lane) locally on any host that has Apple `container` or docker,
+# so "build+test on Linux exactly like CI" is one command from a Mac.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      clang \
+      make \
+      git \
+      cppcheck \
+      procps \
+      util-linux \
+      passwd \
+      sudo \
+      ca-certificates \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+WORKDIR /work

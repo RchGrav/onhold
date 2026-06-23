@@ -35,13 +35,7 @@ jobs:
       - name: Install runtime test dependencies
         run: sudo apt-get update && sudo apt-get install -y socat
       - name: Run the same test suite with the harness process starting as root
-        run: |
-          tmpdir="$(mktemp -d)"
-          trap 'rm -rf "$tmpdir"' EXIT
-          mkdir "$tmpdir/src"
-          tar --exclude=.git --exclude=sigmund --exclude=sigmund-dynamic -cf - . | tar -xf - -C "$tmpdir/src"
-          chmod -R a+rX "$tmpdir"
-          sudo bash -c 'cd "$1"; umask 022; make clean; SIGMUND_REQUIRE_ROOT_TESTS=1 make test CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"' bash "$tmpdir/src"
+        run: bash scripts/test_root.sh
 
   macos-runtime:
     name: macOS runtime test (${{ matrix.arch }})
