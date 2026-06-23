@@ -53,6 +53,12 @@ curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.s
 
 More install modes are in [Installing Sigmund](docs/install.md).
 
+Linux releases come in three artifact families:
+
+- **GNU static**: the default on glibc Linux hosts. It is a mostly self-contained binary, but glibc can still load host NSS modules at runtime for user, group, and name-service lookups. Do not treat it as completely standalone across arbitrary Linux systems.
+- **GNU dynamic**: links to the host glibc and is useful when you want normal distribution-managed libc behavior.
+- **musl static**: recommended when you need the closest thing to a true standalone Linux install.
+
 ## Build From Source
 
 Requires a C11 compiler and POSIX process APIs. Linux and macOS are supported.
@@ -62,7 +68,7 @@ make
 ./sigmund --help
 ```
 
-On Linux, `make` attempts to build a static standalone binary. On macOS, it builds a normal dynamically linked binary.
+On Linux, `make` defaults to `-static` with the host compiler. With a glibc toolchain, that produces a GNU static binary with the NSS caveat above, not a fully standalone artifact. Use a musl-targeting compiler for true standalone Linux builds, or clear `STATIC_LDFLAGS` when you intentionally want a dynamic GNU build. On macOS, `make` builds a normal dynamically linked binary.
 
 ## Useful Patterns
 

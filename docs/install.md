@@ -120,10 +120,30 @@ Default artifact choices are:
 | Linux mipsel | `linux-mipsel-musl-static` |
 | Linux riscv64 | `linux-riscv64-musl-static` |
 
-GNU dynamic artifacts are available for users who specifically want them:
+### Linux artifact families
+
+Linux artifact names deliberately distinguish the libc ABI from the link mode:
+
+- `linux-*-gnu-static` is built for glibc systems and linked with `-static`. It reduces shared-library dependencies, but it is not a universal standalone binary: glibc can still load host NSS modules at runtime for user, group, hostname, DNS, and other name-service lookups depending on `/etc/nsswitch.conf`.
+- `linux-*-gnu-dynamic` is built for glibc systems and dynamically links against the host glibc. Choose it when you want the target distribution's libc, NSS, and security update behavior.
+- `linux-*-musl-static` is statically linked with musl. Choose this for the closest thing to a true standalone Linux artifact, especially for scratch/minimal containers, rescue systems, or copying one binary between compatible Linux systems.
+
+On glibc hosts, the installer defaults to `gnu-static` for compatibility with the detected host ABI. If true standalone behavior matters more than matching the host glibc ABI, request the musl artifact explicitly:
+
+```sh
+SIGMUND_FLAVOR=musl-static sh install.sh
+```
+
+GNU dynamic artifacts are available for users who specifically want normal dynamic glibc behavior:
 
 ```sh
 SIGMUND_FLAVOR=gnu-dynamic sh install.sh
+```
+
+GNU static artifacts can also be requested explicitly:
+
+```sh
+SIGMUND_FLAVOR=gnu-static sh install.sh
 ```
 
 The installer fails clearly instead of guessing when the platform is unsupported or libc cannot be detected safely.
@@ -138,6 +158,8 @@ cd sigmund
 make
 ./sigmund --version
 ```
+
+On Linux, the default `Makefile` link mode is `STATIC_LDFLAGS=-static`. With a glibc compiler, that creates the same kind of GNU static binary described above: useful, but still subject to glibc NSS runtime caveats. For a dynamic glibc build, run `make STATIC_LDFLAGS=` or build the `sigmund-dynamic` target. For a true standalone-style Linux build, use a musl-targeting compiler and keep static linking enabled.
 
 ## Continue
 
