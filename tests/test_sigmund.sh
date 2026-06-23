@@ -914,6 +914,25 @@ test_log_view_follow_ignores_nonmatching_newer_data() {
   ! grep -q 'unrelated-new-tail' "$TEST_ROOT/view-follow-nonmatching-away.out" || { cat "$TEST_ROOT/view-follow-nonmatching-away.out" >&2; return 1; }
 }
 
+test_log_view_follow_finds_sparse_newer_match_after_large_burst() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$SIGMUND_BIN" run -- /bin/sh -c 'for i in 1 2 3 4 5 6; do echo "burst-hit-old-$i"; done; sleep 0.8; python3 -c '"'"'import sys; sys.stdout.write("unrelated\\n" * 40000); sys.stdout.write("burst-hit-new-tail\\n"); sys.stdout.flush()'"'"'; sleep 0.2' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.2
+  set +e
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"burst-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(2.0); out.write(b"q"); out.flush()' |
+    script -qfec "stty rows 7 cols 100; $SIGMUND_BIN view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-large-burst.out" 2>"$TEST_ROOT/view-follow-large-burst.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-large-burst.err" >&2; return 1; }
+  grep -q 'newer below' "$TEST_ROOT/view-follow-large-burst.out" || { cat "$TEST_ROOT/view-follow-large-burst.out" >&2; return 1; }
+  grep -q 'burst-hit-old' "$TEST_ROOT/view-follow-large-burst.out" || { cat "$TEST_ROOT/view-follow-large-burst.out" >&2; return 1; }
+  ! grep -q 'burst-hit-new-tail' "$TEST_ROOT/view-follow-large-burst.out" || { cat "$TEST_ROOT/view-follow-large-burst.out" >&2; return 1; }
+}
+
 test_start_follow_short_form() {
   local out id
   out=$("$SIGMUND_BIN" -f bash -c 'echo follow-short' 2>&1) || return 1
@@ -2647,6 +2666,7 @@ run_test "view selection movement uses cached filter rows" test_log_view_selecti
 run_test "view follow pages older and newer filtered windows" test_log_view_follow_pages_filtered_windows
 run_test "view follow marks newer data while browsed away" test_log_view_follow_browsed_away_marks_newer_without_yank
 run_test "view follow ignores nonmatching newer data while browsed away" test_log_view_follow_ignores_nonmatching_newer_data
+run_test "view follow finds sparse newer match after large burst" test_log_view_follow_finds_sparse_newer_match_after_large_burst
 run_test "-f starts and follows output" test_start_follow_short_form
 run_test "tail <id> tails an existing run log" test_tail_verb_existing_id
 run_test "persistent stale records remain visible and dumpable" test_persistent_stale_records

@@ -510,7 +510,7 @@ For growing logs:
 
 - v1 implementation: `mund logs <target> --follow` routes through `mund view --follow` for a dynamic TTY filter field. `--filter TEXT` can seed/script the same engine, but the human design is type-to-filter after the viewer is open. Plain `mund logs <target>` remains tail-compatible.
 - active live filters are anchored at the tail by default; PgUp moves to older matching windows, and PgDn walks back toward the live edge;
-- when the user is browsing older matches, new log data does not yank the viewport to EOF; the follow tick filters the appended byte range and reports `newer below` only when the new range contains a row matching the active literal/similarity filter;
+- when the user is browsing older matches, new log data does not yank the viewport to EOF; follow ticks filter bounded appended slices and keep a separate scan-progress cursor, so sparse matches in large bursts are deferred across ticks rather than skipped; the header reports `newer below` only after a new matching row is found;
 - `--debug-stats` includes `scan_gen`, which increments only when the filter engine refills the visible cache;
 - keep a raw tail ring of recent bytes/lines;
 - append new lines as they arrive;

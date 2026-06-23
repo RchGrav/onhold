@@ -54,6 +54,7 @@ struct viewer_state {
     off_t prev_offset;
     off_t next_offset;
     off_t tail_anchor;
+    off_t newer_scan_offset;
     size_t cache_bytes_read;
     size_t cache_lines_scanned;
     size_t cache_match_count;
@@ -72,10 +73,12 @@ struct viewer_state {
  * the cache. PgUp/PgDn are the operations that deliberately move the anchor and
  * request a new bounded scan.
  *
- * In follow mode, `at_live_edge` means the next refill is anchored at EOF and
- * `tail_anchor` is the newest file size the viewer has observed. When the user
- * browses away, appended bytes are filtered once in the follow tick; only an
- * appended matching row sets `newer_available`.
+ * In follow mode, `at_live_edge` means the next refill is anchored at EOF.
+ * `tail_anchor` is the newest file size the viewer has observed, while
+ * `newer_scan_offset` is the newest appended byte offset examined for the
+ * browsed-away notification. When the user browses away, each follow tick scans
+ * a bounded appended slice and advances `newer_scan_offset`; sparse matches in
+ * large bursts are therefore deferred, not skipped.
  */
 
 struct raw_terminal {
@@ -264,11 +267,14 @@ static void reset_filter_navigation(struct viewer_state *state) {
         off_t end = lseek(state->fd, 0, SEEK_END);
         if (end >= 0) state->start_offset = end;
         state->tail_anchor = state->start_offset;
+        state->newer_scan_offset = state->tail_anchor;
         state->scan_mode = VIEWER_SCAN_BACKWARD;
         state->at_live_edge = true;
         state->newer_available = false;
     } else {
         state->start_offset = 0;
+        state->tail_anchor = 0;
+        state->newer_scan_offset = 0;
         state->scan_mode = VIEWER_SCAN_FORWARD;
         state->at_live_edge = false;
         state->newer_available = false;
@@ -278,8 +284,9 @@ static void reset_filter_navigation(struct viewer_state *state) {
     cache_invalidate(state);
 }
 
-static int appended_range_has_match(struct viewer_state *state, off_t start, off_t end, bool *has_match) {
+static int appended_range_has_match(struct viewer_state *state, off_t start, off_t end, bool *has_match, off_t *scanned_to) {
     *has_match = false;
+    *scanned_to = start;
     if (end <= start) return 0;
     if (lseek(state->fd, start, SEEK_SET) < 0) return -1;
 
@@ -299,6 +306,8 @@ static int appended_range_has_match(struct viewer_state *state, off_t start, off
     struct sigmund_log_filter_result result;
     if (sigmund_log_filter_fd(state->fd, &opts, &result) != 0) return -1;
     *has_match = result.match_count > 0;
+    *scanned_to = result.next_offset > start ? result.next_offset : start;
+    if (*scanned_to > end) *scanned_to = end;
     sigmund_log_filter_result_free(&result);
     return 0;
 }
@@ -306,17 +315,22 @@ static int appended_range_has_match(struct viewer_state *state, off_t start, off
 static int handle_follow_tick(struct viewer_state *state) {
     off_t end = lseek(state->fd, 0, SEEK_END);
     if (end >= 0 && end > state->tail_anchor) {
-        off_t old_tail = state->tail_anchor;
         state->tail_anchor = end;
         if (state->at_live_edge) {
             state->start_offset = end;
+            state->newer_scan_offset = end;
             state->newer_available = false;
             cache_invalidate(state);
-        } else {
-            bool has_match = false;
-            if (appended_range_has_match(state, old_tail, end, &has_match) != 0) return -1;
-            if (has_match) state->newer_available = true;
         }
+    }
+    if (end >= 0 && !state->at_live_edge && !state->newer_available && state->newer_scan_offset < state->tail_anchor) {
+        off_t scanned_to = state->newer_scan_offset;
+        bool has_match = false;
+        if (appended_range_has_match(state, state->newer_scan_offset, state->tail_anchor, &has_match, &scanned_to) != 0) {
+            return -1;
+        }
+        if (scanned_to > state->newer_scan_offset) state->newer_scan_offset = scanned_to;
+        if (has_match) state->newer_available = true;
     }
     if (state->follow && state->cache_reached_eof && state->is_running && !state->is_running(state->running_userdata)) {
         state->follow = false;
@@ -383,6 +397,7 @@ static int refill_cache(struct viewer_state *state) {
             if (end >= 0) {
                 state->start_offset = end;
                 state->tail_anchor = end;
+                state->newer_scan_offset = end;
             }
         }
         if (sigmund_log_filter_backward_fd(state->fd, &opts, state->start_offset, scan_budget, &result) != 0) return -1;
@@ -471,6 +486,7 @@ static void page_down(struct viewer_state *state) {
             if (end >= 0) {
                 state->start_offset = end;
                 state->tail_anchor = end;
+                state->newer_scan_offset = end;
             }
             state->at_live_edge = true;
             state->newer_available = false;
@@ -539,6 +555,7 @@ int sigmund_log_viewer_tty_fd(int fd,
         if (end >= 0) {
             state.start_offset = end;
             state.tail_anchor = end;
+            state.newer_scan_offset = end;
         }
         state.scan_mode = VIEWER_SCAN_BACKWARD;
     }
