@@ -423,7 +423,12 @@ int main(int argc, char **argv) {
             free(cmd_argv);
             return rc;
         }
-        fprintf(stderr, "usage: mund profile <list|run|start|show> [args...]\n");
+        if (!strcmp(sub, "export") || !strcmp(sub, "import")) {
+            int rc = sigmund_cmd_profile_action(&inv, &user_store, cmd_argc, cmd_argv);
+            free(cmd_argv);
+            return rc;
+        }
+        fprintf(stderr, "usage: mund profile <list|run|start|show|export|import> [args...]\n");
         free(cmd_argv);
         return 5;
     }

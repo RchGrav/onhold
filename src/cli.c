@@ -41,7 +41,7 @@ static const struct sigmund_cli_command_spec command_specs[] = {
     {"alias", 2, 3, 0, "usage: sigmund alias <id> <name> [-v]", "alias"},
     {"aliases", 0, 1, 0, "usage: sigmund aliases [-v]", "aliases"},
     {"profiles", 0, 1, 0, "usage: mund profiles [-v]", "profiles"},
-    {"profile", 1, -1, SIGMUND_CLI_ALLOW_DDASH, "usage: mund profile <list|run|start|show> [args...]", "profile"},
+    {"profile", 1, -1, SIGMUND_CLI_ALLOW_DDASH, "usage: mund profile <list|run|start|show|export|import> [args...]", "profile"},
     {"show", 1, 2, 0, "usage: mund show <runs|profiles|running|dormant|failed|stale> [name]", "show"},
     {"clean", 0, 1, SIGMUND_CLI_ALLOW_ALL, "usage: mund clean [target|all]", "clean"},
     {"doctor", 0, 0, 0, "usage: mund doctor", "doctor"},
@@ -68,6 +68,8 @@ static int help_profiles(void) {
            "name.\n\n"
            "  sigmund alias <id> <name>       pin the command behind <id> as <name>\n"
            "  sigmund aliases [-v]            list visible aliases\n"
+           "  sigmund profile export <name>   export a typed-shell transcript\n"
+           "  sigmund profile import <file>   import/update a user-local profile\n"
            "  sigmund start <name>            start a fresh run under that name\n\n"
            "The name is also recorded on runs started as <name>, so later\n"
            "list, tail, console, dump, stop, kill, and prune commands can use <name>. If the command behind\n"
@@ -179,7 +181,7 @@ static int help_action(const char *action) {
     } else if (!strcmp(action, "aliases") || !strcmp(action, "profiles")) {
         printf("usage: %s [-v]\n\nList visible profiles. User profiles show commands; system commands are redacted.\n", !strcmp(action, "profiles") ? "mund profiles" : "sigmund aliases");
     } else if (!strcmp(action, "profile")) {
-        printf("usage: mund profile <list|run|start|show> [args...]\n\nWork with profile definitions and profile-backed runs.\n");
+        printf("usage: mund profile <list|run|start|show|export|import> [args...]\n\nWork with profile definitions and profile-backed runs. Import/export supports typed-shell transcripts:\n  profile <name>\n  set command -- <argv...>\n  save\n");
     } else if (!strcmp(action, "status")) {
         printf("usage: mund status [profile|target]\n\nShow runs, optionally narrowed by profile/target.\n");
     } else if (!strcmp(action, "inspect")) {

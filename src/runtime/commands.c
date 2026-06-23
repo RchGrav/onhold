@@ -12,6 +12,13 @@ static int attach_console_record(const struct sigmund_invocation *inv,
                                  const struct sigmund_run_record *r,
                                  enum run_state st);
 static int print_aliases_for_store(const char *scope, const struct sigmund_store *store, bool verbose);
+static void profile_shell_quote(FILE *f, const char *s);
+static int profile_export_transcript(const char *name, const struct sigmund_profile *recipe);
+static int profile_export_json(const char *name, const struct sigmund_profile *recipe);
+static int profile_shell_split(const char *line, char ***argv_out, int *argc_out);
+static int profile_import_transcript(const struct sigmund_store *store, const char *path);
+static int profile_import_json(const struct sigmund_store *store, const char *j);
+static void profile_free_tokens(char **argv, int argc);
 
 static int attach_console_record(const struct sigmund_invocation *inv,
                                  const struct sigmund_run_record *r,
@@ -226,19 +233,356 @@ int sigmund_cmd_aliases_action(const struct sigmund_invocation *inv,
     return rc;
 }
 
+static void profile_shell_quote(FILE *f, const char *s) {
+    if (!s || !*s) {
+        fputs("''", f);
+        return;
+    }
+    bool bare = true;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (!isalnum(*p) && !strchr("/._-:=,@%+", *p)) {
+            bare = false;
+            break;
+        }
+    }
+    if (bare) {
+        fputs(s, f);
+        return;
+    }
+    fputc('\'', f);
+    for (; *s; s++) {
+        if (*s == '\'') {
+            fputs("'\\''", f);
+        } else {
+            fputc(*s, f);
+        }
+    }
+    fputc('\'', f);
+}
+
+static int profile_export_transcript(const char *name, const struct sigmund_profile *recipe) {
+    fputs("profile ", stdout);
+    profile_shell_quote(stdout, name);
+    fputs("\nset command --", stdout);
+    for (int i = 0; i < recipe->argc; i++) {
+        fputc(' ', stdout);
+        profile_shell_quote(stdout, recipe->argv[i]);
+    }
+    fputs("\nsave\n", stdout);
+    return ferror(stdout) ? 3 : 0;
+}
+
+static int profile_export_json(const char *name, const struct sigmund_profile *recipe) {
+    fputs("{\n  \"version\": 1,\n  \"name\": \"", stdout);
+    sigmund_json_escape(stdout, name);
+    fputs("\",\n  \"bin\": \"", stdout);
+    sigmund_json_escape(stdout, recipe->binary_path);
+    fputs("\",\n  \"args\": ", stdout);
+    sigmund_write_json_argv(stdout, recipe->argc, recipe->argv);
+    fputs("\n}\n", stdout);
+    return ferror(stdout) ? 3 : 0;
+}
+
+static void profile_free_tokens(char **argv, int argc) {
+    if (!argv) {
+        return;
+    }
+    for (int i = 0; i < argc; i++) {
+        free(argv[i]);
+    }
+    free(argv);
+}
+
+static int profile_push_char(char **buf, size_t *len, size_t *cap, char c) {
+    if (*len + 1 >= *cap) {
+        size_t next_cap = *cap ? *cap * 2 : 32;
+        char *next = realloc(*buf, next_cap);
+        if (!next) {
+            return -1;
+        }
+        *buf = next;
+        *cap = next_cap;
+    }
+    (*buf)[(*len)++] = c;
+    return 0;
+}
+
+static int profile_push_token(char ***argv, int *argc, int *cap, char *token) {
+    if (*argc == *cap) {
+        int next_cap = *cap ? *cap * 2 : 8;
+        char **next = realloc(*argv, (size_t)next_cap * sizeof(*next));
+        if (!next) {
+            return -1;
+        }
+        *argv = next;
+        *cap = next_cap;
+    }
+    (*argv)[(*argc)++] = token;
+    return 0;
+}
+
+static int profile_shell_split(const char *line, char ***argv_out, int *argc_out) {
+    *argv_out = NULL;
+    *argc_out = 0;
+    char **argv = NULL;
+    int argc = 0, argv_cap = 0;
+    const char *p = line;
+    while (*p) {
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        if (!*p || *p == '#') {
+            break;
+        }
+        char *buf = NULL;
+        size_t len = 0, cap = 0;
+        bool in_single = false, in_double = false;
+        while (*p) {
+            unsigned char c = (unsigned char)*p;
+            if (!in_single && !in_double && (isspace(c) || c == '#')) {
+                break;
+            }
+            if (!in_double && c == '\'') {
+                in_single = !in_single;
+                p++;
+                continue;
+            }
+            if (!in_single && c == '"') {
+                in_double = !in_double;
+                p++;
+                continue;
+            }
+            if (!in_single && c == '\\') {
+                p++;
+                if (!*p) {
+                    free(buf);
+                    profile_free_tokens(argv, argc);
+                    errno = EINVAL;
+                    return -1;
+                }
+                c = (unsigned char)*p;
+            }
+            if (profile_push_char(&buf, &len, &cap, (char)c) != 0) {
+                free(buf);
+                profile_free_tokens(argv, argc);
+                return -1;
+            }
+            p++;
+        }
+        if (in_single || in_double) {
+            free(buf);
+            profile_free_tokens(argv, argc);
+            errno = EINVAL;
+            return -1;
+        }
+        if (profile_push_char(&buf, &len, &cap, '\0') != 0) {
+            free(buf);
+            profile_free_tokens(argv, argc);
+            return -1;
+        }
+        if (profile_push_token(&argv, &argc, &argv_cap, buf) != 0) {
+            free(buf);
+            profile_free_tokens(argv, argc);
+            return -1;
+        }
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        if (*p == '#') {
+            break;
+        }
+    }
+    *argv_out = argv;
+    *argc_out = argc;
+    return 0;
+}
+
+static int profile_import_json(const struct sigmund_store *store, const char *j) {
+    char name[ALIAS_MAX_LEN + 1];
+    char binary_path[SIGMUND_PATH_MAX];
+    char **argv = NULL;
+    int argc = 0;
+    int rc = 5;
+    if (sigmund_json_get_str(j, "name", name, sizeof(name)) != 0 || !sigmund_valid_alias(name) ||
+        sigmund_json_get_args_alloc(j, &argv, &argc) != 0 || argc <= 0) {
+        fprintf(stderr, "sigmund: error: invalid profile JSON\n");
+        goto out;
+    }
+    if (sigmund_json_get_str(j, "bin", binary_path, sizeof(binary_path)) != 0 &&
+        sigmund_json_get_str(j, "binary_path", binary_path, sizeof(binary_path)) != 0 &&
+        sigmund_resolve_binary_path(argv[0], binary_path, sizeof(binary_path)) != 0) {
+        fprintf(stderr, "sigmund: error: failed to resolve profile command '%s'\n", argv[0]);
+        goto out;
+    }
+    if (binary_path[0] != '/') {
+        fprintf(stderr, "sigmund: error: invalid profile binary path\n");
+        goto out;
+    }
+    if (sigmund_alias_upsert_recipe(store, name, binary_path, argc, argv) != 0) {
+        sigmund_die_errno("sigmund: failed to import profile");
+    }
+    rc = 0;
+out:
+    sigmund_free_argv_alloc(argv, argc);
+    return rc;
+}
+
+static int profile_import_transcript(const struct sigmund_store *store, const char *path) {
+    char *text = NULL;
+    if (sigmund_read_small_file(path, &text) != 0) {
+        fprintf(stderr, "sigmund: error: failed to read profile transcript '%s'\n", path);
+        return 5;
+    }
+    const char *p = sigmund_skip_ws(text);
+    if (*p == '{') {
+        int json_rc = profile_import_json(store, text);
+        free(text);
+        return json_rc;
+    }
+
+    char name[ALIAS_MAX_LEN + 1] = {0};
+    char **cmd_argv = NULL;
+    int cmd_argc = 0;
+    bool saw_save = false;
+    int rc = 5;
+
+    char *cursor = text;
+    while (*cursor) {
+        char *line = cursor;
+        char *nl = strchr(cursor, '\n');
+        if (nl) {
+            *nl = '\0';
+            cursor = nl + 1;
+        } else {
+            cursor += strlen(cursor);
+        }
+        char **tokens = NULL;
+        int ntokens = 0;
+        if (profile_shell_split(line, &tokens, &ntokens) != 0) {
+            fprintf(stderr, "sigmund: error: invalid profile transcript syntax\n");
+            goto out;
+        }
+        if (ntokens == 0) {
+            profile_free_tokens(tokens, ntokens);
+            continue;
+        }
+        if (!strcmp(tokens[0], "profile") && ntokens == 2) {
+            if (!sigmund_valid_alias(tokens[1])) {
+                fprintf(stderr, "sigmund: error: invalid profile name '%s'\n", tokens[1]);
+                profile_free_tokens(tokens, ntokens);
+                goto out;
+            }
+            snprintf(name, sizeof(name), "%s", tokens[1]);
+        } else if (!strcmp(tokens[0], "set") && ntokens >= 4 &&
+                   !strcmp(tokens[1], "command") && !strcmp(tokens[2], "--")) {
+            profile_free_tokens(cmd_argv, cmd_argc);
+            cmd_argc = ntokens - 3;
+            cmd_argv = calloc((size_t)cmd_argc, sizeof(*cmd_argv));
+            if (!cmd_argv) {
+                profile_free_tokens(tokens, ntokens);
+                goto out;
+            }
+            for (int i = 0; i < cmd_argc; i++) {
+                cmd_argv[i] = strdup(tokens[i + 3]);
+                if (!cmd_argv[i]) {
+                    profile_free_tokens(tokens, ntokens);
+                    goto out;
+                }
+            }
+        } else if (!strcmp(tokens[0], "save") && ntokens == 1) {
+            saw_save = true;
+        } else {
+            fprintf(stderr, "sigmund: error: unsupported profile transcript command '%s'\n", tokens[0]);
+            profile_free_tokens(tokens, ntokens);
+            goto out;
+        }
+        profile_free_tokens(tokens, ntokens);
+    }
+
+    if (!saw_save || name[0] == '\0' || cmd_argc <= 0 || !cmd_argv) {
+        fprintf(stderr, "sigmund: error: incomplete profile transcript\n");
+        goto out;
+    }
+    char binary_path[SIGMUND_PATH_MAX];
+    if (sigmund_resolve_binary_path(cmd_argv[0], binary_path, sizeof(binary_path)) != 0) {
+        fprintf(stderr, "sigmund: error: failed to resolve profile command '%s'\n", cmd_argv[0]);
+        goto out;
+    }
+    if (sigmund_alias_upsert_recipe(store, name, binary_path, cmd_argc, cmd_argv) != 0) {
+        sigmund_die_errno("sigmund: failed to import profile");
+    }
+    rc = 0;
+
+out:
+    profile_free_tokens(cmd_argv, cmd_argc);
+    free(text);
+    return rc;
+}
+
+int sigmund_cmd_profile_action(const struct sigmund_invocation *inv,
+                              const struct sigmund_store *user_store,
+                              int argc,
+                              char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "usage: sigmund profile export <name> [--json]\n       sigmund profile import <file>\n");
+        return 5;
+    }
+    if (inv->euid_root) {
+        fprintf(stderr, "sigmund: error: profile import/export is user-local; run it as the profile owner\n");
+        return 5;
+    }
+    if (!strcmp(argv[0], "export")) {
+        bool json = false;
+        if (argc == 3 && !strcmp(argv[2], "--json")) {
+            json = true;
+        } else if (argc != 2) {
+            fprintf(stderr, "usage: sigmund profile export <name> [--json]\n");
+            return 5;
+        }
+        const char *name = argv[1];
+        if (!sigmund_valid_alias(name)) {
+            fprintf(stderr, "sigmund: error: invalid profile name '%s'\n", name);
+            return 5;
+        }
+        struct sigmund_profile recipe;
+        if (sigmund_alias_lookup_recipe(user_store, name, &recipe) != 0) {
+            fprintf(stderr, "sigmund: error: profile '%s' not found\n", name);
+            return 5;
+        }
+        int rc = json ? profile_export_json(name, &recipe) : profile_export_transcript(name, &recipe);
+        sigmund_free_profile(&recipe);
+        return rc;
+    }
+    if (!strcmp(argv[0], "import")) {
+        if (argc != 2) {
+            fprintf(stderr, "usage: sigmund profile import <file>\n");
+            return 5;
+        }
+        return profile_import_transcript(user_store, argv[1]);
+    }
+    fprintf(stderr, "usage: sigmund profile export <name> [--json]\n       sigmund profile import <file>\n");
+    return 5;
+}
+
 void sigmund_usage(void) {
     printf("sigmund %s - more than nohup, less than systemd\n\n"
            "Run a command that outlives your shell, then find it, watch it, and stop it\n"
            "safely later. No daemon, no config.\n\n"
            "USAGE\n"
-           "  sigmund <command> [args...]      start a command in the background\n"
-           "  sigmund <action>  [target...]    act on a tracked command\n\n"
+           "  mund run -- <cmd> [args...]      start a command explicitly\n"
+           "  mund <action> [target...]        act on a tracked command\n"
+           "  sigmund <command> [args...]      compatibility raw start\n\n"
            "START\n"
+           "  mund run -- <command>...         start it; prints a short run id\n"
            "  sigmund <command>...             start it; prints a short run id\n"
            "  sigmund -f <command>...          start it and stream output\n"
            "  sigmund --console <command>...   start it with an attachable console\n"
            "  sigmund start <alias>            start a pinned alias\n\n"
            "MANAGE\n"
+           "  mund status [profile]          show tracked runs (optionally one profile)\n"
+           "  mund logs   <target>            follow a run's live output\n"
+           "  mund profile export <name>      print a typed-shell profile config\n"
+           "  mund profile import <file>      import a typed-shell or JSON profile config\n"
            "  sigmund list   [alias]          show tracked runs (optionally one alias)\n"
            "  sigmund tail   <target>         follow a run's live output\n"
            "  sigmund console <target>        attach to a run's console\n"

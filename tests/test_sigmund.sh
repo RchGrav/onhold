@@ -1404,6 +1404,56 @@ test_profile_start_inherits_current_environment() {
   ! printf '%s\n' "$got" | grep -qx 'seed'
 }
 
+test_profile_transcript_import_export_roundtrip() {
+  local transcript export out id got store
+  store="$HOME/.local/state/sigmund"
+  transcript="$TEST_ROOT/import.profile"
+  cat >"$transcript" <<'EOF' || return 1
+profile cli-prof
+set command -- /bin/echo 'hello import'
+save
+EOF
+  "$SIGMUND_BIN" profile import "$transcript" >"$TEST_ROOT/import.out" 2>"$TEST_ROOT/import.err" || return 1
+  [ ! -s "$TEST_ROOT/import.out" ] || return 1
+  [ ! -s "$TEST_ROOT/import.err" ] || return 1
+  grep -Fq '"cli-prof": {"bin": "/usr/bin/echo"' "$store/aliases.json" ||
+    grep -Fq '"cli-prof": {"bin": "/bin/echo"' "$store/aliases.json" || return 1
+  grep -Fq '"args": ["/bin/echo", "hello import"]' "$store/aliases.json" || return 1
+
+  "$SIGMUND_BIN" profile export cli-prof >"$TEST_ROOT/export.profile" || return 1
+  grep -Fxq "profile cli-prof" "$TEST_ROOT/export.profile" || return 1
+  grep -Eq "^set command -- (/usr)?/bin/echo 'hello import'$" "$TEST_ROOT/export.profile" || return 1
+  grep -Fxq "save" "$TEST_ROOT/export.profile" || return 1
+
+  out=$("$SIGMUND_BIN" start cli-prof 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.1
+  got=$("$SIGMUND_BIN" dump "$id") || return 1
+  printf '%s\n' "$got" | grep -qx 'hello import'
+}
+
+test_profile_json_export_and_import() {
+  local json out id got store
+  store="$HOME/.local/state/sigmund"
+  json="$TEST_ROOT/json.profile"
+  cat >"$json" <<'JSON' || return 1
+{"version":1,"name":"json-prof","bin":"/bin/echo","args":["/bin/echo","hello json"]}
+JSON
+  "$SIGMUND_BIN" profile import "$json" >/dev/null || return 1
+  "$SIGMUND_BIN" profile export json-prof --json >"$TEST_ROOT/export.json" || return 1
+  grep -Fq '"name": "json-prof"' "$TEST_ROOT/export.json" || return 1
+  grep -Fq '"args": ["/bin/echo", "hello json"]' "$TEST_ROOT/export.json" || return 1
+  grep -Fq '"json-prof": {"bin": "/bin/echo"' "$store/aliases.json" || return 1
+
+  out=$("$SIGMUND_BIN" start json-prof 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.1
+  got=$("$SIGMUND_BIN" dump "$id") || return 1
+  printf '%s\n' "$got" | grep -qx 'hello json'
+}
+
 test_invalid_alias_names_rejected() {
   local out id rc
   out=$("$SIGMUND_BIN" true 2>&1) || return 1
@@ -2461,6 +2511,8 @@ run_test "user alias stores a direct recipe and starts/stops by alias" test_alia
 run_test "alias from relative executable keeps absolute recorded argv0" test_alias_from_relative_executable_uses_recorded_absolute_argv0
 run_test "alias start requires --multi when already running and --all stops all" test_alias_multi_gate_and_all_stop
 run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
+run_test "profile transcript import/export round-trips a user-local recipe" test_profile_transcript_import_export_roundtrip
+run_test "profile JSON export/import round-trips a user-local recipe" test_profile_json_export_and_import
 run_test "invalid alias names are rejected" test_invalid_alias_names_rejected
 run_test "short hex-looking alias names are allowed" test_short_hex_alias_name_allowed
 run_test "system alias action self-elevates alias token" test_system_alias_action_self_elevates_alias
