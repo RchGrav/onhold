@@ -110,6 +110,27 @@ int sigmund_do_signal_action(const struct sigmund_store *store, const char *id, 
         return 2;
     }
 
+#ifdef SIGMUND_TESTING
+    /* Force the signal-delivery failure branches so the exit-code contract
+     * (3 = EPERM, 4 = delivery failed, 0 = already gone) is regression-tested
+     * without needing to arrange a real kill() failure. */
+    {
+        const char *force_kill = getenv("SIGMUND_TEST_FORCE_KILL_RC");
+        if (force_kill) {
+            if (strcmp(force_kill, "eperm") == 0) {
+                return 3;
+            }
+            if (strcmp(force_kill, "esrch") == 0) {
+                if (already_done) {
+                    *already_done = true;
+                }
+                return 0;
+            }
+            return 4;
+        }
+    }
+#endif
+
     if (kill(-r.pgid, sig) != 0) {
         if (errno == EPERM) {
             return 3;

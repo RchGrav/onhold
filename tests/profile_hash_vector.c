@@ -41,10 +41,32 @@ int main(void) {
             fails++;
         }
     }
+    /* Collision resistance: inputs that differ must hash differently. A framing
+     * that dropped the per-arg index/length separators (e.g. joined argv with a
+     * single space) would collide the first pair; these lock that it does not. */
+    {
+        char h1[PROFILE_HASH_STR_LEN], h2[PROFILE_HASH_STR_LEN];
+        char *g1a[] = {"a", "b c"};
+        char *g1b[] = {"a b", "c"};
+        sigmund_profile_hash_for_argv("/x", 2, g1a, h1);
+        sigmund_profile_hash_for_argv("/x", 2, g1b, h2);
+        if (strcmp(h1, h2) == 0) { fprintf(stderr, "COLLISION: [a,\"b c\"] == [\"a b\",c]\n"); fails++; }
+
+        char *c2[] = {"a", "b"};
+        sigmund_profile_hash_for_argv("/x", 2, c2, h1);
+        sigmund_profile_hash_for_argv("/x", 1, c2, h2);
+        if (strcmp(h1, h2) == 0) { fprintf(stderr, "COLLISION: argc 2 == argc 1 on same argv\n"); fails++; }
+
+        char *c3[] = {"a"};
+        sigmund_profile_hash_for_argv("/x", 1, c3, h1);
+        sigmund_profile_hash_for_argv("/y", 1, c3, h2);
+        if (strcmp(h1, h2) == 0) { fprintf(stderr, "COLLISION: binary_path /x == /y\n"); fails++; }
+    }
+
     if (fails) {
-        fprintf(stderr, "profile-hash vector: %d/%zu FAILED (capability key changed!)\n", fails, n);
+        fprintf(stderr, "profile-hash vector: %d check(s) FAILED (capability key changed!)\n", fails);
         return 1;
     }
-    printf("profile-hash vector: all %zu vectors match (capability key stable)\n", n);
+    printf("profile-hash vector: all %zu golden + 3 collision checks pass (capability key stable)\n", n);
     return 0;
 }
