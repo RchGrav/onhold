@@ -57,6 +57,8 @@ static void test_literal_filter(void) {
     EXPECT_TRUE("literal returns two lines", result.line_count == 2);
     EXPECT_TRUE("first literal line", result.line_count > 0 && strstr(result.lines[0], "needle one"));
     EXPECT_TRUE("second literal line", result.line_count > 1 && strstr(result.lines[1], "needle two"));
+    EXPECT_TRUE("visible offsets are recorded", result.line_count > 1 && result.line_offsets[0] < result.line_offsets[1]);
+    EXPECT_TRUE("next offset advances", result.next_offset > result.line_offsets[1]);
     sigmund_log_filter_result_free(&result);
     close(fd);
 }
@@ -127,11 +129,37 @@ static void test_lazy_large_file_stops_after_first_screen(void) {
     close(fd);
 }
 
+static void test_next_offset_resumes_next_screen(void) {
+    int fd = temp_log_fd();
+    write_all_or_die(fd, "hit one\nhit two\nhit three\nhit four\n");
+    rewind_or_die(fd);
+
+    struct sigmund_log_filter_options opts;
+    sigmund_log_filter_options_init(&opts);
+    opts.literal = "hit";
+    opts.max_results = 2;
+    opts.visible_capacity = 2;
+    struct sigmund_log_filter_result first;
+    EXPECT_TRUE("first page succeeds", sigmund_log_filter_fd(fd, &opts, &first) == 0);
+    EXPECT_TRUE("first page has first hit", first.line_count > 0 && strstr(first.lines[0], "hit one"));
+    EXPECT_TRUE("first page has second hit", first.line_count > 1 && strstr(first.lines[1], "hit two"));
+
+    EXPECT_TRUE("seek to next offset", lseek(fd, first.next_offset, SEEK_SET) == first.next_offset);
+    struct sigmund_log_filter_result second;
+    EXPECT_TRUE("second page succeeds", sigmund_log_filter_fd(fd, &opts, &second) == 0);
+    EXPECT_TRUE("second page has third hit", second.line_count > 0 && strstr(second.lines[0], "hit three"));
+    EXPECT_TRUE("second page has fourth hit", second.line_count > 1 && strstr(second.lines[1], "hit four"));
+    sigmund_log_filter_result_free(&second);
+    sigmund_log_filter_result_free(&first);
+    close(fd);
+}
+
 int main(void) {
     test_literal_filter();
     test_similarity_filter();
     test_match_ring_wraps();
     test_lazy_large_file_stops_after_first_screen();
+    test_next_offset_resumes_next_screen();
     if (failures) {
         fprintf(stderr, "viewer_filter_test: %d failure(s)\n", failures);
         return 1;

@@ -768,17 +768,24 @@ test_log_capture() {
 
 
 test_log_view_filter_cli() {
-  local out id viewed stats similar
+  local out id viewed stats similar plain
   out=$("$SIGMUND_BIN" bash -c 'echo alpha; echo "needle one"; echo "warn database connection timeout retrying"; echo omega; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.4
   viewed=$("$SIGMUND_BIN" view "$id" --filter needle --limit 1) || return 1
   [ "$viewed" = "needle one" ] || return 1
+  plain=$("$SIGMUND_BIN" view "$id" --plain --filter needle --limit 1) || return 1
+  [ "$plain" = "needle one" ] || return 1
   similar=$("$SIGMUND_BIN" view "$id" --similar "error database connection timeout" --limit 1) || return 1
   printf '%s\n' "$similar" | grep -q 'database connection timeout' || return 1
   stats=$("$SIGMUND_BIN" view "$id" --filter needle --limit 1 --debug-stats 2>&1 >/dev/null) || return 1
   printf '%s\n' "$stats" | grep -Eq 'bytes_read=[0-9]+ .*visible=1'
+  set +e
+  "$SIGMUND_BIN" view "$id" --interactive >"$TEST_ROOT/view-interactive.out" 2>"$TEST_ROOT/view-interactive.err"
+  [ "$?" -eq 5 ] || { set -e; cat "$TEST_ROOT/view-interactive.out" "$TEST_ROOT/view-interactive.err" >&2; return 1; }
+  set -e
+  grep -q -- '--interactive requires a TTY' "$TEST_ROOT/view-interactive.err"
 }
 
 test_start_follow_short_form() {

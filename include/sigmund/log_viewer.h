@@ -18,6 +18,7 @@ struct sigmund_log_filter_options {
 
 struct sigmund_log_filter_result {
     char **lines;
+    off_t *line_offsets;
     off_t *match_offsets;
     size_t line_count;
     size_t match_count;
@@ -25,6 +26,7 @@ struct sigmund_log_filter_result {
     size_t match_ring_start;
     size_t bytes_read;
     size_t lines_scanned;
+    off_t next_offset;
     bool reached_eof;
 };
 
@@ -33,5 +35,9 @@ void sigmund_log_filter_result_free(struct sigmund_log_filter_result *result);
 int sigmund_log_filter_fd(int fd,
                          const struct sigmund_log_filter_options *opts,
                          struct sigmund_log_filter_result *result);
+int sigmund_log_viewer_tty_fd(int fd,
+                             const char *title,
+                             const struct sigmund_log_filter_options *opts,
+                             bool debug_stats);
 
 #endif /* SIGMUND_LOG_VIEWER_H */

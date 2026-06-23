@@ -78,6 +78,7 @@ Start a helper, inspect it, then clean it up:
 run_id="$(sigmund python3 -m http.server 8765)"
 sigmund list
 sigmund dump "$run_id"
+mund view "$run_id"          # TTY: interactive filter viewer; scripts: plain first-screen output
 sigmund stop "$run_id"
 sigmund prune "$run_id"
 ```

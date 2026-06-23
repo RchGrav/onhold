@@ -33,6 +33,7 @@ void sigmund_log_filter_result_free(struct sigmund_log_filter_result *result) {
         for (size_t i = 0; i < result->line_count; i++) free(result->lines[i]);
     }
     free(result->lines);
+    free(result->line_offsets);
     free(result->match_offsets);
     memset(result, 0, sizeof(*result));
 }
@@ -110,11 +111,14 @@ static char *dup_line(const char *line, size_t n) {
 static int push_visible(struct sigmund_log_filter_result *result,
                         const struct sigmund_log_filter_options *opts,
                         const char *line,
-                        size_t n) {
+                        size_t n,
+                        off_t line_offset) {
     if (result->line_count >= opts->visible_capacity || result->line_count >= opts->max_results) return 0;
     char *copy = dup_line(line, n);
     if (!copy) return -1;
-    result->lines[result->line_count++] = copy;
+    result->lines[result->line_count] = copy;
+    result->line_offsets[result->line_count] = line_offset;
+    result->line_count++;
     return 0;
 }
 
@@ -137,6 +141,8 @@ static int ensure_result_storage(const struct sigmund_log_filter_options *opts,
                                  struct sigmund_log_filter_result *result) {
     result->lines = calloc(opts->visible_capacity ? opts->visible_capacity : 1, sizeof(char *));
     if (!result->lines) return -1;
+    result->line_offsets = calloc(opts->visible_capacity ? opts->visible_capacity : 1, sizeof(off_t));
+    if (!result->line_offsets) return -1;
     if (opts->match_ring_capacity > 0) {
         result->match_offsets = calloc(opts->match_ring_capacity, sizeof(off_t));
         if (!result->match_offsets) return -1;
@@ -167,7 +173,7 @@ static int consume_line(struct sigmund_log_filter_result *result,
     if (!line_matches(state, line)) return 0;
     result->match_count++;
     push_match_offset(result, opts, line_offset);
-    if (push_visible(result, opts, line, n) != 0) return -1;
+    if (push_visible(result, opts, line, n, line_offset) != 0) return -1;
     if (result->line_count >= opts->max_results || result->line_count >= opts->visible_capacity) *done = true;
     return 0;
 }
@@ -219,6 +225,7 @@ int sigmund_log_filter_fd(int fd,
                 }
                 line[line_len] = '\0';
                 if (consume_line(result, &opts, &state, line, line_len, line_offset, &done) != 0) goto oom;
+                result->next_offset = next_offset;
             }
             break;
         }
@@ -246,10 +253,12 @@ int sigmund_log_filter_fd(int fd,
                 if (consume_line(result, &opts, &state, line, line_len, line_offset, &done) != 0) goto oom;
                 line_len = 0;
                 line_offset = next_offset;
+                result->next_offset = next_offset;
                 if (done) break;
             }
         }
     }
+    if (result->next_offset == 0) result->next_offset = next_offset;
     free(line);
     return 0;
 

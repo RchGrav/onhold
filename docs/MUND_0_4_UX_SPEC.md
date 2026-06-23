@@ -263,6 +263,8 @@ q                quit viewer
 
 Backspace to an empty query restores the full view immediately. A dedicated clear key is optional, not required.
 
+0.4.0 v1 status: `mund view <target>` now keeps plain output for scripts and opens an interactive TTY viewer by default when stdin/stdout are TTYs. `--plain` forces script-style output and `--interactive` fails closed when no TTY is available. The v1 keys are printable type-to-filter, Backspace, Space to toggle the highlighted line as a similarity example, arrows/`j`/`k`, PgUp/PgDn, and `q`.
+
 ### 6.1 Search vs filter
 
 - Search mode highlights/jumps to matches but keeps the full buffer.
@@ -372,6 +374,8 @@ Examples:
 - User types another filter character: invalidate/refine filtered buffers and fill the current viewport from the current cursor region.
 
 The UI should feel as if the file was instantly filtered, even though only enough data was processed to satisfy the visible view.
+
+0.4.0 v1 status: the filter engine records byte offsets for visible matches plus the next scan offset, so PgDn can resume from the already-discovered boundary without reading the whole file. Reverse paging currently uses a bounded history of previous page offsets; full backward scanning/lookbehind remains a follow-up refinement.
 
 ### 8.2 Two-buffer model
 
