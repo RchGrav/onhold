@@ -30,6 +30,14 @@ struct sigmund_log_filter_result {
     bool reached_eof;
 };
 
+typedef bool (*sigmund_log_viewer_running_fn)(void *userdata);
+
+struct sigmund_log_viewer_follow {
+    bool enabled;
+    sigmund_log_viewer_running_fn is_running;
+    void *userdata;
+};
+
 void sigmund_log_filter_options_init(struct sigmund_log_filter_options *opts);
 void sigmund_log_filter_result_free(struct sigmund_log_filter_result *result);
 int sigmund_log_filter_fd(int fd,
@@ -38,7 +46,7 @@ int sigmund_log_filter_fd(int fd,
 int sigmund_log_viewer_tty_fd(int fd,
                              const char *title,
                              const struct sigmund_log_filter_options *opts,
-                             bool follow,
+                             const struct sigmund_log_viewer_follow *follow,
                              bool debug_stats);
 
 #endif /* SIGMUND_LOG_VIEWER_H */

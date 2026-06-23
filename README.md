@@ -79,7 +79,7 @@ run_id="$(sigmund python3 -m http.server 8765)"
 sigmund list
 sigmund dump "$run_id"
 mund view "$run_id"          # TTY: interactive filter viewer; scripts: plain first-screen output
-mund logs "$run_id" --follow --filter ERROR   # live filtered logging through the same viewer engine
+mund logs "$run_id" --follow # TTY: live view; type to dynamically filter, Backspace to relax
 sigmund stop "$run_id"
 sigmund prune "$run_id"
 ```

@@ -433,6 +433,18 @@ static int stream_view_result(const struct sigmund_log_filter_result *result) {
     return print_view_result(result, false);
 }
 
+struct interactive_view_liveness {
+    const struct sigmund_run_record *record;
+    char boot[128];
+    bool have_boot;
+};
+
+static bool interactive_view_run_is_running(void *userdata) {
+    struct interactive_view_liveness *live = userdata;
+    if (!live || !live->record) return false;
+    return sigmund_eval_state(live->record, live->have_boot ? live->boot : NULL) == STATE_RUNNING;
+}
+
 static int stream_view_follow_until_exit(int fd,
                                          const struct sigmund_run_record *r,
                                          const struct sigmund_log_filter_options *opts,
@@ -655,14 +667,19 @@ int sigmund_cmd_view_action(const struct sigmund_invocation *inv,
         sigmund_die_errno("sigmund: failed to open log for view");
     }
     if (interactive) {
+        struct sigmund_log_viewer_follow follow_opts = {0};
+        struct interactive_view_liveness live = {0};
         if (follow) {
-            char boot[128] = {0};
-            bool have_boot = sigmund_current_boot_id(boot, sizeof(boot));
-            if (sigmund_eval_state(&r, have_boot ? boot : NULL) == STATE_RUNNING) {
+            live.record = &r;
+            live.have_boot = sigmund_current_boot_id(live.boot, sizeof(live.boot));
+            follow_opts.enabled = true;
+            follow_opts.is_running = interactive_view_run_is_running;
+            follow_opts.userdata = &live;
+            if (sigmund_eval_state(&r, live.have_boot ? live.boot : NULL) == STATE_RUNNING) {
                 lseek(fd, 0, SEEK_END);
             }
         }
-        rc = sigmund_log_viewer_tty_fd(fd, target_token, &opts, follow, debug_stats);
+        rc = sigmund_log_viewer_tty_fd(fd, target_token, &opts, follow ? &follow_opts : NULL, debug_stats);
         if (rc != 0) {
             close(fd);
             free(targets);

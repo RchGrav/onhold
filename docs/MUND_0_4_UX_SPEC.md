@@ -263,7 +263,7 @@ q                quit viewer
 
 Backspace to an empty query restores the full view immediately. A dedicated clear key is optional, not required.
 
-0.4.0 v1 status: `mund view <target>` now keeps plain output for scripts and opens an interactive TTY viewer by default when stdin/stdout are TTYs. `--plain` forces script-style output and `--interactive` fails closed when no TTY is available. `mund view --follow` and filtered `mund logs --follow --filter TEXT` share the same log filter engine; non-TTY follow streams matching lines until the recorded run exits, while TTY follow refreshes periodically as the log grows. The v1 keys are printable type-to-filter, Backspace, Space to toggle the highlighted line as a similarity example, arrows/`j`/`k`, PgUp/PgDn, and `q`.
+0.4.0 v1 status: `mund view <target>` now keeps plain output for scripts and opens an interactive TTY viewer by default when stdin/stdout are TTYs. `--plain` forces script-style output and `--interactive` fails closed when no TTY is available. The intended live-log UX is dynamic: `mund logs <target> --follow` / `mund view <target> --follow` opens the live viewer, printable keys update the top filter field per keystroke, Backspace relaxes the filter, and matching live output appears without restarting the command. `--filter TEXT` remains a scripting/seed option, not the primary human flow. Non-TTY follow streams matching lines until the recorded run exits; TTY follow refreshes while running and marks the view exited when the run ends. The v1 keys are printable type-to-filter, Backspace, Space to toggle the highlighted line as a similarity example, arrows/`j`/`k`, PgUp/PgDn, and `q`.
 
 ### 6.1 Search vs filter
 
@@ -501,7 +501,7 @@ Default behavior is local and immediate.
 
 For growing logs:
 
-- v1 implementation: `mund logs <target> --follow --filter TEXT` routes through `mund view --follow` instead of a separate filtered-tail path. Plain `mund logs <target>` remains tail-compatible.
+- v1 implementation: `mund logs <target> --follow` routes through `mund view --follow` for a dynamic TTY filter field. `--filter TEXT` can seed/script the same engine, but the human design is type-to-filter after the viewer is open. Plain `mund logs <target>` remains tail-compatible.
 - keep a raw tail ring of recent bytes/lines;
 - append new lines as they arrive;
 - fingerprint/score new lines against active filters;

@@ -818,6 +818,24 @@ test_mund_logs_follow_routes_through_view_filter() {
   ! grep -q 'logs-ignore' "$TEST_ROOT/logs-follow.out" || { cat "$TEST_ROOT/logs-follow.out" >&2; return 1; }
 }
 
+test_log_view_follow_dynamic_tty_filter() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$SIGMUND_BIN" run -- /bin/sh -c 'sleep 0.3; echo boring-ignore; sleep 0.3; echo "needle-live"; sleep 0.2' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  set +e
+  python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("needle"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("q"); sys.stdout.flush()' |
+    script -qfec "$SIGMUND_BIN view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-dynamic.out" 2>"$TEST_ROOT/view-follow-dynamic.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-dynamic.err" >&2; return 1; }
+  grep -q 'filter: needle' "$TEST_ROOT/view-follow-dynamic.out" || { cat "$TEST_ROOT/view-follow-dynamic.out" >&2; return 1; }
+  grep -q 'needle-live' "$TEST_ROOT/view-follow-dynamic.out" || { cat "$TEST_ROOT/view-follow-dynamic.out" >&2; return 1; }
+  ! grep -q 'boring-ignore' "$TEST_ROOT/view-follow-dynamic.out" || { cat "$TEST_ROOT/view-follow-dynamic.out" >&2; return 1; }
+}
+
 test_start_follow_short_form() {
   local out id
   out=$("$SIGMUND_BIN" -f bash -c 'echo follow-short' 2>&1) || return 1
@@ -2546,6 +2564,7 @@ run_test "logging captures stdout+stderr" test_log_capture
 run_test "view filters run logs literally and by similarity" test_log_view_filter_cli
 run_test "view follows live logs through filter engine" test_log_view_follow_filters_live_output
 run_test "logs follow routes through view filter engine" test_mund_logs_follow_routes_through_view_filter
+run_test "view follow filters dynamically from typed TTY input" test_log_view_follow_dynamic_tty_filter
 run_test "-f starts and follows output" test_start_follow_short_form
 run_test "tail <id> tails an existing run log" test_tail_verb_existing_id
 run_test "persistent stale records remain visible and dumpable" test_persistent_stale_records
