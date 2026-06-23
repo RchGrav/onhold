@@ -27,15 +27,24 @@ struct sigmund_cli_command_spec {
 
 static const struct sigmund_cli_command_spec command_specs[] = {
     {"list", 0, 1, 0, "usage: sigmund list [alias]", "list"},
+    {"run", 1, -1, SIGMUND_CLI_ALLOW_DDASH, "usage: mund run [--tail|-f] [--console] -- <cmd> [args...]", "run"},
     {"start", 1, -1, SIGMUND_CLI_ALLOW_DDASH, "usage: sigmund start <alias> [--multi [N]] [--console]\n       sigmund start <cmd> [args...]", "start"},
     {"stop", 1, -1, SIGMUND_CLI_ALLOW_ALL, "usage: sigmund stop [--print] [--all] <target>...", "stop"},
     {"kill", 1, -1, SIGMUND_CLI_ALLOW_ALL, "usage: sigmund kill [--print] [--all] <target>...", "kill"},
     {"tail", 1, 1, 0, "usage: sigmund tail <target>", "tail"},
+    {"logs", 1, 1, 0, "usage: mund logs <target>", "logs"},
+    {"status", 0, 1, 0, "usage: mund status [profile|target]", "status"},
+    {"inspect", 1, 1, 0, "usage: mund inspect <target>", "inspect"},
     {"dump", 1, 1, 0, "usage: sigmund dump <target>", "dump"},
     {"console", 1, 1, 0, "usage: sigmund console <target>", "console"},
     {"prune", 0, 1, SIGMUND_CLI_ALLOW_ALL, "usage: sigmund prune [target|all] [--all]", "prune"},
     {"alias", 2, 3, 0, "usage: sigmund alias <id> <name> [-v]", "alias"},
     {"aliases", 0, 1, 0, "usage: sigmund aliases [-v]", "aliases"},
+    {"profiles", 0, 1, 0, "usage: mund profiles [-v]", "profiles"},
+    {"profile", 1, -1, SIGMUND_CLI_ALLOW_DDASH, "usage: mund profile <list|run|start|show> [args...]", "profile"},
+    {"show", 1, 2, 0, "usage: mund show <runs|profiles|running|dormant|failed|stale> [name]", "show"},
+    {"clean", 0, 1, SIGMUND_CLI_ALLOW_ALL, "usage: mund clean [target|all]", "clean"},
+    {"doctor", 0, 0, 0, "usage: mund doctor", "doctor"},
     {"grant", 2, 3, 0, "usage: sigmund grant <alias> <user> [start,stop,kill,tail,dump,prune,console]", "grant"},
     {"revoke", 2, 3, 0, "usage: sigmund revoke <alias> <user> [start,stop,kill,tail,dump,prune,console]", "revoke"},
     {"help", 0, 1, 0, "usage: sigmund help [topic]", "help"},
@@ -155,8 +164,10 @@ static int help_action(const char *action) {
         printf("usage: sigmund stop [--print] [--all] <target>...\n\nGracefully stop matching runs with TERM, then KILL if needed.\n");
     } else if (!strcmp(action, "kill")) {
         printf("usage: sigmund kill [--print] [--all] <target>...\n\nForce matching runs down with KILL.\n");
-    } else if (!strcmp(action, "tail")) {
-        printf("usage: sigmund tail <target>\n\nFollow live output for an alias match, or follow an id's log directly.\n");
+    } else if (!strcmp(action, "run")) {
+        printf("usage: mund run [--tail|-f] [--console] -- <cmd> [args...]\n\nStart an ad-hoc command explicitly. The -- delimiter keeps command args unambiguous.\n");
+    } else if (!strcmp(action, "tail") || !strcmp(action, "logs")) {
+        printf("usage: %s <target>\n\nFollow live output for a profile match, or follow an id's log directly.\n", !strcmp(action, "logs") ? "mund logs" : "sigmund tail");
     } else if (!strcmp(action, "console")) {
         printf("usage: sigmund console <target>\n\nAttach to a running console-enabled run.\n");
     } else if (!strcmp(action, "dump")) {
@@ -165,8 +176,20 @@ static int help_action(const char *action) {
         printf("usage: sigmund prune [target|all] [--all]\n\nClear removable past run data. Running valid runs are never pruned.\n");
     } else if (!strcmp(action, "alias")) {
         printf("usage: sigmund alias <id> <name> [-v]\n\nPin the command behind a run id as a reusable alias.\n");
-    } else if (!strcmp(action, "aliases")) {
-        printf("usage: sigmund aliases [-v]\n\nList visible aliases. User aliases show commands; system commands are redacted.\n");
+    } else if (!strcmp(action, "aliases") || !strcmp(action, "profiles")) {
+        printf("usage: %s [-v]\n\nList visible profiles. User profiles show commands; system commands are redacted.\n", !strcmp(action, "profiles") ? "mund profiles" : "sigmund aliases");
+    } else if (!strcmp(action, "profile")) {
+        printf("usage: mund profile <list|run|start|show> [args...]\n\nWork with profile definitions and profile-backed runs.\n");
+    } else if (!strcmp(action, "status")) {
+        printf("usage: mund status [profile|target]\n\nShow runs, optionally narrowed by profile/target.\n");
+    } else if (!strcmp(action, "inspect")) {
+        printf("usage: mund inspect <target>\n\nPrint a target log/record-oriented inspection view.\n");
+    } else if (!strcmp(action, "show")) {
+        printf("usage: mund show <runs|profiles|running|dormant|failed|stale> [name]\n\nNavigate alternate views of the same runtime tree.\n");
+    } else if (!strcmp(action, "clean")) {
+        printf("usage: mund clean [target|all]\n\nClear removable past run data.\n");
+    } else if (!strcmp(action, "doctor")) {
+        printf("usage: mund doctor\n\nCheck local Sigmund/Mund paths and build identity.\n");
     } else if (!strcmp(action, "grant") || !strcmp(action, "revoke")) {
         printf("usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune,console]\n\nManage Sigmund-owned sudoers access for a root-managed alias.\n", action);
     } else {

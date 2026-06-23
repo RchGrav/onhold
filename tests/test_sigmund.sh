@@ -1847,13 +1847,53 @@ test_sudo_context_can_stop_unique_user_local_run() {
   pgid_terminated "$pgid"
 }
 
+test_mund_unified_cli_surface() {
+  local out id id2
+  out=$("$SIGMUND_BIN" run -- /bin/sh -c 'echo mund-run-line' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  "$SIGMUND_BIN" logs "$id" >"$TEST_ROOT/mund-logs.out" 2>"$TEST_ROOT/mund-logs.err" || {
+    cat "$TEST_ROOT/mund-logs.out" "$TEST_ROOT/mund-logs.err" >&2
+    return 1
+  }
+  grep -q 'mund-run-line' "$TEST_ROOT/mund-logs.out" || { cat "$TEST_ROOT/mund-logs.out" >&2; return 1; }
+  "$SIGMUND_BIN" inspect "$id" >"$TEST_ROOT/mund-inspect.out" || return 1
+  grep -q 'mund-run-line' "$TEST_ROOT/mund-inspect.out" || return 1
+  "$SIGMUND_BIN" status >"$TEST_ROOT/mund-status.out" || return 1
+  grep -q "$id" "$TEST_ROOT/mund-status.out" || return 1
+  "$SIGMUND_BIN" show runs >"$TEST_ROOT/mund-show-runs.out" || return 1
+  grep -q 'ID' "$TEST_ROOT/mund-show-runs.out" || return 1
+  "$SIGMUND_BIN" doctor >"$TEST_ROOT/mund-doctor.out" || return 1
+  grep -q 'version:' "$TEST_ROOT/mund-doctor.out" || return 1
+
+  out=$("$SIGMUND_BIN" run -- /usr/bin/sleep 60 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  "$SIGMUND_BIN" alias "$id" mund-web >/dev/null || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null || return 1
+  "$SIGMUND_BIN" prune "$id" >/dev/null || return 1
+  "$SIGMUND_BIN" profiles >"$TEST_ROOT/mund-profiles.out" || return 1
+  grep -q 'mund-web' "$TEST_ROOT/mund-profiles.out" || return 1
+  "$SIGMUND_BIN" profile list >"$TEST_ROOT/mund-profile-list.out" || return 1
+  grep -q 'mund-web' "$TEST_ROOT/mund-profile-list.out" || return 1
+  "$SIGMUND_BIN" show profiles >"$TEST_ROOT/mund-show-profiles.out" || return 1
+  grep -q 'mund-web' "$TEST_ROOT/mund-show-profiles.out" || return 1
+  out=$("$SIGMUND_BIN" profile run mund-web 2>&1) || return 1
+  id2=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id2" ] || { printf '%s\n' "$out" >&2; return 1; }
+  "$SIGMUND_BIN" show running mund-web >"$TEST_ROOT/mund-show-running.out" || return 1
+  grep -q "$id2" "$TEST_ROOT/mund-show-running.out" || { cat "$TEST_ROOT/mund-show-running.out" >&2; return 1; }
+  "$SIGMUND_BIN" stop "$id2" >/dev/null || return 1
+  "$SIGMUND_BIN" clean mund-web >/dev/null || return 1
+}
+
 test_build_artifact_coexistence() {
   make clean >/dev/null || return 1
-  make sigmund STATIC_LDFLAGS= EXTRA_CPPFLAGS=-DSIGMUND_TESTING >/dev/null || return 1
-  [ -x ./sigmund ] || return 1
+  make sigmund mund STATIC_LDFLAGS= EXTRA_CPPFLAGS=-DSIGMUND_TESTING >/dev/null || return 1
+  [ -x ./sigmund ] && [ -x ./mund ] || return 1
   make sigmund-dynamic EXTRA_CPPFLAGS=-DSIGMUND_TESTING >/dev/null || return 1
-  [ -x ./sigmund ] && [ -x ./sigmund-dynamic ] || return 1
-  [ -e ./sigmund ] && [ -e ./sigmund-dynamic ]
+  [ -x ./sigmund ] && [ -x ./mund ] && [ -x ./sigmund-dynamic ] || return 1
+  [ -e ./sigmund ] && [ -e ./mund ] && [ -e ./sigmund-dynamic ]
 }
 
 test_concurrent_unique_ids() {
@@ -2387,6 +2427,7 @@ run_test "stop/kill --print emits group signal command" test_print_signal_output
 run_test "signal refuses tampered live process-group identity" test_signal_refuses_tampered_live_group_identity
 run_test "stop supports multiple IDs in one command" test_stop_multiple_ids
 run_test "argument edge cases" test_argument_edges
+run_test "mund unified CLI surface" test_mund_unified_cli_surface
 run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture
 run_test "-f starts and follows output" test_start_follow_short_form

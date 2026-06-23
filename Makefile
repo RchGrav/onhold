@@ -38,7 +38,7 @@ INCLUDES := -Iinclude
 ALL_CPPFLAGS := $(CPPFLAGS) $(EXTRA_CPPFLAGS) $(INCLUDES) $(VERSION_CPPFLAG)
 TEST_CPPFLAGS := -DSIGMUND_TESTING -DSIGMUND_BOOT_ID_PATH='"/tmp/sigmund_test_boot_id"'
 
-all: sigmund
+all: sigmund mund
 
 obj/%.o: src/%.c
 	@mkdir -p $(dir $@)
@@ -50,12 +50,16 @@ sigmund: $(OBJS)
 sigmund-dynamic: $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o sigmund-dynamic $(OBJS)
 
+mund: sigmund
+	cp sigmund mund
+
 obj-test/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(ALL_CPPFLAGS) $(TEST_CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 test: $(TEST_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(TEST_LDFLAGS) -o sigmund $(TEST_OBJS)
+	cp sigmund mund
 	@bash tests/test_sigmund.sh
 	@$(MAKE) hash-vector
 	@bash tests/test_version_makefile.sh
@@ -82,7 +86,7 @@ lint:
 	@bash scripts/lint_layers.sh
 
 clean:
-	rm -f sigmund sigmund-dynamic hash-vector
+	rm -f sigmund mund sigmund-dynamic hash-vector
 	rm -rf obj obj-test
 
 .PHONY: all clean test check ci lint hash-vector print-version

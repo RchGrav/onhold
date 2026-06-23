@@ -105,16 +105,16 @@ int main(int argc, char **argv) {
                 print_cmd = true;
                 continue;
             }
-            if (!literal_owned_arg && !strcmp(command, "start") &&
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
                 (!strcmp(argv[i], "--tail") || !strcmp(argv[i], "-f"))) {
                 tail = true;
                 continue;
             }
-            if (!literal_owned_arg && !strcmp(command, "start") && !strcmp(argv[i], "--console")) {
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strcmp(argv[i], "--console")) {
                 console_mode = true;
                 continue;
             }
-            if (!literal_owned_arg && !strcmp(command, "list") &&
+            if (!literal_owned_arg && (!strcmp(command, "list") || !strcmp(command, "status")) &&
                 (!strcmp(argv[i], "--iso") || !strcmp(argv[i], "-l"))) {
                 list_iso = true;
                 continue;
@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
         free(cmd_argv);
         return rc;
     }
-    if (console_mode && owned && strcmp(command, "start") != 0) {
+    if (console_mode && owned && strcmp(command, "start") != 0 && strcmp(command, "run") != 0 && strcmp(command, "profile") != 0) {
         fprintf(stderr, "sigmund: error: --console applies only to starts\n");
         free(cmd_argv);
         return 5;
@@ -203,6 +203,12 @@ int main(int argc, char **argv) {
         }
         return 3;
     }
+
+    if (owned && !strcmp(command, "logs")) command = "tail";
+    if (owned && !strcmp(command, "inspect")) command = "dump";
+    if (owned && !strcmp(command, "status")) command = "list";
+    if (owned && !strcmp(command, "profiles")) command = "aliases";
+    if (owned && !strcmp(command, "clean")) command = "prune";
 
     bool is_list = owned && !strcmp(command, "list");
     if (requested_system && !inv.euid_root && owned && !strcmp(command, "start") && cmd_argc == 1) {
@@ -256,7 +262,9 @@ int main(int argc, char **argv) {
 
     if (!inv.euid_root || is_list || (owned && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                                                !strcmp(command, "tail") || !strcmp(command, "dump") ||
-                                               !strcmp(command, "prune") || !strcmp(command, "console")))) {
+                                               !strcmp(command, "prune") || !strcmp(command, "console") ||
+                                               !strcmp(command, "aliases") || !strcmp(command, "profile") ||
+                                               !strcmp(command, "show")))) {
         if (!inv.euid_root) {
             if (sigmund_ensure_user_store_for_current_user(&user_store) != 0) {
                 sigmund_die_errno("sigmund: failed to init user storage");
@@ -277,6 +285,20 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (owned && !strcmp(command, "run")) {
+        struct sigmund_store start_store;
+        if (sigmund_ensure_start_store_for_command(&inv, requested_system, false, NULL, cmd_argc, cmd_argv, &start_store) != 0) {
+            if ((inv.euid_root || requested_system) &&
+                sigmund_start_target_is_within_invoking_home(&inv, false, NULL, cmd_argc, cmd_argv)) {
+                sigmund_die_errno("sigmund: failed to init invoking-user storage");
+            }
+            sigmund_die_errno("sigmund: failed to init start storage");
+        }
+        int rc = sigmund_perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL);
+        free(cmd_argv);
+        return rc;
+    }
+
     if (!owned) {
         struct sigmund_store start_store;
         if (sigmund_ensure_start_store_for_command(&inv, requested_system, false, NULL, cmd_argc, cmd_argv, &start_store) != 0) {
@@ -287,6 +309,123 @@ int main(int argc, char **argv) {
             sigmund_die_errno("sigmund: failed to init start storage");
         }
         return sigmund_perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL);
+    }
+
+    if (!strcmp(command, "doctor")) {
+        printf("mund doctor\n");
+        printf("version: %s\n", SIGMUND_VERSION);
+        printf("user_store: %s\n", user_store.base[0] ? user_store.base : "(not initialized)");
+        printf("system_store: %s\n", system_store.base);
+        free(cmd_argv);
+        return 0;
+    }
+
+    if (!strcmp(command, "show")) {
+        const char *view = cmd_argv[0];
+        const char *filter = cmd_argc > 1 ? cmd_argv[1] : NULL;
+        int rc = 0;
+        if (!strcmp(view, "profiles")) {
+            rc = sigmund_cmd_aliases_action(&inv, &user_store, &system_store, false);
+        } else if (!strcmp(view, "runs") || !strcmp(view, "running") || !strcmp(view, "active") ||
+                   !strcmp(view, "dormant") || !strcmp(view, "inactive") || !strcmp(view, "failed") ||
+                   !strcmp(view, "stale") || !strcmp(view, "time") || !strcmp(view, "uptime")) {
+            if (filter && !sigmund_valid_alias(filter)) {
+                fprintf(stderr, "sigmund: error: invalid profile '%s'\n", filter);
+                free(cmd_argv);
+                return 5;
+            }
+            rc = inv.euid_root ? sigmund_cmd_list_system(&system_store, filter, list_iso)
+                               : sigmund_cmd_list_normal(&user_store, &system_store, filter, list_iso);
+        } else {
+            fprintf(stderr, "usage: mund show <runs|profiles|running|dormant|failed|stale> [name]\n");
+            rc = 5;
+        }
+        free(cmd_argv);
+        return rc;
+    }
+
+    if (!strcmp(command, "profile")) {
+        const char *sub = cmd_argv[0];
+        if (!strcmp(sub, "list") || !strcmp(sub, "ls")) {
+            bool verbose = cmd_argc == 2 && (!strcmp(cmd_argv[1], "-v") || !strcmp(cmd_argv[1], "--verbose"));
+            if (cmd_argc > 2 || (cmd_argc == 2 && !verbose)) {
+                fprintf(stderr, "usage: mund profile list [-v]\n");
+                free(cmd_argv);
+                return 5;
+            }
+            int rc = sigmund_cmd_aliases_action(&inv, &user_store, &system_store, verbose);
+            free(cmd_argv);
+            return rc;
+        }
+        if (!strcmp(sub, "run") || !strcmp(sub, "start")) {
+            if (cmd_argc < 2) {
+                fprintf(stderr, "usage: mund profile run <name> [--multi [N]] [--tail|-f] [--console]\n");
+                free(cmd_argv);
+                return 5;
+            }
+            const char *name = cmd_argv[1];
+            if (!sigmund_valid_alias(name)) {
+                fprintf(stderr, "sigmund: error: invalid profile '%s'\n", name);
+                free(cmd_argv);
+                return 5;
+            }
+            bool p_tail = tail, p_console = console_mode, p_multi = false;
+            int p_multi_count = 1;
+            for (int i = 2; i < cmd_argc; i++) {
+                if (!strcmp(cmd_argv[i], "--tail") || !strcmp(cmd_argv[i], "-f")) {
+                    p_tail = true;
+                } else if (!strcmp(cmd_argv[i], "--console")) {
+                    p_console = true;
+                } else if (!strcmp(cmd_argv[i], "--multi")) {
+                    p_multi = true;
+                    p_multi_count = 1;
+                    if (i + 1 < cmd_argc) {
+                        int parsed = 0;
+                        if (sigmund_parse_positive_count(cmd_argv[i + 1], &parsed)) {
+                            p_multi_count = parsed;
+                            i++;
+                        } else if (cmd_argv[i + 1][0] != '-') {
+                            fprintf(stderr, "sigmund: error: invalid --multi count '%s'\n", cmd_argv[i + 1]);
+                            free(cmd_argv);
+                            return 5;
+                        }
+                    }
+                } else if (strncmp(cmd_argv[i], "--multi=", 8) == 0) {
+                    p_multi = true;
+                    if (!sigmund_parse_positive_count(cmd_argv[i] + 8, &p_multi_count)) {
+                        fprintf(stderr, "sigmund: error: invalid --multi count '%s'\n", cmd_argv[i] + 8);
+                        free(cmd_argv);
+                        return 5;
+                    }
+                } else {
+                    fprintf(stderr, "usage: mund profile run <name> [--multi [N]] [--tail|-f] [--console]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+            }
+            char *start_argv[1];
+            start_argv[0] = (char *)name;
+            struct sigmund_store start_store;
+            if (sigmund_ensure_start_store_for_command(&inv, requested_system, true, "start", 1, start_argv, &start_store) != 0) {
+                sigmund_die_errno("sigmund: failed to init start storage");
+            }
+            int rc = sigmund_cmd_start_action(&inv, &user_store, &system_store, argv[0], &start_store, p_tail, p_console, p_multi, p_multi_count, 1, start_argv);
+            free(cmd_argv);
+            return rc;
+        }
+        if (!strcmp(sub, "show")) {
+            if (cmd_argc != 2 || !sigmund_valid_alias(cmd_argv[1])) {
+                fprintf(stderr, "usage: mund profile show <name>\n");
+                free(cmd_argv);
+                return 5;
+            }
+            int rc = sigmund_cmd_aliases_action(&inv, &user_store, &system_store, true);
+            free(cmd_argv);
+            return rc;
+        }
+        fprintf(stderr, "usage: mund profile <list|run|start|show> [args...]\n");
+        free(cmd_argv);
+        return 5;
     }
 
     if (!strcmp(command, "start")) {

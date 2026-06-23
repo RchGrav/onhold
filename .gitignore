@@ -65,3 +65,4 @@ dkms.conf
 
 # Profile-hash compatibility test binary
 /hash-vector
+/mund
