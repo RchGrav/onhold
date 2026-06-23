@@ -2032,6 +2032,52 @@ test_grant_revoke_argument_refusals() {
   [ "$rc" -eq 5 ] || { echo "bad subject: rc=$rc (want 5)" >&2; cat "$TEST_ROOT/bs.err" >&2; return 1; }
 }
 
+test_multi_n_exact_count_and_invalid() {
+  local id ids running rc
+  id=$("$SIGMUND_BIN" sleep 60 2>&1 | extract_id) || return 1
+  "$SIGMUND_BIN" alias "$id" web-n >/dev/null || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null; "$SIGMUND_BIN" prune "$id" >/dev/null
+  ids=$("$SIGMUND_BIN" start web-n --multi 3 2>/dev/null | sed -n '/^[0-9a-f]\{8\}$/p')
+  [ "$(printf '%s\n' "$ids" | grep -c .)" -eq 3 ] || { echo "--multi 3 did not print 3 ids" >&2; return 1; }
+  running=$("$SIGMUND_BIN" list 2>/dev/null | grep -c running || true)
+  [ "$running" -ge 3 ] || { echo "expected >=3 running, got $running" >&2; return 1; }
+  set +e; "$SIGMUND_BIN" start web-n --multi=abc >/dev/null 2>"$TEST_ROOT/m.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "--multi=abc: rc=$rc (want 5)" >&2; return 1; }
+  grep -q "invalid --multi count" "$TEST_ROOT/m.err" || { cat "$TEST_ROOT/m.err" >&2; return 1; }
+  "$SIGMUND_BIN" stop web-n --all >/dev/null 2>&1 || true
+}
+
+test_tail_cannot_follow_multiple_starts() {
+  local id rc running
+  id=$("$SIGMUND_BIN" sleep 60 2>&1 | extract_id) || return 1
+  "$SIGMUND_BIN" alias "$id" web-t >/dev/null || return 1
+  "$SIGMUND_BIN" stop "$id" >/dev/null; "$SIGMUND_BIN" prune "$id" >/dev/null
+  set +e; "$SIGMUND_BIN" start web-t --multi 2 --tail >/dev/null 2>"$TEST_ROOT/t.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "--multi 2 --tail: rc=$rc (want 5)" >&2; return 1; }
+  grep -q "cannot follow multiple starts" "$TEST_ROOT/t.err" || { cat "$TEST_ROOT/t.err" >&2; return 1; }
+  running=$("$SIGMUND_BIN" list 2>/dev/null | grep -c running || true)
+  [ "$running" -eq 0 ] || { echo "runs created despite refusal ($running)" >&2; "$SIGMUND_BIN" stop web-t --all >/dev/null 2>&1; return 1; }
+}
+
+test_print_over_all_and_multiple() {
+  local id1 id2 pgid1 pgid2 out
+  id1=$("$SIGMUND_BIN" sleep 60 2>&1 | extract_id) || return 1
+  "$SIGMUND_BIN" alias "$id1" web-pr >/dev/null || return 1
+  "$SIGMUND_BIN" stop "$id1" >/dev/null; "$SIGMUND_BIN" prune "$id1" >/dev/null
+  id1=$("$SIGMUND_BIN" start web-pr 2>&1 | extract_id); pgid1=$(record_pgid "$id1")
+  id2=$("$SIGMUND_BIN" start web-pr --multi 2>&1 | extract_id); pgid2=$(record_pgid "$id2")
+  [ -n "$pgid1" ] && [ -n "$pgid2" ] || return 1
+  out=$("$SIGMUND_BIN" stop --print --all web-pr) || return 1
+  printf '%s\n' "$out" | grep -qF "kill -TERM -- -$pgid1" || { echo "--print --all missing pgid1" >&2; return 1; }
+  printf '%s\n' "$out" | grep -qF "kill -TERM -- -$pgid2" || { echo "--print --all missing pgid2" >&2; return 1; }
+  out=$("$SIGMUND_BIN" stop --print "$id1" "$id2") || return 1
+  printf '%s\n' "$out" | grep -qF "kill -TERM -- -$pgid1" && printf '%s\n' "$out" | grep -qF "kill -TERM -- -$pgid2" || { echo "explicit multi --print missing a pgid" >&2; return 1; }
+  "$SIGMUND_BIN" stop web-pr --all >/dev/null 2>&1 || true
+}
+
+run_test "--multi N starts exactly N and rejects a bad count" test_multi_n_exact_count_and_invalid
+run_test "--tail cannot follow a multi start (exit 5, nothing started)" test_tail_cannot_follow_multiple_starts
+run_test "--print spans --all and multiple explicit targets" test_print_over_all_and_multiple
 run_test "stop refuses a record with a tampered pgid<=1 (exit 5)" test_signal_refuses_tampered_pgid
 run_test "signal-killed elevation child maps to 128+sig" test_elevated_child_signal_maps_to_128_plus_sig
 run_test "public-index write failure rolls back the start" test_public_index_write_rollback
