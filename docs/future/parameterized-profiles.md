@@ -133,10 +133,10 @@ CLI-shape inference is only needed if you ever choose substitution over append.
 Authoring a parameterized profile is complex and easy to get wrong, so it is a
 focused, stateful session — like editing a partition table:
 
-- **stateful for authoring**: `select <alias>` then `info` / `list` /
+- **stateful for authoring**: `select <profile>` then `info` / `list` /
   `param <index|--flag> <pattern[,skip]>` / `unparam` operate on the selection;
-- **stateless for runtime**: invoking a parameterized alias
-  (`hold start <alias> --foo X`) stays a plain one-shot command — it is the hot
+- **stateless for runtime**: invoking a parameterized profile
+  (`hold start <profile> --foo X`) stays a plain one-shot command — it is the hot
   path and scripts call it;
 - **explicit commit**: edits stage, then `commit` (a) re-hashes the profile,
   (b) regenerates the sudoers entry and validates it with `visudo -cf` before

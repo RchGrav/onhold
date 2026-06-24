@@ -30,7 +30,7 @@ flowchart TD
     UserAlias -->|yes| UserAliasTarget["Use matching user run or runs"]
     UserAlias -->|no| PublicId["Root public ID or prefix?"]
     PublicId -->|yes| ElevateId["Use system run via sudo"]
-    PublicId -->|no| PublicAlias["Root public alias match?"]
+    PublicId -->|no| PublicAlias["Root public profile match?"]
     PublicAlias -->|yes| ElevateAlias["Use alias capability via sudo"]
     PublicAlias -->|no| NotFound["Not found"]
 
@@ -70,30 +70,30 @@ flowchart TD
 
 Root reads private system records directly. When root was reached through sudo and the token does not match a root-managed run, On Hold can resolve against the invoking user's local store. Direct root without sudo provenance has no invoking user context and cannot resolve `user:<target>`.
 
-## Alias intent
+## Profile intent
 
-Aliases are filtered by command because the same alias label can be attached to several past or current runs.
+Profiles are filtered by command because the same profile label can be attached to several past or current runs.
 
-| Command | Alias candidates |
+| Command | Profile candidates |
 | --- | --- |
-| `start` | Running alias-labeled runs, used to enforce the no-duplicate default. |
-| `stop` | Running alias-labeled runs. |
-| `kill` | Running alias-labeled runs. |
-| `tail` | Running alias-labeled runs. |
-| `console` | Running alias-labeled runs that have `console_sock`. |
-| `dump` | Alias-labeled runs that have logs. |
-| `prune` | Alias-labeled past runs that are exited, failed, or stale. |
+| `start` | Running profile-labeled runs, used to enforce the no-duplicate default. |
+| `stop` | Running profile-labeled runs. |
+| `kill` | Running profile-labeled runs. |
+| `tail` | Running profile-labeled runs. |
+| `console` | Running profile-labeled runs that have `console_sock`. |
+| `dump` | Profile-labeled runs that have logs. |
+| `prune` | Profile-labeled past runs that are exited, failed, or stale. |
 
-`record_matches_alias_intent` is the source of this table. If a known alias has no applicable candidate for an action, On Hold treats that as a successful no-op. If an alias has multiple candidates, it exits 6 and prints candidates unless the command supports `--all` and `--all` was supplied. `--all` applies only to `stop`, `kill`, and `prune`.
+`record_matches_alias_intent` is the source of this table. If a known profile has no applicable candidate for an action, On Hold treats that as a successful no-op. If a profile has multiple candidates, it exits 6 and prints candidates unless the command supports `--all` and `--all` was supplied. `--all` applies only to `stop`, `kill`, and `prune`.
 
-## Public alias capabilities
+## Public profile capabilities
 
-A normal user cannot read root-private records, so root-managed alias actions begin with public data. `append_public_alias_elevation_target` uses public alias metadata and public index files to build either:
+A normal user cannot read root-private records, so root-managed profile actions begin with public data. `append_public_alias_elevation_target` uses public profile metadata and public index files to build either:
 
-- a concrete run selector plus alias/hash capability, or
+- a concrete run selector plus profile/hash capability, or
 - the `ffffffff` selector for approved multi-target `--all` actions.
 
-Root On Hold later verifies that the alias still maps to the supplied hash and that concrete run selectors are recorded under that alias. The public side selects intent; the root side rechecks authority.
+Root On Hold later verifies that the profile still maps to the supplied hash and that concrete run selectors are recorded under that profile. The public side selects intent; the root side rechecks authority.
 
 ## Why this design works
 

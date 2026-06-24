@@ -535,7 +535,7 @@ int main(int argc, char **argv) {
         free(cmd_argv);
         return 5;
     }
-    if (owned && cmd_argc == 1 && (!strcmp(cmd_argv[0], "--help") || !strcmp(cmd_argv[0], "-h"))) {
+    if (owned && !saw_owned_delimiter && cmd_argc == 1 && (!strcmp(cmd_argv[0], "--help") || !strcmp(cmd_argv[0], "-h"))) {
         int rc = hold_show_help(command);
         free(cmd_argv);
         return rc;

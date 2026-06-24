@@ -86,7 +86,7 @@ Planned diagrams: flowchart for normal non-root resolution; flowchart for root/s
 
 ### `docs/profiles-and-aliases.md`
 
-Documents reusable launch recipes and capability fingerprints. It should cover user-local recipe aliases, root-managed profile hashes, public alias-to-hash entries, protected profile loading, `start <alias>`, `--multi`, and why `profile_hash_for_argv` hashes only the fixed namespace string, resolved binary path, argc, and indexed argv fields. It should state that environment, cwd, uid, timestamps, host data, and versions are not part of the hash because the digest is a stable capability key in the current implementation.
+Documents reusable launch recipes and capability fingerprints. It should cover user-local recipe profiles, root-managed profile hashes, public profile-to-hash entries, protected profile loading, `start <profile>`, `--multi`, and why `profile_hash_for_argv` hashes only the fixed namespace string, resolved binary path, argc, and indexed argv fields. It should state that environment, cwd, uid, timestamps, host data, and versions are not part of the hash because the digest is a stable capability key in the current implementation.
 
 Planned diagrams: flowchart from recorded run to alias/profile; record diagram for user alias recipe vs root profile hash.
 

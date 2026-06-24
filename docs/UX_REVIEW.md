@@ -56,7 +56,7 @@ hold profile save "$id" as web
 hold start web
 ```
 
-This starts a second `sleep 20` because the original run was not labeled `web`; future alias starts are labeled, but the source run is not. The docs say aliases allow later commands to use the name, and also say `start <alias>` refuses if that alias already has a running process. That is technically true only after a run was started through the alias, but it is surprising immediately after alias creation.
+This starts a second `sleep 20` because the original run was not labeled `web`; future profile starts are labeled, but the source run is not. The docs say profiles allow later commands to use the name, and also say `start <profile>` refuses if that alias already has a running process. That is technically true only after a run was started through the profile, but it is surprising immediately after alias creation.
 
 Suggested fix options:
 
@@ -211,7 +211,7 @@ hold tail <target>           => hold logs <target> --follow
 hold dump <target>           => hold logs <target> --plain
 hold console <target>        => hold open <target>
 hold prune <target>          => hold prune <target>
-hold start <alias>           => hold profile <name> start
+hold start <profile>         => hold profile <name> start
 hold stop <target>           => hold stop <target>
 hold kill <target>           => hold kill <target>
 hold grant/revoke ...        => hold profile <name> grant/revoke ...

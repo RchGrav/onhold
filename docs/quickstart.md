@@ -197,9 +197,9 @@ hold stop web
 
 Expect:
 
-- user-local aliases store a private launch recipe.
-- system aliases publish only alias metadata while root keeps the recipe private.
-- runs started through an alias are labeled with that alias.
+- user-local profiles store a private launch recipe.
+- system profiles publish only public profile metadata while root keeps the recipe private.
+- runs started through a profile are labeled with that profile.
 - `start web` refuses by default if `web` is already running; use `--multi` when multiple copies are intentional.
 
 ```mermaid

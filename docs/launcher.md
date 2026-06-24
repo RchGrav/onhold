@@ -13,11 +13,11 @@ The end result of a successful start is a bare 8-hex run ID on stdout, a private
 On Hold supports two start styles:
 
 - Raw form: `hold <cmd> [args...]`.
-- Owned form: `hold start <alias>` or `hold start <cmd> [args...]`.
+- Owned form: `hold start <profile>` or `hold start <cmd> [args...]`.
 
-If `start` receives exactly one argument and that token resolves to a profile or alias, `cmd_start_action` starts the stored recipe. Otherwise it starts the provided command. `perform_explicit_start` treats a single explicit command string as `sh -c <string>` and treats multiple arguments as direct argv for `execvp`.
+If `start` receives exactly one argument and that token resolves to a profile, `cmd_start_action` starts the stored recipe. Otherwise it starts the provided command. `perform_explicit_start` treats a single explicit command string as `sh -c <string>` and treats multiple arguments as direct argv for `execvp`.
 
-This split exists because On Hold is a single binary, not a service manager with a configuration language. It must preserve raw argv for scriptability, but it also needs a compact owned command surface for aliases, multi-starts, and privilege crossing.
+This split exists because On Hold is a single binary, not a service manager with a configuration language. It must preserve raw argv for scriptability, but it also needs a compact owned command surface for profiles, multi-starts, and privilege crossing.
 
 ## Launch sequence
 

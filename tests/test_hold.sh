@@ -2669,7 +2669,7 @@ test_misc_action_guards() {
 }
 
 test_public_cli_contract_guards() {
-  local rc
+  local rc out id
   "$HOLD_BIN" help >"$TEST_ROOT/help.out" || return 1
   grep -q 'hold profile export <name>' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
   ! grep -Eq 'hold aliases?([[:space:]]|$)' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
@@ -2722,7 +2722,31 @@ test_public_cli_contract_guards() {
   [ "$rc" -eq 5 ] || { echo "hold run web stop: rc=$rc (want 5)" >&2; return 1; }
   grep -q 'usage: hold run .* -- <cmd>' "$TEST_ROOT/run-namespace.err" || { cat "$TEST_ROOT/run-namespace.err" >&2; return 1; }
 
-  if grep -RInE '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases' \
+  mkdir -p "$TEST_ROOT/literal-help-bin" || return 1
+  cat >"$TEST_ROOT/literal-help-bin/--help" <<'SH'
+#!/usr/bin/env sh
+echo literal-help-command
+SH
+  cat >"$TEST_ROOT/literal-help-bin/-h" <<'SH'
+#!/usr/bin/env sh
+echo literal-h-command
+SH
+  chmod +x "$TEST_ROOT/literal-help-bin/--help" "$TEST_ROOT/literal-help-bin/-h" || return 1
+  out=$(PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" run -- --help 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.3
+  PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" dump "$id" >"$TEST_ROOT/literal-help-command.out" || return 1
+  grep -q 'literal-help-command' "$TEST_ROOT/literal-help-command.out" || { cat "$TEST_ROOT/literal-help-command.out" >&2; return 1; }
+
+  out=$(PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" run -- -h 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.3
+  PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" dump "$id" >"$TEST_ROOT/literal-h-command.out" || return 1
+  grep -q 'literal-h-command' "$TEST_ROOT/literal-h-command.out" || { cat "$TEST_ROOT/literal-h-command.out" >&2; return 1; }
+
+  if grep -RInE '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases|hold[[:space:]]+(start|grant|revoke)[[:space:]]+<alias>|start[[:space:]]+<alias>|known alias|alias selection|alias-labeled|alias exists' \
       README.md docs examples install.sh scripts Makefile >"$TEST_ROOT/forbidden-public-names.out" 2>/dev/null; then
     cat "$TEST_ROOT/forbidden-public-names.out" >&2
     return 1

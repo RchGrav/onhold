@@ -89,7 +89,7 @@ prune
 
 They resolve targets through `resolve_action_token`. `stop` sends `SIGTERM`, waits, and escalates to `SIGKILL` if needed. `kill` sends `SIGKILL`. `tail` follows a log and continues while the run is evaluated as running. `dump` prints the current log and exits. `console` attaches to a console-enabled run. `prune` removes past run data and related artifacts.
 
-`stop --print <id>` and `kill --print <id>` print the equivalent `kill` command after validation. `--all` is accepted for target commands but only resolves alias ambiguity for `stop`, `kill`, and `prune`.
+`stop --print <id>` and `kill --print <id>` print the equivalent `kill` command after validation. `--all` is accepted only for `stop`, `kill`, and `prune`, where it resolves profile ambiguity.
 
 ## Exit codes
 
@@ -97,7 +97,7 @@ The help text defines this contract:
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Success, including a known alias with nothing to do. |
+| 0 | Success, including a known profile with nothing to do. |
 | 1 | Usage or generic error. |
 | 2 | Refused for safety. |
 | 3 | Permission denied or storage/security failure. |

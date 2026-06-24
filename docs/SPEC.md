@@ -218,21 +218,21 @@ A root-managed start writes:
 
 If public index creation fails, startup fails and rolls back. A root-managed run that cannot be discovered violates the storage model.
 
-### 4.4 Alias start
+### 4.4 Profile start
 
-`hold start <alias>` starts the launch recipe currently assigned to that alias.
+`hold start <profile>` starts the launch recipe currently assigned to that profile.
 
-For user-local aliases, On Hold loads the direct recipe from the user's private `aliases.json` and records the alias label on the new run. For root-managed aliases, On Hold resolves the public alias to its protected profile hash, crosses sudo with the internal capability argv shape `<verb> <runid_sel> <alias> <hash>` when needed, verifies that alias/hash pair as root, loads the protected root-private profile for `start`, and records the alias label on the new run.
+For user-local profiles, On Hold loads the direct recipe from the user's private `aliases.json` and records the profile label on the new run. For root-managed profiles, On Hold resolves the public profile name to its protected profile hash, crosses sudo with the internal capability argv shape `<verb> <runid_sel> <profile> <hash>` when needed, verifies that profile/hash pair as root, loads the protected root-private profile for `start`, and records the profile label on the new run. `aliases.json` and record field `alias` remain internal storage names in the current implementation.
 
-`--multi` is an alias-start modifier. Without `--multi`, `start <alias>` refuses when that alias already has a running process. Bare `--multi` starts one additional run and bypasses that guard; `--multi N` and `--multi=N` start N runs.
+`--multi` is a profile-start modifier. Without `--multi`, `start <profile>` refuses when that profile already has a running process. Bare `--multi` starts one additional run and bypasses that guard; `--multi N` and `--multi=N` start N runs.
 
 ### 4.5 Console start
 
-`--console` is a start modifier. It may be used with raw starts or alias starts:
+`--console` is a start modifier. It may be used with raw starts or profile starts:
 
 ```bash
 hold --console <cmd...>
-hold start <alias> --console
+hold start <profile> --console
 ```
 
 A console run records a private `console_sock` path and starts the command behind a per-run PTY broker. Output is tee'd to the normal log, so `tail` and `dump` keep their normal behavior. Console sockets are private state and must not be exposed through the public root index.
@@ -360,10 +360,10 @@ stop/kill: running profile-labeled runs
 tail: running profile-labeled runs
 console: running console-enabled profile-labeled runs
 dump: profile-labeled runs with logs
-prune: prunable alias-labeled past data
+prune: prunable profile-labeled past data
 ```
 
-If an alias selection has zero candidates but the alias exists, the action is a successful no-op. If the alias is unknown, the action returns not found. If an alias selection has more than one candidate, On Hold exits 6 and prints the filtered candidates. `--all` resolves that ambiguity for `stop`, `kill`, and `prune`.
+If a profile selection has zero candidates but the profile exists, the action is a successful no-op. If the profile is unknown, the action returns not found. If a profile selection has more than one candidate, On Hold exits 6 and prints the filtered candidates. `--all` resolves that ambiguity for `stop`, `kill`, and `prune`.
 
 The resolver returns one normative result:
 
@@ -381,12 +381,12 @@ Final action execution must use only the resolved target. Action commands must n
 ```text
 if user-local ID exists:
   target user-local
-else if user-local alias exists:
+else if user-local profile exists:
   target user-local
 else if root public ID exists:
   target root-managed requiring elevation
-else if root public alias exists:
-  target root-managed requiring elevation as <runid_sel> <alias> <hash>
+else if root public profile exists:
+  target root-managed requiring elevation as <runid_sel> <profile> <hash>
 else:
   not found
 ```
@@ -462,13 +462,13 @@ The domain string `hold-profile` is a fixed namespace label, not a version. Do n
 
 On Hold does not scrub, allowlist, capture, or hash the launched command's environment. `perform_start` and profile starts use the inherited process environment unchanged. Privilege-crossing starts rely on sudo's standard `env_reset` behavior before root On Hold reaches `perform_start`; disabling `env_reset` or preserving loader variables through sudoers is host sudo policy, not On Hold policy.
 
-When a normal user targets a root-managed alias, On Hold resolves the public alias to the current protected hash before self-elevation and carries the internal capability argv shape over sudo:
+When a normal user targets a root-managed profile, On Hold resolves the public profile name to the current protected hash before self-elevation and carries the internal capability argv shape over sudo:
 
 ```text
 <verb> <runid_sel> <alias> <hash>
 ```
 
-`runid_sel` is always present. It is a concrete 8-hex run ID, `00000000` for `start`, or `ffffffff` for an approved `--all` action. Root On Hold must verify that the alias still points at that hash and that selected concrete run records are recorded under that alias before acting.
+`runid_sel` is always present. It is a concrete 8-hex run ID, `00000000` for `start`, or `ffffffff` for an approved `--all` action. Root On Hold must verify that the internal alias field still points at that hash and that selected concrete run records are recorded under that profile before acting.
 
 ## 8. Self-elevation boundary
 
@@ -477,11 +477,11 @@ Normal non-root On Hold may self-elevate only when:
 ```text
 the command is stop, kill, prune, tail, or dump;
 no user-local plain target matched;
-a root-managed public ID or alias matched;
+a root-managed public ID or profile matched;
 the target requires elevation.
 ```
 
-`hold --system start <alias>` may also self-elevate. Before the sudo boundary, a root-managed alias must be resolved to the internal start capability shape:
+`hold --system start <profile>` may also self-elevate. Before the sudo boundary, a root-managed profile must be resolved to the internal start capability shape:
 
 ```text
 start 00000000 <alias> <hash>
@@ -679,7 +679,7 @@ Root-managed prune follows the same resolver and elevation rules as other action
 
 `hold console <target>` attaches to a running console-enabled run through the recorded private socket. Interactive attaches save the local terminal, enter an alternate screen, forward terminal resize events to the child PTY, and restore the original terminal state when the attach exits. Ctrl-] detaches without stopping the run. Non-interactive attaches stream stdin/stdout without changing screen state. On attach, the broker replays recent PTY output before live output so reattaches can redraw an idle console without sending input to the child.
 
-A run ID targets that one run directly. An alias resolves by recorded alias label and the `console` verb intent-set: running runs with `console_sock`. More than one matching alias run exits 6 and prints candidates; zero candidates for a known alias exits 0. A finished run reports that it has exited and points the user to `hold dump <id>`. A non-console run reports that it has no console.
+A run ID targets that one run directly. A profile resolves by recorded profile label and the `console` verb intent-set: running runs with `console_sock`. More than one matching profile run exits 6 and prints candidates; zero candidates for a known profile exits 0. A finished run reports that it has exited and points the user to `hold dump <id>`. A non-console run reports that it has no console.
 
 Console is interactive process access and follows the same privilege boundary as `stop` and `kill`: user-local sockets are private to that user, and root-managed console attaches require root authority or a matching sudoers grant. The public root index must not expose console socket paths.
 
@@ -688,11 +688,11 @@ Console is interactive process access and follows the same privilege boundary as
 `hold grant` and `hold revoke` manage only On Hold-owned sudoers entries. They require root authority and operate on root-managed profiles only:
 
 ```text
-hold grant <alias> <user> [start,stop,kill,tail,dump,prune,console]
-hold revoke <alias> <user> [start,stop,kill,tail,dump,prune,console]
+hold grant <profile> <user> [start,stop,kill,tail,dump,prune,console]
+hold revoke <profile> <user> [start,stop,kill,tail,dump,prune,console]
 ```
 
-The grant target must be an existing root-managed alias. The `<user>` argument may be a username, `%group`, or `all`. On Hold resolves the alias to its immutable profile hash before writing sudoers; the managed filename is keyed by alias and user, and the sudoers command carries a fixed alias/hash pair plus an 8-hex `runid_sel` slot so root can verify the alias/hash pair and selected run records before acting. If the action list is omitted, all supported On Hold actions for that alias are selected. This is a wildcard over On Hold's supported alias actions, not arbitrary sudo command access. `purge` is not a supported action; the command is `prune`.
+The grant target must be an existing root-managed profile. The `<user>` argument may be a username, `%group`, or `all`. On Hold resolves the profile to its immutable profile hash before writing sudoers; the managed filename is keyed by profile and user, and the sudoers command carries a fixed profile/hash pair plus an 8-hex `runid_sel` slot so root can verify the profile/hash pair and selected run records before acting. If the action list is omitted, all supported On Hold actions for that profile are selected. This is a wildcard over On Hold's supported profile actions, not arbitrary sudo command access. `purge` is not a supported action; the command is `prune`.
 
 Before writing sudoers, On Hold resolves its own executable path and refuses to proceed unless that file is root-owned, regular, and not writable by group or world. Managed sudoers lines grant NOPASSWD access only to tightly scoped canonical invocations with one anchored argument regex, such as:
 
