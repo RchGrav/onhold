@@ -329,7 +329,7 @@ Launch flags:
 | `-it` | `--interactive --tty` | Combine stdin-open plus PTY: the normal terminal/shell experience. For profiles, `hold run -it <profile>` starts the profile attached when inactive, or reconnects to the singular active interactive/TTY run for that profile. The detach key sequence leaves the run alive under Hold. |
 | `-e KEY=VALUE` | `--env KEY=VALUE` | Set environment variables for the launch/profile. |
 | — | `--env-file FILE` | Load environment variables from a file. |
-| `-p SPEC` | `--publish SPEC` | Record published-port metadata for display, readiness/open helpers, and profile config. Hold is not a container runtime, so this must not falsely claim network namespace port forwarding unless a future backend actually implements it. |
+| `-p SPEC` | `--publish SPEC` | Record published-port metadata for display, readiness/open helpers, and profile config. Hold manages host processes and run IDs, so this must not falsely claim network namespace port forwarding unless a future backend actually implements it. |
 | `-v SPEC` | `--volume SPEC` | Record volume/path metadata for profile config and future backend support. Hold host-process launches already see the host filesystem, so this is not isolation or remounting by itself. |
 | — | `--name PROFILE` | Create/label a profile from the normalized launch recipe and associate the new run with that profile. |
 | — | `--detach-keys SEQ` | Set the key sequence used to detach from an attached TTY without killing the run. Default should follow Docker familiarity: `Ctrl+P Ctrl+Q`, unless platform constraints require a documented alternative. |
@@ -373,7 +373,7 @@ future explicit multi-log mode is designed.
 
 This is the user-facing quick reference for Docker-shaped flags. The wording is
 intentionally familiar to Docker users, but Hold runs host processes/profiles;
-`-p`, `-v`, and `--privileged` must not imply container isolation unless a later
+`-p`, `-v`, and `--privileged` must not imply run-ID isolation or privileged sandboxing unless a later
 backend actually provides it.
 
 Quick lookup:
@@ -464,8 +464,8 @@ hold run -it --detach-keys="ctrl-a" shell
 hold run --privileged maintenance
 ```
 
-`--privileged` is a high-risk host-process capability request, not a container
-capability boundary. It should require clear authorization and must be described
+`--privileged` is a high-risk host-process capability request, not a run-ID
+isolation or safety boundary. It should require clear authorization and must be described
 with security warnings anywhere it appears in help or docs.
 
 Common combinations:
