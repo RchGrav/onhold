@@ -41,7 +41,7 @@ Concrete naming and size rules:
 
 - Profile names are human handles for launching tools. Maximum length is **64** characters/bytes in the 0.4 target unless a later audited protocol budget proves this must shrink further.
 - Profile names may be used as safe selectors only when the operation can resolve them unambiguously.
-- Profile hashes are full SHA-256 hex strings: **64 lowercase hex characters**.
+- Sudoers/capability digests are full SHA-256 hex strings: **64 lowercase hex characters**. They are computed from decoded subject-private grant/profile material and are not source-profile fields.
 - Existing/current run IDs are 8 lowercase hex characters with reserved sentinels inherited from the 0.3.x model. The 0.4 target may extend displayed/generated run IDs to **12 lowercase hex characters** for Docker familiarity, but that is a deliberate storage/protocol migration decision, not an accidental rename.
 - If sentinel selectors remain in the privileged protocol, `00000000` means “start/no concrete run yet” and all-`f` means an explicitly approved all-runs selector. The all-`f` sentinel length must match the active run-selector length.
 
@@ -187,11 +187,70 @@ acceptable as current storage reality. Moving to one-file-per-profile is a
 separate storage migration decision and must not be implied by the 0.4 UX
 rename alone.
 
-### 2.6 Profile hash authority, subject grants, and invalidation
+The target 0.4 shape is name-keyed, not hash-keyed:
 
-The profile hash is a derived capability digest over the **private profile
-material used by the granted subject**. It is not user-editable profile state and
-must not become authoritative merely because a JSON object contains a hash field.
+```json
+{
+  "profiles": {
+    "web-server": {
+      "schema": "hold.profile.v1",
+      "binary_path": "/usr/bin/python3",
+      "argv": ["/usr/bin/python3", "/srv/web/server.py", "--port", "3000"],
+      "flags": {
+        "console": false,
+        "tty": false,
+        "interactive": false
+      }
+    }
+  }
+}
+```
+
+There is intentionally no persisted `hash` field in the source profile object.
+The source profile's identity is its validated profile name. During official
+grant/update/commit flows, Hold may hash the decoded profile/grant content to
+produce the sudoers digest, but that digest is derived output, not profile
+state. A public redacted profile record may include display metadata and
+existence/discovery facts, but it must not publish a source-profile hash as the
+authority for sudo access.
+
+Subject-private grant copies are separate objects. They also do not contain a
+persisted hash field. Sudoers carries a SHA-256 computed from the entire decoded
+private copy:
+
+```json
+{
+  "schema": "hold.subject-grant.v1",
+  "subject": "alice",
+  "profile": "web-server",
+  "binary_path": "/usr/bin/python3",
+  "argv": ["/usr/bin/python3", "/srv/web/server.py", "--port", "3000"],
+  "flags": {
+    "console": false,
+    "tty": false,
+    "interactive": false
+  },
+  "actions": ["start", "stop"]
+}
+```
+
+
+### 2.6 Source profiles, sudoers digests, subject grants, and invalidation
+
+0.4.0 separates source profile identity from grant authority:
+
+- A source/global profile is a named definition for running a tool. It is keyed
+  by profile name and should not contain or expose a persisted profile hash as
+  authority.
+- A source profile name is the operator handle: `web-server`, `api`, `db`, etc.
+- The authoritative digest belongs to the **decoded subject-private grant/profile copy**
+  created for a user or group. That digest is carried only by sudoers/capability
+  flow as `--cap <sha256>`; it is not stored inside the private profile object.
+- Do not make a persisted source-profile hash part of the 0.4 grant protocol.
+  Legacy 0.3.x hash-keyed source-profile storage may exist only as an
+  implementation migration detail and must not define the target model.
+  Rehashing profile/grant content to update sudoers is required; storing that
+  digest inside the profile is not.
 
 Grant storage has a subject-scoped private half:
 
@@ -210,53 +269,84 @@ mandatory:
 
 - Users and groups are separate subject namespaces.
 - Each subject has a private grant/profile folder.
-- Granting a profile copies the private profile material into the subject's
-  folder.
+- Granting a profile copies the source profile's semantic run/config material
+  into the subject's folder.
 - By default, that subject copy means: “this subject may run this exact CLI as
   root, with the embedded/default command and current allowed operations.”
-- The subject copy starts as the canonical root profile material, not as a
-  second independent product concept. Advanced per-subject narrowing can be
-  added later, but 0.4.0 does not require advanced profile editing.
+- The subject copy starts as a copy of the named source profile, but it becomes
+  the authority for that subject once granted. Grant-specific configuration
+  such as allowed operations, `console`, `tty`, `interactive`, future parameter
+  allowlists, and future narrowing belongs in this subject-private copy unless
+  the operator explicitly propagates source-profile changes through official
+  tooling.
+- The source/global profile is not itself a grant and must not be used as the
+  sudoers authority object.
 
-Hash authority rule:
+Sudoers digest authority rule:
 
-1. Resolve the requesting subject and profile name.
-2. Load that subject's private grant/profile copy.
-3. Compute SHA-256 from the full subject-private grant/profile material.
-4. Compare the computed hash with the hash carried by a capability or sudoers
-   entry.
-5. Refuse the request if they differ.
+1. Resolve the requesting subject and profile name from the fixed CLI/sudoers
+   envelope.
+2. Load that subject's private grant/profile copy by subject folder and profile
+   name.
+3. Decode/parse the private copy into the semantic profile/grant object.
+4. Canonicalize that decoded semantic object with the official field ordering
+   and value normalization rules.
+5. Compute SHA-256 from the canonical decoded semantic object at runtime.
+6. Compare that freshly computed digest with the SHA-256 value carried by a
+   capability or sudoers entry.
+7. Refuse the request if they differ.
 
-For the inherited 0.3.x/current model, the hash input is the resolved absolute
-binary path plus argc/argv framing. For 0.4 grants, the hash input is the
-full subject-private profile/grant copy, not just the embedded CLI. That means
-the immutable command/argv recipe, allowed operations, persistent Docker-shaped
-profile flags (`interactive`, `tty`, `detach`, `restart`, etc. as implemented),
+Digest invariant:
+
+- There is one boundary digest: the SHA-256 value in the sudoers/capability
+  command.
+- Source profile objects and subject-private profile/grant objects do not contain
+  digest fields.
+- The sudoers/capability digest is always recomputed from the decoded semantic
+  subject-private profile/grant object.
+- JSON formatting, whitespace, object key order, or equivalent serialized
+  spelling must not change the digest. The implementation must parse/decode the
+  private object, normalize it into the official stable semantic shape, and hash
+  that canonical shape.
+- Public discovery material is not authorization material.
+
+For 0.4 grants, the digest input is the full canonical subject-private
+profile/grant object, not just the embedded CLI. That means the immutable
+command/argv recipe, allowed operations, persistent Docker-shaped/profile flags
+(`console`, `tty`, `interactive`, `detach`, `restart`, etc. as implemented),
 operation/default-run policy, and any explicit 0.4 request-validation rules are
-all hash material. In the current implementation the serialized private JSON
-file is the hash material, so changing `actions` or any other private field
-invalidates the cap. If/when this moves to a decoded canonical tree, that tree
-must still include every semantic private field, not just `binary_path`/`argv`.
+all digest material. The canonical shape must include every semantic private
+field, not just `binary_path`/`argv`.
+
 Do not include non-semantic descriptive metadata such as comments, display
 labels, timestamps, or presentation formatting in future canonical material.
+Do not include a persisted source-profile hash field: the source profile is a
+named configuration object. Rehash decoded profile/grant content when generating
+or refreshing sudoers, but keep the digest as derived sudoers/capability data,
+not profile state.
 
-If profile material changes in a way that affects privileged launch semantics,
-the hash changes. Any dependent subject-private copies and sudoers entries must
-then be regenerated by the official tooling, invalidated, or intentionally
-retained against the old immutable material. A profile edit must never silently
-leave a sudoers entry pointing at a stale rule set while appearing to grant the
-newly edited profile.
+If subject-private grant material changes in a way that affects privileged
+launch semantics, the computed sudoers digest changes and the matching sudoers
+entry must be rewritten atomically by official tooling. A subject-private grant
+edit must never silently leave a sudoers entry pointing at a stale rule set.
+
+If a source/global profile changes, official tooling must make an explicit
+policy choice for existing subject-private copies: propagate and regenerate
+those grants, leave old copies intentionally pinned, or invalidate them. It must
+not silently imply that an existing subject-private grant now authorizes the new
+source profile.
 
 Collision/update rule:
 
 - A subject may have at most one active grant copy for a profile name unless a
   future schema explicitly versions retained old copies.
 - Regrant/update overwrites the subject-private copy only through the official
-  atomic writer path, recomputes the SHA-256, rewrites the matching sudoers.d
-  entry, validates with `visudo -cf`, then installs atomically.
+  atomic writer path, recomputes the sudoers SHA-256 digest, rewrites the
+  matching sudoers.d entry, validates with `visudo -cf`, then installs
+  atomically.
 - If sudoers update fails, the profile/grant update must roll back or leave the
-  old grant/sudoers pair intact; never install a private copy whose sudoers hash
-  does not match.
+  old grant/sudoers pair intact; never install a private copy whose computed
+  digest does not match the sudoers entry.
 
 ### 2.7 0.4 sudoers/capability protocol
 
@@ -281,8 +371,9 @@ Protocol specifics:
 
 - The sudoers-visible command includes the human profile handle:
   `run web-server`.
-- `--cap <subject-profile-sha256>` carries the full 64-hex SHA-256 digest of the
-  subject-private grant/profile copy.
+- `--cap <subject-profile-sha256>` carries the full 64-hex SHA-256 digest
+  computed from the decoded subject-private grant/profile copy. The digest is
+  not a field inside that copy.
 - `<encoded-request>` is one bounded token containing the variable request:
   operation verb (`start`, `stop`, future verbs), run selector/all/allocation
   choices, supplied parameters, and other user-controlled options that the
@@ -301,11 +392,12 @@ Protocol specifics:
 - The encoded request is the authority for the requested operation. Do not infer
   the privileged verb from the sudoers regex alone.
 - The encoded request must not repeat the profile name. The fixed CLI/sudoers
-  envelope already carries `run <profile-name>`, and the cap hash binds that
-  profile to the subject-private copy. Duplicating it inside JSON creates a
+  envelope already carries `run <profile-name>`, and the sudoers/cap digest binds
+  that profile to the decoded subject-private copy. Duplicating it inside JSON
+  creates a
   second field that can drift.
 - The root receiver must reject malformed base64url, oversized decoded payloads,
-  unknown schema versions, unsupported verbs, cap/profile mismatches, and any
+  unknown schema versions, unsupported verbs, digest/profile mismatches, and any
   operation that is not allowed by the subject-private copy.
 
 Minimum decoded request schema:
@@ -360,6 +452,66 @@ explicitly install a degraded old-sudo form whose weakened structural gate is
 called out and whose alphabet/length/semantic checks are enforced root-side as
 mandatory defense-in-depth. Do not claim a portable glob form preserves the ERE
 structure; it does not.
+
+
+### 2.8 Doctor safety model
+
+`hold doctor` is a report-first integrity workflow, not a blind repair command.
+It exists because source-profile, subject-private grant, public discovery, and
+sudoers drift can be caused by ordinary partial writes, interrupted upgrades, or
+tampering, and those cases must not be treated as equivalent.
+
+Core rules:
+
+- `hold doctor` for global/root-managed state must run elevated. User-local
+  doctor may exist separately, but any scan/fix of the global private store,
+  grants, public discovery, or sudoers must require root authority.
+- A scan prints numbered issue IDs with concrete deviation facts: path, expected
+  shape/value, observed shape/value, classification, and candidate repair(s).
+- Running `doctor` without fix flags must not mutate state.
+- A security-sensitive issue must not be fixed by generic `--fix` or
+  `--fix --all`. It may be fixed only by `--fix --id N` from the latest scan or
+  by an explicit high-friction override such as `--fix --all --force`.
+- Non-security structural repairs may be eligible for `--fix --all`, but the
+  report must still say what will happen before a fix run is invoked.
+- Each private store has a doctor state folder that records the latest scan
+  marker/report. The marker binds issue IDs to the exact scan results.
+- Any non-doctor operation that mutates the same store invalidates/removes that
+  store's doctor scan marker. Read-only/help operations do not invalidate it.
+- If a later scan finds a different issue set, issue IDs may be renumbered; the
+  user must review the new report before fixing by ID.
+- Before any doctor mutation, copy affected files into a doctor backup folder
+  under the same private store, using a timestamped directory and preserving
+  enough path context to restore manually.
+
+Doctor repair language must distinguish repair strategies:
+
+- **Regenerate sudoers digest**: recompute the SHA-256 digest from the decoded
+  subject-private grant/profile copy and rewrite the sudoers entry.
+- **Recreate public discovery**: rebuild redacted public state from private
+  source-profile state.
+- **Repair syntax**: fix unambiguous non-security structural damage only when a
+  trusted source and deterministic repair exist.
+- **Amputate/remove/quarantine**: delete or quarantine unusable state when no
+  trusted source remains. The report must explicitly say when this is the only
+  proposed repair; it must never happen merely because the user ran `doctor`.
+
+Example report shape:
+
+```text
+hold# doctor
+ID  CLASS     OBJECT                         DEVIATION
+1   security  grant/users/alice/web.json     sudoers digest mismatch
+    expected: sha256(decoded private grant) = 9f2a...
+    observed: sudoers --cap value           = 13ab...
+    candidate fixes:
+      - regenerate sudoers digest from private grant copy
+      - quarantine grant if private copy is not trusted
+
+2   repair    public/profiles/web.json       missing public discovery record
+    candidate fixes:
+      - recreate public discovery from private source profile
+```
 
 ## 3. Proposed command grammar and namespace rules
 
@@ -729,8 +881,8 @@ Exec commands:
 ```text
 hold> show ?
   aliases    Show public alias table
-  runs       Show running instances (runid, alias, hash)
-  profiles   Show profile names and hashes (no details)
+  runs       Show running instances (runid, profile, state)
+  profiles   Show profile names and redacted metadata (no private command details)
   version    Show hold version
 ```
 
@@ -738,9 +890,9 @@ Example:
 
 ```text
 hold> show runs
-RUNID     ALIAS      HASH        STATE
-a3f7b2c1  web        7f3e9c2a    running
-9d4e8f02  report     1c5d3b7f    running
+RUNID     PROFILE    STATE
+a3f7b2c1  web        running
+9d4e8f02  report     running
 ```
 
 In the captive CLI, `alias` means an operator-facing command/name alias table. It must not revive the old “alias as launch definition” model; profiles remain launch definitions.
@@ -826,7 +978,7 @@ Profile configuration commands:
   no            Negate a command
   default       Reset a command to default
   info          Show staged profile state
-  commit        Re-hash, regenerate sudoers, validate, install
+  commit        Validate, install, and refresh affected grant sudoers digests
   exit          Return to global config mode
 ```
 
@@ -882,11 +1034,11 @@ hold(config-profile:web)# info
   staged    : uncommitted changes present
 
 hold(config-profile:web)# commit
-  Re-hashing profile ............ 7f3e9c2a
-  Generating sudoers entry ...... ok
-  Validating with visudo -cf .... ok
-  Installing /etc/sudoers.d/hold-web ... done
-  Profile committed. Hash: 7f3e9c2a
+  Validating profile ............ ok
+  Refreshing grant digests ...... ok
+  Validating sudoers with visudo  ok
+  Installing configuration ...... done
+  Profile committed. Sudoers digests refreshed where applicable.
 
 hold(config-profile:web)# end
 hold# write
