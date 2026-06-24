@@ -310,6 +310,48 @@ Digest invariant:
   that canonical shape.
 - Public discovery material is not authorization material.
 
+0.4.0 canonical grant digest v1 is a byte-stream contract, not a JSON
+serialization contract. Implementations must parse the subject-private grant
+JSON and feed NUL-terminated UTF-8 fields to SHA-256 in exactly this order:
+
+```text
+hold-subject-grant-canonical-v1\0
+schema\0<schema>\0
+subject\0<subject>\0
+profile\0<profile>\0
+binary_path\0<binary_path>\0
+argv\0<argc-decimal>\0
+  <0>\0<argv[0]>\0
+  <1>\0<argv[1]>\0
+  ...
+actions\0<selected actions in built-in action order>\0...
+```
+
+The 0.4.0 built-in action order is:
+
+```text
+start, stop, kill, tail, dump, prune, console
+```
+
+Golden vector:
+
+```json
+{
+  "actions": ["stop", "start"],
+  "argv": ["/usr/bin/python3", "/srv/app/server.py", "--port", "3000"],
+  "binary_path": "/usr/bin/python3",
+  "profile": "web",
+  "subject": "alice",
+  "schema": "hold.subject-grant.v1"
+}
+```
+
+Expected digest:
+
+```text
+9b1a3df24cf16eedc7604919ede6e5f972e9a86bf9c5e37e95339298b4481e72
+```
+
 For 0.4 grants, the digest input is the full canonical subject-private
 profile/grant object, not just the embedded CLI. That means the immutable
 command/argv recipe, allowed operations, persistent Docker-shaped/profile flags
