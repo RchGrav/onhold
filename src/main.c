@@ -652,6 +652,80 @@ int main(int argc, char **argv) {
             free(cmd_argv);
             return rc;
         }
+        bool sub_is_profile_name = sigmund_valid_alias(sub) &&
+            strcmp(sub, "list") && strcmp(sub, "ls") && strcmp(sub, "run") &&
+            strcmp(sub, "start") && strcmp(sub, "show") && strcmp(sub, "export") &&
+            strcmp(sub, "import");
+        if (sub_is_profile_name) {
+            const char *name = sub;
+            if (cmd_argc < 2) {
+                fprintf(stderr, "usage: mund profile <name> <show|start|run|set|export> [args...]\n");
+                free(cmd_argv);
+                return 5;
+            }
+            const char *op = cmd_argv[1];
+            if (!strcmp(op, "set")) {
+                if (cmd_argc < 4 || strcmp(cmd_argv[2], "command")) {
+                    fprintf(stderr, "usage: mund profile <name> set command -- <cmd> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int rc = sigmund_cmd_profile_set_command(&inv, &user_store, name, cmd_argc - 3, cmd_argv + 3);
+                free(cmd_argv);
+                return rc;
+            }
+            if (!strcmp(op, "export")) {
+                char *export_argv[3];
+                int export_argc = 2;
+                export_argv[0] = "export";
+                export_argv[1] = (char *)name;
+                if (cmd_argc == 3 && (!strcmp(cmd_argv[2], "--json") || !strcmp(cmd_argv[2], "--format=json"))) {
+                    export_argv[2] = "--json";
+                    export_argc = 3;
+                } else if (cmd_argc == 4 && !strcmp(cmd_argv[2], "--format") && !strcmp(cmd_argv[3], "json")) {
+                    export_argv[2] = "--json";
+                    export_argc = 3;
+                } else if (cmd_argc == 4 && !strcmp(cmd_argv[2], "--format") && !strcmp(cmd_argv[3], "cli")) {
+                    export_argc = 2;
+                } else if (cmd_argc == 3 && !strcmp(cmd_argv[2], "--format=cli")) {
+                    export_argc = 2;
+                } else if (cmd_argc != 2) {
+                    fprintf(stderr, "usage: mund profile <name> export [--format cli|json]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int rc = sigmund_cmd_profile_action(&inv, &user_store, export_argc, export_argv);
+                free(cmd_argv);
+                return rc;
+            }
+            if (!strcmp(op, "show") && cmd_argc == 2) {
+                char *show_argv[2];
+                show_argv[0] = "export";
+                show_argv[1] = (char *)name;
+                int rc = sigmund_cmd_profile_action(&inv, &user_store, 2, show_argv);
+                free(cmd_argv);
+                return rc;
+            }
+            if ((!strcmp(op, "run") || !strcmp(op, "start")) && cmd_argc >= 2) {
+                char **rewritten = calloc((size_t)cmd_argc, sizeof(*rewritten));
+                if (!rewritten) {
+                    free(cmd_argv);
+                    return 3;
+                }
+                rewritten[0] = (char *)op;
+                rewritten[1] = (char *)name;
+                for (int i = 2; i < cmd_argc; i++) {
+                    rewritten[i] = cmd_argv[i];
+                }
+                free(cmd_argv);
+                cmd_argv = rewritten;
+                sub = cmd_argv[0];
+            } else {
+                fprintf(stderr, "usage: mund profile <name> <show|start|run|set|export> [args...]\n");
+                free(cmd_argv);
+                return 5;
+            }
+        }
         if (!strcmp(sub, "run") || !strcmp(sub, "start")) {
             if (cmd_argc < 2) {
                 fprintf(stderr, "usage: mund profile run <name> [--multi [N]] [--tail|-f] [--console]\n");
@@ -723,7 +797,7 @@ int main(int argc, char **argv) {
             free(cmd_argv);
             return rc;
         }
-        fprintf(stderr, "usage: mund profile <list|run|start|show|export|import> [args...]\n");
+        fprintf(stderr, "usage: mund profile <list|run|start|show|export|import|<name> set> [args...]\n");
         free(cmd_argv);
         return 5;
     }

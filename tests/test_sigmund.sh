@@ -1601,6 +1601,42 @@ EOF
   printf '%s\n' "$got" | grep -qx 'hello import'
 }
 
+test_profile_name_first_set_command() {
+  local out id got
+  "$SIGMUND_BIN" profile edit-prof set command -- /bin/echo 'name first edit' \
+    >"$TEST_ROOT/profile-set.out" 2>"$TEST_ROOT/profile-set.err" || {
+      cat "$TEST_ROOT/profile-set.out" "$TEST_ROOT/profile-set.err" >&2
+      return 1
+    }
+  [ ! -s "$TEST_ROOT/profile-set.out" ] || return 1
+  [ ! -s "$TEST_ROOT/profile-set.err" ] || return 1
+
+  "$SIGMUND_BIN" profile edit-prof export --format cli >"$TEST_ROOT/profile-set.export" || return 1
+  grep -Fxq "profile edit-prof" "$TEST_ROOT/profile-set.export" || return 1
+  grep -Eq "^set command -- (/usr)?/bin/echo 'name first edit'$" "$TEST_ROOT/profile-set.export" || {
+    cat "$TEST_ROOT/profile-set.export" >&2
+    return 1
+  }
+
+  "$SIGMUND_BIN" profile edit-prof show >"$TEST_ROOT/profile-set.show" || return 1
+  grep -Fxq "profile edit-prof" "$TEST_ROOT/profile-set.show" || return 1
+  grep -Eq "^set command -- (/usr)?/bin/echo 'name first edit'$" "$TEST_ROOT/profile-set.show" || {
+    cat "$TEST_ROOT/profile-set.show" >&2
+    return 1
+  }
+
+  "$SIGMUND_BIN" profile edit-prof export --format json >"$TEST_ROOT/profile-set.json" || return 1
+  grep -Fq '"name": "edit-prof"' "$TEST_ROOT/profile-set.json" || return 1
+  grep -Fq '"args": ["/bin/echo", "name first edit"]' "$TEST_ROOT/profile-set.json" || return 1
+
+  out=$("$SIGMUND_BIN" profile edit-prof start 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.1
+  got=$("$SIGMUND_BIN" logs "$id") || return 1
+  printf '%s\n' "$got" | grep -qx 'name first edit'
+}
+
 test_profile_json_export_and_import() {
   local json out id got store
   store="$HOME/.local/state/sigmund"
@@ -2699,6 +2735,7 @@ run_test "alias from relative executable keeps absolute recorded argv0" test_ali
 run_test "alias start requires --multi when already running and --all stops all" test_alias_multi_gate_and_all_stop
 run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
 run_test "profile transcript import/export round-trips a user-local recipe" test_profile_transcript_import_export_roundtrip
+run_test "profile name-first set command edits a user-local recipe" test_profile_name_first_set_command
 run_test "profile JSON export/import round-trips a user-local recipe" test_profile_json_export_and_import
 run_test "invalid alias names are rejected" test_invalid_alias_names_rejected
 run_test "short hex-looking alias names are allowed" test_short_hex_alias_name_allowed

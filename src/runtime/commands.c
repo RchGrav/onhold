@@ -19,6 +19,10 @@ static int profile_shell_split(const char *line, char ***argv_out, int *argc_out
 static int profile_import_transcript(const struct sigmund_store *store, const char *path);
 static int profile_import_json(const struct sigmund_store *store, const char *j);
 static void profile_free_tokens(char **argv, int argc);
+static int profile_write_command_recipe(const struct sigmund_store *store,
+                                        const char *name,
+                                        int argc,
+                                        char **argv);
 
 static int attach_console_record(const struct sigmund_invocation *inv,
                                  const struct sigmund_run_record *r,
@@ -427,6 +431,29 @@ out:
     return rc;
 }
 
+static int profile_write_command_recipe(const struct sigmund_store *store,
+                                        const char *name,
+                                        int argc,
+                                        char **argv) {
+    if (!sigmund_valid_alias(name)) {
+        fprintf(stderr, "sigmund: error: invalid profile name '%s'\n", name ? name : "");
+        return 5;
+    }
+    if (argc <= 0 || !argv || !argv[0] || !*argv[0]) {
+        fprintf(stderr, "usage: mund profile <name> set command -- <cmd> [args...]\n");
+        return 5;
+    }
+    char binary_path[SIGMUND_PATH_MAX];
+    if (sigmund_resolve_binary_path(argv[0], binary_path, sizeof(binary_path)) != 0) {
+        fprintf(stderr, "sigmund: error: failed to resolve profile command '%s'\n", argv[0]);
+        return 5;
+    }
+    if (sigmund_alias_upsert_recipe(store, name, binary_path, argc, argv) != 0) {
+        sigmund_die_errno("sigmund: failed to update profile");
+    }
+    return 0;
+}
+
 static int profile_import_transcript(const struct sigmund_store *store, const char *path) {
     char *text = NULL;
     if (sigmund_read_small_file(path, &text) != 0) {
@@ -503,15 +530,7 @@ static int profile_import_transcript(const struct sigmund_store *store, const ch
         fprintf(stderr, "sigmund: error: incomplete profile transcript\n");
         goto out;
     }
-    char binary_path[SIGMUND_PATH_MAX];
-    if (sigmund_resolve_binary_path(cmd_argv[0], binary_path, sizeof(binary_path)) != 0) {
-        fprintf(stderr, "sigmund: error: failed to resolve profile command '%s'\n", cmd_argv[0]);
-        goto out;
-    }
-    if (sigmund_alias_upsert_recipe(store, name, binary_path, cmd_argc, cmd_argv) != 0) {
-        sigmund_die_errno("sigmund: failed to import profile");
-    }
-    rc = 0;
+    rc = profile_write_command_recipe(store, name, cmd_argc, cmd_argv);
 
 out:
     profile_free_tokens(cmd_argv, cmd_argc);
@@ -562,6 +581,18 @@ int sigmund_cmd_profile_action(const struct sigmund_invocation *inv,
     }
     fprintf(stderr, "usage: sigmund profile export <name> [--json]\n       sigmund profile import <file>\n");
     return 5;
+}
+
+int sigmund_cmd_profile_set_command(const struct sigmund_invocation *inv,
+                                    const struct sigmund_store *user_store,
+                                    const char *name,
+                                    int argc,
+                                    char **argv) {
+    if (inv->euid_root) {
+        fprintf(stderr, "sigmund: error: profile editing is user-local; run it as the profile owner\n");
+        return 5;
+    }
+    return profile_write_command_recipe(user_store, name, argc, argv);
 }
 
 void sigmund_usage(void) {
