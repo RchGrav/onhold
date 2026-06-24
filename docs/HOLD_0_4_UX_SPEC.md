@@ -336,7 +336,7 @@ Launch flags:
 | — | `--rm` | Remove run-id data/logs when the run stops; useful for tests and ephemeral commands. |
 | — | `--restart POLICY` | Set restart behavior: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`. |
 | — | `--restart-delay DURATION` | Optional delay between restart attempts. |
-| — | `--privileged` | Explicitly request privileged/elevated behavior where supported. This is a high-risk flag and should require clear authorization and prominent help text. |
+| — | `--privileged` | Docker-shaped spelling for Hold's existing elevated/root-managed execution path (`--system` in the current implementation). This is an authorization-sensitive flag and should require clear validation and prominent help text. |
 
 Examples:
 
@@ -389,7 +389,7 @@ Quick lookup:
 | — | `--detach-keys` | Change the escape sequence used to leave a TTY without killing the run. | Custom TTY exit behavior |
 | — | `--rm` | Auto-delete run-id data/logs when the run stops. | Cleanup, tests, ephemeral runs |
 | — | `--restart` | Set crash/reboot/relaunch handling rules. | Reliability, auto-recovery |
-| — | `--privileged` | Request elevated/privileged host access where supported. | Privileged operations; use with caution |
+| — | `--privileged` | Use Hold's elevated/root-managed execution path, analogous to current `--system`. | Root-managed/profile operations; use with caution |
 
 Terminal and interactivity examples:
 
@@ -460,13 +460,15 @@ Advanced examples:
 # Change detach sequence to Ctrl+A
 hold run -it --detach-keys="ctrl-a" shell
 
-# Request privileged/elevated behavior where configured
+# Request Hold's elevated/root-managed execution path where authorized
 hold run --privileged maintenance
 ```
 
-`--privileged` is a high-risk host-process capability request, not a container
-capability boundary. It should require clear authorization and must be described
-with security warnings anywhere it appears in help or docs.
+`--privileged` is the Docker-shaped analog for Hold's existing `--system`
+root-managed execution path. It is not a container capability boundary and does
+not create isolation. It should require Hold's normal elevated-profile/grant
+validation and must be described with security warnings anywhere it appears in
+help or docs.
 
 Common combinations:
 
