@@ -136,15 +136,24 @@ If the first non-invocation argument is a known On Hold command, On Hold owns th
 
 ```text
 list
+run
+start
 stop
 kill
 tail
+logs
+status
+inspect
+view
 console
 dump
 prune
-start
-alias
-aliases
+profiles
+profile
+show
+clean
+doctor
+shell
 grant
 revoke
 help
@@ -334,23 +343,23 @@ Targets may be:
 
 ```text
 run ID prefix
-alias
+profile
 user:<target>
 system:<target>
 ```
 
-Alias names must be 1 to 64 characters and must contain only `[A-Za-z0-9_-]`. They must not contain `/` or `.`, and must not parse as a full profile hash. If an alias also looks like a run-ID prefix, concrete run-ID resolution wins before alias lookup.
+Profile names must be 1 to 64 characters and must contain only `[A-Za-z0-9_-]`. They must not contain `/` or `.`, and must not parse as a full profile hash. If a profile name also looks like a run-ID prefix, concrete run-ID resolution wins before profile lookup.
 
-A profile hash is not a run ID and is not a normal action target. Hashes identify protected launch recipes and sudoers capabilities. Action commands resolve aliases by matching the alias label recorded on run records.
+A profile hash is not a run ID and is not a normal action target. Hashes identify protected launch recipes and sudoers capabilities. Action commands resolve profiles by matching the recorded profile label on run records.
 
-Alias resolution is verb-specific:
+Profile resolution is verb-specific:
 
 ```text
-start: running alias-labeled runs gate new starts unless --multi is supplied
-stop/kill: running alias-labeled runs
-tail: running alias-labeled runs
-console: running console-enabled alias-labeled runs
-dump: alias-labeled runs with logs
+start: running profile-labeled runs gate new starts unless --multi is supplied
+stop/kill: running profile-labeled runs
+tail: running profile-labeled runs
+console: running console-enabled profile-labeled runs
+dump: profile-labeled runs with logs
 prune: prunable alias-labeled past data
 ```
 
@@ -591,7 +600,7 @@ alias
 console_sock
 ```
 
-`alias` is present when a run was started through an alias. `console_sock` is present only for console-enabled runs. Run records never store protected profile hashes; hashes live in root-private `profiles.json`, public root-managed `aliases.json`, and sudo capability argv only.
+`alias` is the current internal record field for the public profile label. `console_sock` is present only for console-enabled runs. Run records never store protected profile hashes; hashes live in root-private `profiles.json`, public root-managed `aliases.json`, and sudo capability argv only.
 
 Best-effort process identity fields:
 

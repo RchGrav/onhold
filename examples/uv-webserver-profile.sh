@@ -14,7 +14,7 @@ say_err() {
 }
 
 die() {
-  say_err "uv-webserver-alias: error: $*"
+  say_err "uv-webserver-profile: error: $*"
   exit 1
 }
 
@@ -72,7 +72,7 @@ SITE_DIR="$ROOT/site"
 OTHER_DIR="$ROOT/from-another-directory"
 HOLD_ENV="$ROOT/hold.env"
 PORT=${HOLD_DEMO_PORT:-8765}
-ALIAS=${HOLD_DEMO_ALIAS:-uv-web-demo}
+PROFILE=${HOLD_DEMO_PROFILE:-uv-web-demo}
 HOLD_INSTALL_URL=${HOLD_INSTALL_URL:-https://github.com/RchGrav/hold/releases/latest/download/install.sh}
 UV_INSTALL_URL=${UV_INSTALL_URL:-https://astral.sh/uv/install.sh}
 ACTIVE_RUNS=""
@@ -139,18 +139,18 @@ RUN_ID=$("$HOLD_BIN" "$UV_BIN" run --python 3 python -m http.server "$PORT" --bi
 ACTIVE_RUNS="$ACTIVE_RUNS $RUN_ID"
 wait_for_url "$URL" 60 || die "server did not become reachable at $URL"
 
-say_err "Creating alias '$ALIAS' from recorded run $RUN_ID"
-"$HOLD_BIN" alias "$RUN_ID" "$ALIAS"
+say_err "Creating profile '$PROFILE' from recorded run $RUN_ID"
+"$HOLD_BIN" profile save "$RUN_ID" as "$PROFILE"
 
-say_err "Stopping initial run before starting the alias"
+say_err "Stopping initial run before starting the profile"
 "$HOLD_BIN" stop "$RUN_ID"
 "$HOLD_BIN" prune "$RUN_ID" || true
 ACTIVE_RUNS=""
 
-say_err "Starting alias from $OTHER_DIR"
-ALIAS_RUN_ID=$(cd "$OTHER_DIR" && "$HOLD_BIN" start "$ALIAS")
-ACTIVE_RUNS="$ALIAS_RUN_ID"
-wait_for_url "$URL" 60 || die "alias-backed server did not become reachable at $URL"
+say_err "Starting profile from $OTHER_DIR"
+PROFILE_RUN_ID=$(cd "$OTHER_DIR" && "$HOLD_BIN" start "$PROFILE")
+ACTIVE_RUNS="$PROFILE_RUN_ID"
+wait_for_url "$URL" 60 || die "profile-backed server did not become reachable at $URL"
 
 trap - EXIT HUP INT TERM
 
@@ -158,16 +158,16 @@ cat <<EOF
 On Hold + uv demo is running.
 
 URL:         $URL
-alias:       $ALIAS
-run ID:      $ALIAS_RUN_ID
+profile:     $PROFILE
+run ID:      $PROFILE_RUN_ID
 On Hold bin: $HOLD_BIN
 uv bin:      $UV_BIN
 
 Inspect:
   "$HOLD_BIN" list
-  "$HOLD_BIN" dump "$ALIAS"
+  "$HOLD_BIN" dump "$PROFILE"
 
 Stop and clean up:
-  "$HOLD_BIN" stop "$ALIAS"
-  "$HOLD_BIN" prune "$ALIAS_RUN_ID"
+  "$HOLD_BIN" stop "$PROFILE"
+  "$HOLD_BIN" prune "$PROFILE_RUN_ID"
 EOF

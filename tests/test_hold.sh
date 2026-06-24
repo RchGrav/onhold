@@ -2000,6 +2000,19 @@ test_system_switch_canonicalizes_owned_command() {
   [ "${args[5]}" = "--" ] || return 1
   [ "${args[6]}" = "/bin/true" ] || return 1
   [ "${args[7]}" = "--child-flag" ] || return 1
+
+  set +e
+  "$HOLD_BIN" --system run --tail --console -- /bin/true >/dev/null 2>"$TEST_ROOT/run-system-flags.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  args=()
+  while IFS= read -r line; do args+=("$line"); done < "$HOLD_FAKE_SUDO_ARGV"
+  [ "${args[4]}" = "run" ] || return 1
+  [ "${args[5]}" = "--tail" ] || return 1
+  [ "${args[6]}" = "--console" ] || return 1
+  [ "${args[7]}" = "--" ] || return 1
+  [ "${args[8]}" = "/bin/true" ] || return 1
 }
 
 test_system_raw_self_elevation_preserves_child_switches_and_delimiter() {
@@ -2709,9 +2722,20 @@ test_public_cli_contract_guards() {
   [ "$rc" -eq 5 ] || { echo "hold run web stop: rc=$rc (want 5)" >&2; return 1; }
   grep -q 'usage: hold run .* -- <cmd>' "$TEST_ROOT/run-namespace.err" || { cat "$TEST_ROOT/run-namespace.err" >&2; return 1; }
 
-  if grep -RInE '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases' \
+  if grep -RInE '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases' \
       README.md docs examples install.sh scripts Makefile >"$TEST_ROOT/forbidden-public-names.out" 2>/dev/null; then
     cat "$TEST_ROOT/forbidden-public-names.out" >&2
+    return 1
+  fi
+  if awk '
+    /Known commands include:/ { in_known = 1; next }
+    in_known && /^```/ { fences++; if (fences == 2) in_known = fences = 0; next }
+    in_known && /^[[:space:]]*aliases?[[:space:]]*$/ { print FILENAME ":" FNR ":" $0; bad = 1 }
+    END { exit bad ? 1 : 0 }
+  ' docs/SPEC.md >"$TEST_ROOT/forbidden-command-list.out"; then
+    :
+  else
+    cat "$TEST_ROOT/forbidden-command-list.out" >&2
     return 1
   fi
 }

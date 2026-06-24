@@ -118,10 +118,10 @@ int hold_elevate_with_sudo_parsed(const char *program,
     int extra = argc;
     if (owned) {
         extra += 1;
-        if (!strcmp(command, "start") && tail) {
+        if ((!strcmp(command, "start") || !strcmp(command, "run")) && tail) {
             extra += 1;
         }
-        if (!strcmp(command, "start") && console_mode) {
+        if ((!strcmp(command, "start") || !strcmp(command, "run")) && console_mode) {
             extra += 1;
         }
         if (all) {
@@ -156,10 +156,10 @@ int hold_elevate_with_sudo_parsed(const char *program,
     int n = 0;
     if (owned) {
         canon[n++] = (char *)command;
-        if (!strcmp(command, "start") && tail) {
+        if ((!strcmp(command, "start") || !strcmp(command, "run")) && tail) {
             canon[n++] = "--tail";
         }
-        if (!strcmp(command, "start") && console_mode) {
+        if ((!strcmp(command, "start") || !strcmp(command, "run")) && console_mode) {
             canon[n++] = "--console";
         }
         if (all) {

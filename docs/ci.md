@@ -38,7 +38,7 @@ Use the installer handoff file when a workflow needs to install On Hold and use 
 
 `HOLD_INSTALL_DIR` chooses a job-local install directory. `HOLD_ENV_FILE` tells the installer to write `HOLD_BIN` and a matching `PATH` update for later steps. Appending that file to `$GITHUB_ENV` makes both values available to the rest of the job.
 
-For a runnable shell example that installs On Hold and uv, starts a web server, creates a durable alias, and restarts that alias from another directory, see [examples/uv-webserver-alias.sh](../examples/uv-webserver-alias.sh).
+For a runnable shell example that installs On Hold and uv, starts a web server, creates a durable profile, and restarts that profile from another directory, see [examples/uv-webserver-profile.sh](../examples/uv-webserver-profile.sh).
 
 ## Recipes
 
