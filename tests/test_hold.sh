@@ -2746,7 +2746,7 @@ SH
   PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" dump "$id" >"$TEST_ROOT/literal-h-command.out" || return 1
   grep -q 'literal-h-command' "$TEST_ROOT/literal-h-command.out" || { cat "$TEST_ROOT/literal-h-command.out" >&2; return 1; }
 
-  if grep -RInEi '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases|hold[[:space:]]+(start|grant|revoke)[[:space:]]+<alias>|start[[:space:]]+<alias>|known alias|alias selection|alias-labeled|alias exists|create an alias|aliases turn|local alias|system alias|alias starts|alias ambiguity|alias filtering|alias creation|run id or alias|command as an alias' \
+  if grep -RInEi '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases|hold[[:space:]]+(start|grant|revoke)[[:space:]]+<alias>|start[[:space:]]+<alias>|known alias|alias selection|alias-labeled|alias exists|create an alias|aliases turn|local alias|system alias|alias starts|alias ambiguity|alias filtering|alias creation|run id or alias|command as an alias|system:alias|grant alias|root alias|public alias/hash|root-managed alias capabilities|supplied alias|alias/hash capability|run-alias verification|behind an alias|alias was called|alias was created from|for this alias/profile|across aliases' \
       README.md docs examples install.sh scripts Makefile >"$TEST_ROOT/forbidden-public-names.out" 2>/dev/null; then
     cat "$TEST_ROOT/forbidden-public-names.out" >&2
     return 1

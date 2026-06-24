@@ -39,7 +39,7 @@ sequenceDiagram
     User->>Sudo: exec sudo -- abs_hold --system --elevated ...
     Sudo->>Root: run with root authority
     Root->>Store: load private record or profile
-    Root->>Root: verify alias/hash and run label
+    Root->>Root: verify profile/hash and run label
     Root->>Root: validate state
     Root-->>User: exit status through waitpid
 ```
@@ -52,10 +52,10 @@ Before invoking sudo, `resolve_self_executable_path` finds the current On Hold e
 
 ```mermaid
 flowchart TD
-    Public["Public alias/hash"] --> Build["Build capability argv"]
+    Public["Public profile/hash"] --> Build["Build capability argv"]
     Build --> Sudo["sudo boundary"]
     Sudo --> Verify["verify_system_alias_cap"]
-    Verify -->|alias still maps to hash| Selector["Check run selector"]
+    Verify -->|profile still maps to hash| Selector["Check run selector"]
     Verify -->|mismatch| Deny["deny"]
     Selector -->|00000000 and start| Profile["Load profile and start"]
     Selector -->|ffffffff and all action| Matches["Collect current profile matches"]
@@ -73,15 +73,15 @@ flowchart TD
     class Deny deny
 ```
 
-Root-managed alias capabilities use three argv fields:
+Root-managed profile capabilities use three argv fields:
 
 ```text
-<runid_sel> <alias> <hash>
+<runid_sel> <profile> <hash>
 ```
 
-`00000000` is valid only for `start`. `ffffffff` is valid only for approved `--all` actions. Concrete run IDs must still be recorded under the supplied alias. `cmd_elevated_capability_action` verifies the alias/hash pair first, then checks the selector rules, then loads records or profiles from the private system store.
+`00000000` is valid only for `start`. `ffffffff` is valid only for approved `--all` actions. Concrete run IDs must still be recorded under the supplied profile. `cmd_elevated_capability_action` verifies the profile/hash pair first, then checks the selector rules, then loads records or profiles from the private system store.
 
-This second verification is essential because public data was read before the sudo boundary. The alias could have changed between non-root resolution and root execution.
+This second verification is essential because public data was read before the sudo boundary. The profile mapping could have changed between non-root resolution and root execution.
 
 ## Managed sudoers
 
@@ -100,10 +100,10 @@ sequenceDiagram
     participant Visudo as visudo
     end
 
-    Admin->>On Hold: grant alias user actions
+    Admin->>On Hold: grant profile user actions
     On Hold->>On Hold: validate root authority
     On Hold->>On Hold: validate On Hold executable
-    On Hold->>Store: resolve alias to profile hash
+    On Hold->>Store: resolve profile to profile hash
     On Hold->>File: write temp file mode 0440
     On Hold->>Visudo: validate candidate
     Visudo-->>On Hold: ok

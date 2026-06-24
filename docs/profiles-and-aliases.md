@@ -5,7 +5,7 @@
 
 Outer loop bridge: deep dive for quickstart Step 5, Create a Profile.
 
-Profiles are the renamed and extended form of the original alias idea: a recorded command becomes a reusable launch target. Users get a friendly name such as `web`, while On Hold keeps the core command recipe — resolved binary plus argv — needed to start that same command again later.
+Profiles are the renamed and extended form of the original reusable-name idea: a recorded command becomes a reusable launch target. Users get a friendly name such as `web`, while On Hold keeps the core command recipe — resolved binary plus argv — needed to start that same command again later.
 
 There are two current storage modes during the rename/extension:
 
@@ -23,7 +23,7 @@ flowchart TD
     Scope -->|user-local| Recipe["Store profile recipe"]
     Scope -->|system-managed| Hash["Compute profile hash"]
     Hash --> Profile["Write root-private profile"]
-    Hash --> PublicAlias["Write public alias to hash"]
+    Hash --> PublicAlias["Write public profile map"]
     Recipe --> Future["hold profile name start"]
     PublicAlias --> Future
 
@@ -58,7 +58,7 @@ argv[1]
 ...
 ```
 
-The hash input intentionally excludes environment, current directory, UID, GID, hostname, timestamps, and On Hold version. The source comment states that existing aliases, profiles, and sudoers grants are keyed to exactly this binary-path plus argv framing.
+The hash input intentionally excludes environment, current directory, UID, GID, hostname, timestamps, and On Hold version. The source comment states that existing profile mappings, profiles, and sudoers grants are keyed to exactly this binary-path plus argv framing.
 
 This is not a run ID. A run ID names one run record. A profile hash names a protected launch recipe and appears in root-private profiles, public profile-name mappings, and sudo capability argv.
 
@@ -66,10 +66,10 @@ This is not a run ID. A run ID names one run record. A profile hash names a prot
 
 ```mermaid
 flowchart LR
-    subgraph UserAlias["User aliases.json"]
+    subgraph UserAlias["User profile map (aliases.json)"]
         UA["name -> bin + args"]
     end
-    subgraph SystemAlias["System public aliases.json"]
+    subgraph SystemAlias["System public profile map (aliases.json)"]
         SA["name -> profile hash"]
     end
     subgraph SystemProfile["System profiles.json"]

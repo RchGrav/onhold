@@ -3,7 +3,7 @@
 > Status: This page describes the current 0.3.x/legacy implementation contract. For the 0.4.0 `hold` redesign target and current branch gap matrix, see [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md).
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Documentation plan](PLAN.md) | [Repository README](../README.md)
 
-This document describes the current On Hold implementation contract: user-local state, root-managed state, public redacted discovery, alias/profile resolution, sudo-aware target resolution, argv-preserving fork/wait self-elevation, and process-safety behavior.
+This document describes the current On Hold implementation contract: user-local state, root-managed state, public redacted discovery, profile/internal-alias resolution, sudo-aware target resolution, argv-preserving fork/wait self-elevation, and process-safety behavior.
 
 ## 1. Storage contexts
 
@@ -62,7 +62,7 @@ private sockets:      0600 root:root
 private profiles:     0600 root:root
 public dir:           0755 root:root
 public index files:   0644 root:root
-public aliases:       0644 root:root
+public profile map:   0644 root:root
 ```
 
 A root-managed start must never create a run under `/root/.local/state/hold` and must never accidentally create a root-managed run inside the invoking user's home state.
@@ -275,7 +275,7 @@ profile hashes
 
 Private root records are authoritative. Public records are derived discovery data.
 
-Private run records store the resolved executable path in `argv[0]`. If a command is launched through a relative path, that relative token is resolved before the record is written, so profiles created from the run inherit an absolute launch recipe instead of depending on the alias creator's current directory.
+Private run records store the resolved executable path in `argv[0]`. If a command is launched through a relative path, that relative token is resolved before the record is written, so profiles created from the run inherit an absolute launch recipe instead of depending on the profile creator's current directory.
 
 Because On Hold is daemonless and cannot continuously refresh root-public state after natural process exit, normal `hold list` displays public root rows as `unknown` rather than overselling stale `running` hints. Root/private list and root action commands evaluate authoritative state from private records.
 
@@ -401,8 +401,8 @@ normal On Hold targets the user-local match and does not self-elevate.
 ### 7.2 Root/sudo plain target
 
 ```text
-root_match = root-managed private ID exists, or alias matches the verb-specific root-managed run set
-user_match = invoking-user-local ID exists, or alias matches the verb-specific invoking-user run set, if sudo provenance exists
+root_match = root-managed private ID exists, or profile matches the verb-specific root-managed run set
+user_match = invoking-user-local ID exists, or profile matches the verb-specific invoking-user run set, if sudo provenance exists
 
 if root_match:
   target root-managed
@@ -458,7 +458,7 @@ argv[1] index, argv[1]
 ...
 ```
 
-The domain string `hold-profile` is a fixed namespace label, not a version. Do not append versions or add environment, cwd, uid, timestamp, hostname, or other context to this hash input. Existing aliases, profiles, and sudoers grants are keyed by this digest; changing the input silently invalidates them.
+The domain string `hold-profile` is a fixed namespace label, not a version. Do not append versions or add environment, cwd, uid, timestamp, hostname, or other context to this hash input. Existing profile mappings, profiles, and sudoers grants are keyed by this digest; changing the input silently invalidates them.
 
 On Hold does not scrub, allowlist, capture, or hash the launched command's environment. `perform_start` and profile starts use the inherited process environment unchanged. Privilege-crossing starts rely on sudo's standard `env_reset` behavior before root On Hold reaches `perform_start`; disabling `env_reset` or preserving loader variables through sudoers is host sudo policy, not On Hold policy.
 
@@ -632,7 +632,7 @@ fsync containing directory when possible
 
 On Hold launches the child in a new session / process group. Child `stdin` is redirected from `/dev/null`; child `stdout` and `stderr` are redirected to the per-run log.
 
-Start writes only the bare 8-character run ID to stdout. Human banners and confirmations, including `alias`, `grant`, `revoke`, `stop`, `kill`, and `prune` status lines, go to stderr and are suppressed by `--quiet` where applicable. `hold -f <cmd...>` starts and follows the log immediately; `--tail` remains accepted as a compatibility spelling.
+Start writes only the bare 8-character run ID to stdout. Human banners and confirmations, including `profile`, `grant`, `revoke`, `stop`, `kill`, and `prune` status lines, go to stderr and are suppressed by `--quiet` where applicable. `hold -f <cmd...>` starts and follows the log immediately; `--tail` remains accepted as a compatibility spelling.
 
 An exec-success handshake distinguishes successful `execvp()` from immediate exec failure:
 
@@ -700,7 +700,7 @@ Before writing sudoers, On Hold resolves its own executable path and refuses to 
 alice ALL=(root) NOPASSWD: /usr/bin/hold ^--system --elevated (start|stop) [0-9a-f]{8} web-test <hash>$
 ```
 
-The managed file path is `/etc/sudoers.d/hold_<alias>_<user>` in production. Test builds may use `HOLD_TEST_SUDOERS_DIR`. Writes go to a same-directory `.tmp` candidate, use mode `0440`, are validated with `visudo -cf <tmp>`, and then `rename()` into place.
+The managed file path is `/etc/sudoers.d/hold_<profile>_<user>` in production. Test builds may use `HOLD_TEST_SUDOERS_DIR`. Writes go to a same-directory `.tmp` candidate, use mode `0440`, are validated with `visudo -cf <tmp>`, and then `rename()` into place.
 
 ## 15. Test harness contract
 

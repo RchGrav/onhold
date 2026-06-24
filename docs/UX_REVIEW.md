@@ -40,11 +40,11 @@ The help text is concise, but users still need to remember which verb applies no
 
 Suggested fix: add an interactive dashboard / command mode where users can type `?`, select a run, and see valid actions.
 
-### 2. “Alias” is underpowered as the main reusable concept
+### 2. Profiles are the right reusable concept
 
-The docs already discuss protected profiles, but the user-facing command is `alias`. For advanced features, “alias” sounds like a shell nickname, not a managed reusable launch profile with policy, console behavior, environment, cwd, readiness checks, and access controls.
+The docs already discuss protected profiles, and the user-facing command should consistently be `profile`. For advanced features, a profile can represent a managed reusable launch target with policy, console behavior, environment, cwd, readiness checks, and access controls.
 
-Suggested fix: introduce `profile` as the primary noun and keep `alias` as a friendly backwards-compatible shortcut.
+Suggested fix: make `profile` the primary noun and remove `alias` from the public 0.4.0 command surface.
 
 ### 3. Profile creation from a running command does not adopt that running command
 
@@ -66,9 +66,9 @@ Suggested fix options:
 
 ### 4. `list` omits key human context
 
-Current `hold list` columns are `RUNID STATE STARTED RESULT CMD`. It does not show alias/profile label, console availability, scope, or log size/path. The user must remember or inspect separate commands.
+Current `hold list` columns are `RUNID STATE STARTED RESULT CMD`. It does not show profile label, console availability, scope, or log size/path. The user must remember or inspect separate commands.
 
-Suggested fix: default human list should include profile/alias and affordances, e.g.:
+Suggested fix: default human list should include profile and affordances, e.g.:
 
 ```text
 NAME     ID        STATE    AGE  MODE     CMD
@@ -816,9 +816,9 @@ Protect the automation contract:
 ### Phase 1: Clarify and make current UX friendlier
 
 - Add public `profile` commands over existing internal alias/profile storage.
-- Add alias/profile column to `list`.
+- Add profile column to `list`.
 - Add `status` / `inspect` command.
-- Decide whether `alias <id> <name>` adopts the source run or warns clearly.
+- Decide whether `profile save <id> as <name>` adopts the source run or warns clearly.
 - Add `rm` or `stop --prune`.
 - Improve start banner with profile/name hints.
 

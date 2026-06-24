@@ -44,7 +44,7 @@ flowchart TD
     class NotFound miss
 ```
 
-For normal users, user-local matches win over root-public matches. This is deliberate: a local token should not unexpectedly cross a privilege boundary merely because the same prefix or alias is visible in the system public index.
+For normal users, user-local matches win over root-public matches. This is deliberate: a local token should not unexpectedly cross a privilege boundary merely because the same prefix or profile is visible in the system public index.
 
 `user:<target>` disables system lookup. `system:<target>` disables user lookup and may require sudo self-elevation.
 

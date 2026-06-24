@@ -1,13 +1,13 @@
 # Parameterized profiles (design note)
 
-[Future work](README.md) | [Docs index](../index.md) | [Profiles and aliases](../profiles-and-aliases.md) | [Security](../security.md)
+[Future work](README.md) | [Docs index](../index.md) | [Profiles and storage aliases](../profiles-and-aliases.md) | [Security](../security.md)
 
 Status: future-work proposal, not current behavior. This supersedes the earlier
 sketch and captures the design as discussed.
 
 ## Goal
 
-A general, easy, flexible way to delegate a hash-pinned command behind an alias,
+A general, easy, flexible way to delegate a hash-pinned command behind a profile,
 exposing a small set of **optional, validated inputs**, without revealing what is
 behind it. "Easy" and "flexible" are the goals; the sudo grant model is the
 *envelope* those goals live inside, not the limit of what the system can enforce.
@@ -27,15 +27,14 @@ behind it. "Easy" and "flexible" are the goals; the sudo grant model is the
   argv *and* its input rules, so neither the command nor the allowed-input rules
   can drift without changing the identity the grant is keyed to.
 
-The run record stores **only the alias** that was called — never the hash,
-profile, target binary, argv, or input values.
+The run record stores only the profile label (currently in the internal `alias` field) that was called — never the hash, target binary, argv, or input values.
 
 ## The additive modifier model
 
 The base argv (the NUL-separated list after the program) is **immutable and is the
 default**. Parameterizing never edits it. Parameters are **optional, regex-bounded
 modifiers tacked on** — a fixed flag plus a constrained value (or a bare optional
-flag). Omit everything and you get the exact command the alias was created from,
+flag). Omit everything and you get the exact command the profile was created from,
 which by construction is a known-good invocation.
 
 This is fail-safe and additive-only: parameters can only *add* validated trailing
@@ -153,7 +152,7 @@ focused, stateful session — like editing a partition table:
    against the hash-pinned profile -- the first, expressive layer.
 3. hold composes the argv that crosses sudo:
      sudo -- <abs_hold> --system --elevated report <hash> --date 2026-06-19 --mode summary
-4. sudoers matches it against the managed, anchored regex for this alias/profile
+4. sudoers matches it against the managed, anchored regex for this profile
    (coarse structural gate; the binary + --elevated + hash + input shape).
 5. if admitted, sudo starts root hold.
 6. root hold loads the profile by hash, re-validates each value against the
@@ -178,7 +177,7 @@ What the *gate* can express, from `man sudoers`:
   the inter-token space is part of the pattern (hence "value classes must not
   match a space");
 - regexes are limited to **1024 characters** — budget the composed rule; granting
-  many modifiers at once may force splitting across aliases;
+  many modifiers at once may force splitting across profiles;
 - in regex mode only `#` needs escaping;
 - whole-pattern case-insensitivity via a leading `(?i)` (not per-token);
 - an unspecified argument list means **any** arguments are allowed — the grant must

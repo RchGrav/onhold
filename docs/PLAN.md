@@ -68,9 +68,9 @@ Planned diagrams: sequence diagram for `perform_start`; state diagram for start 
 
 ### `docs/store.md`
 
-Documents the user-local and system-managed stores, including paths, permissions, private records, logs, console sockets, `profiles.json`, public aliases, and redacted public run indexes. It should describe the JSON record fields actually written by `write_record_atomic`, the public fields actually written by `write_public_index_atomic`, and the atomic temp + fsync + rename pattern. It should explicitly distinguish private authoritative records from public discovery records.
+Documents the user-local and system-managed stores, including paths, permissions, private records, logs, console sockets, `profiles.json`, public profile maps, and redacted public run indexes. It should describe the JSON record fields actually written by `write_record_atomic`, the public fields actually written by `write_public_index_atomic`, and the atomic temp + fsync + rename pattern. It should explicitly distinguish private authoritative records from public discovery records.
 
-Planned diagrams: ER-style Mermaid diagram for records/profiles/aliases/public indexes; flowchart for atomic writes and rollback.
+Planned diagrams: ER-style Mermaid diagram for records/profiles/profile maps/public indexes; flowchart for atomic writes and rollback.
 
 ### `docs/identity.md`
 
@@ -82,17 +82,17 @@ Planned diagrams: flowchart for `eval_state`; state diagram for `running`, `exit
 
 Explains how user input tokens become concrete targets for action commands. It should cover plain IDs and prefixes, profiles, `user:` and `system:` scopes, user-local precedence for normal users, root-private precedence under sudo, public root discovery, profile ambiguity, `--all`, verb-specific profile filtering, and the difference between `resolve_target` for profile creation and `resolve_action_token` for multi-target action execution.
 
-Planned diagrams: flowchart for normal non-root resolution; flowchart for root/sudo resolution; compact decision table for verb-specific alias intent.
+Planned diagrams: flowchart for normal non-root resolution; flowchart for root/sudo resolution; compact decision table for verb-specific profile intent.
 
 ### `docs/profiles-and-aliases.md`
 
 Documents reusable launch recipes and capability fingerprints. It should cover user-local recipe profiles, root-managed profile hashes, public profile-to-hash entries, protected profile loading, `start <profile>`, `--multi`, and why `profile_hash_for_argv` hashes only the fixed namespace string, resolved binary path, argc, and indexed argv fields. It should state that environment, cwd, uid, timestamps, host data, and versions are not part of the hash because the digest is a stable capability key in the current implementation.
 
-Planned diagrams: flowchart from recorded run to alias/profile; record diagram for user alias recipe vs root profile hash.
+Planned diagrams: flowchart from recorded run to profile; record diagram for user profile recipe vs root profile hash.
 
 ### `docs/security.md`
 
-Documents the root/system and sudo self-elevation model. It should cover invocation provenance from `SUDO_UID`, `SUDO_GID`, and `SUDO_USER`; `--system`; internal `--elevated`; argv-preserving `fork` + `execvp("sudo")`; executable path resolution; alias/hash capability handoff; selector sentinels `00000000` and `ffffffff`; run-alias verification before privileged action; sudoers grant/revoke file generation; `visudo` validation; and root-owned executable checks. The "why" should focus on preserving the validate-before-signal model across privilege boundaries without adding a daemon or shell command string.
+Documents the root/system and sudo self-elevation model. It should cover invocation provenance from `SUDO_UID`, `SUDO_GID`, and `SUDO_USER`; `--system`; internal `--elevated`; argv-preserving `fork` + `execvp("sudo")`; executable path resolution; profile/hash capability handoff; selector sentinels `00000000` and `ffffffff`; run-profile verification before privileged action; sudoers grant/revoke file generation; `visudo` validation; and root-owned executable checks. The "why" should focus on preserving the validate-before-signal model across privilege boundaries without adding a daemon or shell command string.
 
 Planned diagrams: sequence diagram for non-root action self-elevation; sequence diagram for `grant`/`revoke`; flowchart for capability verification.
 

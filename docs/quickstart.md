@@ -221,7 +221,7 @@ Profiles are how On Hold turns an ephemeral run into a repeatable workflow witho
 
 Next: Step 6 shows how root can delegate one registered tool without granting broad root access.
 
-Dig deeper: [Profiles and aliases](profiles-and-aliases.md) explains user recipes, system profile hashes, profile matching, `--multi`, and `--all`.
+Dig deeper: [Profiles and storage aliases](profiles-and-aliases.md) explains user recipes, system profile hashes, profile matching, `--multi`, and `--all`.
 
 ## Step 6: Delegate One Root-Managed Tool
 
@@ -253,16 +253,16 @@ Expect:
 
 ```mermaid
 flowchart LR
-    Root["root registers tool"] --> Alias["root alias"]
-    Alias --> Grant["grant selected actions"]
-    Grant --> User["user runs system:alias"]
+    Root["root registers tool"] --> Profile["root profile"]
+    Profile --> Grant["grant selected actions"]
+    Grant --> User["user runs system:profile"]
     User --> Verify["root re-verifies"]
     Verify --> Action["authorized action only"]
 
     classDef root fill:#ede9fe,stroke:#6d28d9,color:#3b0764
     classDef user fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
     classDef safe fill:#dcfce7,stroke:#15803d,color:#14532d
-    class Root,Alias,Grant root
+    class Root,Profile,Grant root
     class User user
     class Verify,Action safe
 ```

@@ -50,12 +50,12 @@ flowchart LR
     Provenance["Root provenance<br/>invoked_by_uid<br/>invoked_by_gid<br/>invoked_by_user<br/>invoked_via_sudo"]
     Public["Public index<br/>id<br/>root_managed<br/>requires_elevation<br/>alias<br/>state_hint<br/>started_at"]
     Profile["Root-private profile<br/>hash<br/>bin<br/>args"]
-    Alias["Alias entry<br/>name<br/>hash or recipe"]
+    Alias["Profile map entry<br/>name<br/>hash or recipe"]
 
     Run --> Provenance
     Run -->|"redacted discovery"| Public
     ProfileMap -->|"system profile map"| Profile
-    Alias -->|"user alias"| Run
+    Alias -->|"user profile recipe"| Run
 
     classDef authority fill:#fef3c7,stroke:#b45309,color:#78350f
     classDef public fill:#dcfce7,stroke:#15803d,color:#14532d
@@ -95,7 +95,7 @@ flowchart TD
     class Fail,Cleanup fail
 ```
 
-Private run records are written as `.<id>.tmp` and renamed to `<id>.json`. Public index records use the same pattern in the public directory. Profile and alias files are also written through temp files and atomic rename, then the containing directory is fsynced where the code can do so.
+Private run records are written as `.<id>.tmp` and renamed to `<id>.json`. Public index records use the same pattern in the public directory. Profile files and internal profile-map files are also written through temp files and atomic rename, then the containing directory is fsynced where the code can do so.
 
 This pattern matters because On Hold has no daemon to reconstruct partially written state. If a process is recorded, future actions must be able to trust that the record is syntactically complete enough to load and evaluate.
 
