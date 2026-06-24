@@ -88,7 +88,7 @@ grep -n "full .*product direction\|release criteria\|later minor\|implementation
 
 Result: local links in touched files resolved, static-artifact caveats were present in the expected docs, stale historical pass claims were absent, and 0.4.0 scope/alignment language was present.
 
-Latest implementation pass: `make test` was run on this branch after adding name-first profile command editing/CRUD and passed (103 shell tests, viewer filter engine, and profile-hash vectors). Earlier docs-only review notes above remain link/grep evidence only and should not be reused as runtime proof.
+Latest implementation pass: `make test` was run on this branch after adding name-first profile command editing/CRUD and a shell profile submode and passed (104 shell tests, viewer filter engine, and profile-hash vectors). Earlier docs-only review notes above remain link/grep evidence only and should not be reused as runtime proof.
 
 ## Release-readiness checklist
 
@@ -104,5 +104,5 @@ Latest implementation pass: `make test` was run on this branch after adding name
 ## Current caveats
 
 - This branch now includes both documentation alignment and initial profile-editing implementation slices.
-- The implementation test evidence in this file is limited to the 2026-06-23 run after the name-first profile command edit/CRUD work: `make test` passed with 103 shell tests plus viewer filter and profile-hash vectors. It does not certify the remaining 0.4.0 release-readiness checklist items.
+- The implementation test evidence in this file is limited to the 2026-06-23 run after the name-first profile command edit/CRUD and shell-submode work: `make test` passed with 104 shell tests plus viewer filter and profile-hash vectors. It does not certify the remaining 0.4.0 release-readiness checklist items.
 - Any future reviewer who reruns `make test` should update this status with the exact command, date, environment, and result.

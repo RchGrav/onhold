@@ -2205,6 +2205,32 @@ test_mund_shell_scripted_commands() {
   grep -q 'NAME' "$TEST_ROOT/mund-shell.out" || { cat "$TEST_ROOT/mund-shell.out" >&2; return 1; }
 }
 
+test_mund_shell_profile_submode() {
+  printf '%s\n' \
+    'profile shell-prof' \
+    'create -- /bin/echo shell profile' \
+    'show' \
+    'back' \
+    'profile shell-prof show' \
+    'profile shell-prof delete' \
+    'exit' | "$SIGMUND_BIN" shell >"$TEST_ROOT/mund-shell-profile.out" 2>"$TEST_ROOT/mund-shell-profile.err" || {
+      cat "$TEST_ROOT/mund-shell-profile.out" "$TEST_ROOT/mund-shell-profile.err" >&2
+      return 1
+    }
+  [ ! -s "$TEST_ROOT/mund-shell-profile.err" ] || {
+    cat "$TEST_ROOT/mund-shell-profile.err" >&2
+    return 1
+  }
+  grep -Fxq "profile shell-prof" "$TEST_ROOT/mund-shell-profile.out" || {
+    cat "$TEST_ROOT/mund-shell-profile.out" >&2
+    return 1
+  }
+  grep -Eq "^set command -- (/usr)?/bin/echo shell profile$" "$TEST_ROOT/mund-shell-profile.out" || {
+    cat "$TEST_ROOT/mund-shell-profile.out" >&2
+    return 1
+  }
+}
+
 test_build_artifact_coexistence() {
   make clean >/dev/null || return 1
   make sigmund mund STATIC_LDFLAGS= EXTRA_CPPFLAGS=-DSIGMUND_TESTING >/dev/null || return 1
@@ -2747,6 +2773,7 @@ run_test "stop supports multiple IDs in one command" test_stop_multiple_ids
 run_test "argument edge cases" test_argument_edges
 run_test "mund unified CLI surface" test_mund_unified_cli_surface
 run_test "mund shell runs scripted commands" test_mund_shell_scripted_commands
+run_test "mund shell profile submode runs local profile commands" test_mund_shell_profile_submode
 run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture
 run_test "view filters run logs literally and by similarity" test_log_view_filter_cli

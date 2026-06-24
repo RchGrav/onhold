@@ -14,6 +14,7 @@ static int shell_split_line(const char *line, char ***argv_out, int *argc_out);
 static void shell_free_argv(char **argv, int argc);
 static int shell_exec_command(const char *program, int argc, char **argv);
 static int shell_map_slash_view(char **argv, int argc, char ***mapped_out, int *mapped_argc_out);
+static int shell_map_profile_context(const char *name, char **argv, int argc, char ***mapped_out, int *mapped_argc_out);
 static int sigmund_run_captive_shell(const char *program);
 
 static const char *program_basename(const char *path) {
@@ -192,6 +193,28 @@ static int shell_map_slash_view(char **argv, int argc, char ***mapped_out, int *
     return 1;
 }
 
+static int shell_map_profile_context(const char *name, char **argv, int argc, char ***mapped_out, int *mapped_argc_out) {
+    *mapped_out = NULL;
+    *mapped_argc_out = 0;
+    if (!name || !*name || argc <= 0) {
+        return 0;
+    }
+    int out_argc = argc + 2;
+    char **out = calloc((size_t)out_argc, sizeof(*out));
+    if (!out) {
+        return 3;
+    }
+    int o = 0;
+    out[o++] = shell_strdup("profile");
+    out[o++] = shell_strdup(name);
+    for (int i = 0; i < argc; i++) {
+        out[o++] = shell_strdup(argv[i]);
+    }
+    *mapped_out = out;
+    *mapped_argc_out = out_argc;
+    return 1;
+}
+
 static int shell_exec_command(const char *program, int argc, char **argv) {
     char **child_argv = calloc((size_t)argc + 2, sizeof(*child_argv));
     if (!child_argv) {
@@ -233,12 +256,17 @@ static int sigmund_run_captive_shell(const char *program) {
     char *line = NULL;
     size_t cap = 0;
     int last_rc = 0;
+    char profile_ctx[ALIAS_MAX_LEN + 1] = {0};
     if (interactive) {
-        printf("mund shell — type help, /profiles, /runs, or exit\n");
+        printf("mund shell — type help, /profiles, profile <name>, back, or exit\n");
     }
     while (1) {
         if (interactive) {
-            printf("mund> ");
+            if (profile_ctx[0]) {
+                printf("mund(profile:%s)> ", profile_ctx);
+            } else {
+                printf("mund> ");
+            }
             fflush(stdout);
         }
         ssize_t n = getline(&line, &cap, stdin);
@@ -263,6 +291,17 @@ static int sigmund_run_captive_shell(const char *program) {
             shell_free_argv(argv, argc);
             break;
         }
+        if (!strcmp(argv[0], "back")) {
+            if (argc == 1) {
+                profile_ctx[0] = '\0';
+                last_rc = 0;
+            } else {
+                fprintf(stderr, "mund: usage: back\n");
+                last_rc = 5;
+            }
+            shell_free_argv(argv, argc);
+            continue;
+        }
         if (!strcmp(argv[0], "cd")) {
             if (argc != 2 || chdir(argv[1]) != 0) {
                 fprintf(stderr, "mund: cd failed%s%s\n", argc == 2 ? ": " : "", argc == 2 ? strerror(errno) : "usage: cd <dir>");
@@ -273,9 +312,25 @@ static int sigmund_run_captive_shell(const char *program) {
             shell_free_argv(argv, argc);
             continue;
         }
+        if (!strcmp(argv[0], "profile") && argc == 2) {
+            if (!sigmund_valid_alias(argv[1])) {
+                fprintf(stderr, "mund: invalid profile name '%s'\n", argv[1]);
+                last_rc = 5;
+            } else {
+                snprintf(profile_ctx, sizeof(profile_ctx), "%s", argv[1]);
+                last_rc = 0;
+            }
+            shell_free_argv(argv, argc);
+            continue;
+        }
         char **mapped = NULL;
         int mapped_argc = 0;
-        int mapped_rc = shell_map_slash_view(argv, argc, &mapped, &mapped_argc);
+        int mapped_rc = 0;
+        if (profile_ctx[0] && argv[0][0] != '/') {
+            mapped_rc = shell_map_profile_context(profile_ctx, argv, argc, &mapped, &mapped_argc);
+        } else {
+            mapped_rc = shell_map_slash_view(argv, argc, &mapped, &mapped_argc);
+        }
         if (mapped_rc < 0 || mapped_rc > 1) {
             last_rc = mapped_rc;
             shell_free_argv(argv, argc);

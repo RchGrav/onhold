@@ -201,7 +201,7 @@ static int help_action(const char *action) {
     } else if (!strcmp(action, "doctor")) {
         printf("usage: mund doctor\n\nCheck local Sigmund/Mund paths and build identity.\n");
     } else if (!strcmp(action, "shell")) {
-        printf("usage: mund shell\n\nEnter the captive operator shell. Slash views map to normal commands: /profiles, /runs, /running, /stale.\n");
+        printf("usage: mund shell\n\nEnter the captive operator shell. Slash views map to normal commands: /profiles, /runs, /running, /stale. Type `profile <name>` to enter a profile submode, then use local commands such as `show`, `create -- <cmd>`, `set command -- <cmd>`, `start`, `rename <new-name>`, or `delete`; `back` returns to the top prompt.\n");
     } else if (!strcmp(action, "grant") || !strcmp(action, "revoke")) {
         printf("usage: sigmund %s <alias> <user> [start,stop,kill,tail,dump,prune,console]\n\nManage Sigmund-owned sudoers access for a root-managed alias.\n", action);
     } else {
