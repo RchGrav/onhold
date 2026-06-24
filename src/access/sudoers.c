@@ -211,6 +211,33 @@ out:
     return rc;
 }
 
+static int subject_grant_has_action(const char *json, const char *required_action) {
+    if (!required_action || !*required_action) {
+        return 0;
+    }
+    const char *v = NULL;
+    if (hold_json_find_key(json, "actions", &v) != 0 || *v != '[') {
+        return -1;
+    }
+    v = hold_skip_ws(v + 1);
+    while (*v && *v != ']') {
+        char action[32];
+        if (hold_parse_json_string(v, action, sizeof(action), &v) != 0) {
+            return -1;
+        }
+        if (strcmp(action, required_action) == 0) {
+            return 0;
+        }
+        v = hold_skip_ws(v);
+        if (*v == ',') {
+            v = hold_skip_ws(v + 1);
+        } else if (*v != ']') {
+            return -1;
+        }
+    }
+    return -1;
+}
+
 static int unlink_subject_grant_copy(const struct hold_store *system_store,
                                      const char *subject,
                                      const char *profile) {
@@ -246,6 +273,7 @@ int hold_load_subject_grant_profile(const struct hold_store *system_store,
                                       const char *subject,
                                       const char *profile,
                                       const char *expected_hash,
+                                      const char *required_action,
                                       struct hold_profile *profile_out) {
     memset(profile_out, 0, sizeof(*profile_out));
     if (!hold_valid_profile_hash(expected_hash)) { errno = EINVAL; return -1; }
@@ -265,7 +293,8 @@ int hold_load_subject_grant_profile(const struct hold_store *system_store,
     if (hold_json_get_str(j, "subject", subject_in, sizeof(subject_in)) != 0 || strcmp(subject_in, subject) != 0 ||
         hold_json_get_str(j, "profile", profile_in, sizeof(profile_in)) != 0 || strcmp(profile_in, profile) != 0 ||
         hold_json_get_str(j, "binary_path", profile_out->binary_path, sizeof(profile_out->binary_path)) != 0 ||
-        hold_json_get_argv_alloc(j, &argv, &argc) != 0) {
+        hold_json_get_argv_alloc(j, &argv, &argc) != 0 ||
+        subject_grant_has_action(j, required_action) != 0) {
         errno = EINVAL;
         goto out;
     }

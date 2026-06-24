@@ -706,11 +706,10 @@ void hold_usage(void) {
            HOLD_VERSION);
 }
 
-static int json_request_get_op(const char *json, char *op, size_t op_n, char *profile, size_t profile_n, bool *force) {
+static int json_request_get_op(const char *json, char *op, size_t op_n, bool *force) {
     int64_t v = 0;
     if (hold_json_get_i64(json, "v", &v) != 0 || v != 1 ||
-        hold_json_get_str(json, "op", op, op_n) != 0 ||
-        hold_json_get_str(json, "profile", profile, profile_n) != 0) {
+        hold_json_get_str(json, "op", op, op_n) != 0) {
         return -1;
     }
     bool parsed_force = false;
@@ -743,17 +742,20 @@ int hold_cmd_cap_request_action(const struct hold_invocation *inv,
         fprintf(stderr, "hold: error: malformed capability request\n");
         return 5;
     }
+    if (decoded_len >= sizeof(decoded)) {
+        fprintf(stderr, "hold: error: oversized capability request\n");
+        return 5;
+    }
+    decoded[decoded_len] = '\0';
     char op[32];
-    char json_profile[ALIAS_MAX_LEN + 1];
     bool force = false;
-    if (json_request_get_op((const char *)decoded, op, sizeof(op), json_profile, sizeof(json_profile), &force) != 0 ||
-        strcmp(json_profile, profile) != 0) {
+    if (json_request_get_op((const char *)decoded, op, sizeof(op), &force) != 0) {
         fprintf(stderr, "hold: error: invalid capability request\n");
         return 5;
     }
     const char *subject = (inv->have_sudo_user && inv->invoking_user[0]) ? inv->invoking_user : "root";
     struct hold_profile granted;
-    if (hold_load_subject_grant_profile(system_store, subject, profile, hash, &granted) != 0) {
+    if (hold_load_subject_grant_profile(system_store, subject, profile, hash, op, &granted) != 0) {
         fprintf(stderr, "hold: error: capability for '%s' is no longer valid\n", profile);
         return 3;
     }

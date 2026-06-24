@@ -29,6 +29,7 @@ int hold_load_subject_grant_profile(const struct hold_store *system_store,
                                       const char *subject,
                                       const char *profile,
                                       const char *expected_hash,
+                                      const char *required_action,
                                       struct hold_profile *profile_out);
 int hold_cmd_grant_revoke_action(const struct hold_invocation *inv,
                                    const struct hold_store *system_store,

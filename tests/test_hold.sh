@@ -1780,7 +1780,7 @@ test_system_alias_start_self_elevates_alias() {
 
 test_grant_revoke_writes_hash_scoped_sudoers() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
-  local safe safe_real out id hash grant_hash sudoers_dir sudoers_file grant_private grant_public rc visudo_ok sh_bin
+  local safe safe_real out id hash grant_hash grant_digest cap_token cap_out cap_id sudoers_dir sudoers_file grant_private grant_public grant_private_saved rc visudo_ok sh_bin
   safe="$TEST_ROOT/hold-safe"
   sh_bin="$(resolve_path /bin/sh)" || return 1
   cp "$HOLD_REAL_BIN" "$safe" || return 1
@@ -1820,6 +1820,8 @@ test_grant_revoke_writes_hash_scoped_sudoers() {
   root_grep "\"source_hash\": \"$hash\"" "$grant_private" || { as_root cat "$grant_private" >&2; return 1; }
   grant_hash=$(as_root sed -n 's/.*"hash": "\([0-9a-f][0-9a-f]*\)".*/\1/p' "$grant_public")
   [ -n "$grant_hash" ] || { as_root cat "$grant_public" >&2; return 1; }
+  grant_digest=$(as_root cat "$grant_private" | sha256_stdin) || return 1
+  [ "$grant_hash" = "$grant_digest" ] || { echo "grant hash $grant_hash != private digest $grant_digest" >&2; return 1; }
   root_grep '# actions-list: start,stop' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
   root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^run web-sys --cap $grant_hash [A-Za-z0-9_-]{1,768}$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
 
@@ -1837,15 +1839,57 @@ test_grant_revoke_writes_hash_scoped_sudoers() {
   [ "${args[3]}" = "web-sys" ] || return 1
   [ "${args[4]}" = "--cap" ] || return 1
   [ "${args[5]}" = "$grant_hash" ] || return 1
-  printf '%s\n' "${args[6]}" | grep -Eq '^[A-Za-z0-9_-]+$' || return 1
+  [ "${args[6]}" = "eyJ2IjoxLCJvcCI6InN0YXJ0IiwiZm9yY2UiOmZhbHNlfQ" ] || return 1
   ! grep -qx -- '--system' "$HOLD_FAKE_SUDO_ARGV" || return 1
   ! grep -qx -- '--elevated' "$HOLD_FAKE_SUDO_ARGV" || return 1
+
+  cap_token="eyJ2IjoxLCJvcCI6InN0YXJ0IiwiZm9yY2UiOmZhbHNlfQ"
+  cap_out=$(as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" run web-sys --cap "$grant_hash" "$cap_token" 2>&1) || { printf '%s\n' "$cap_out" >&2; return 1; }
+  cap_id=$(printf '%s\n' "$cap_out" | extract_id)
+  [ -n "$cap_id" ] || { printf '%s\n' "$cap_out" >&2; return 1; }
+  grant_private_saved="$grant_private.saved"
+  as_root cp "$grant_private" "$grant_private_saved" || return 1
+  as_root sh -c '
+    tmp="$1.tmp"
+    while IFS= read -r line; do
+      case "$line" in
+        *\"actions\"*) printf "%s\n" "  \"actions\": [\"stop\"]" ;;
+        *) printf "%s\n" "$line" ;;
+      esac
+    done < "$1" > "$tmp" &&
+    cat "$tmp" > "$1" &&
+    rm -f "$tmp"
+  ' sh "$grant_private" || return 1
+  set +e
+  as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" run web-sys --cap "$grant_hash" "$cap_token" >"$TEST_ROOT/cap-action-tamper.out" 2>"$TEST_ROOT/cap-action-tamper.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 1
+  grep -q 'capability' "$TEST_ROOT/cap-action-tamper.err" || { cat "$TEST_ROOT/cap-action-tamper.err" >&2; return 1; }
+  as_root cp "$grant_private_saved" "$grant_private" || return 1
+  as_root sh -c 'printf "\n" >> "$1"' sh "$grant_private" || return 1
+  set +e
+  as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" run web-sys --cap "$grant_hash" "$cap_token" >"$TEST_ROOT/cap-tamper.out" 2>"$TEST_ROOT/cap-tamper.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 1
+  grep -q 'capability' "$TEST_ROOT/cap-tamper.err" || { cat "$TEST_ROOT/cap-tamper.err" >&2; return 1; }
 
   as_root "$safe" revoke web-sys "$TEST_USER" start >"$TEST_ROOT/revoke.out" 2>"$TEST_ROOT/revoke.err" || { cat "$TEST_ROOT/revoke.out" "$TEST_ROOT/revoke.err" >&2; return 1; }
   grant_hash=$(as_root sed -n 's/.*"hash": "\([0-9a-f][0-9a-f]*\)".*/\1/p' "$grant_public")
   [ -n "$grant_hash" ] || { as_root cat "$grant_public" >&2; return 1; }
   root_grep '# actions-list: stop' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
   root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^run web-sys --cap $grant_hash [A-Za-z0-9_-]{1,768}$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  set +e
+  as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" run web-sys --cap "$grant_hash" "$cap_token" >"$TEST_ROOT/cap-start-with-stop-only.out" 2>"$TEST_ROOT/cap-start-with-stop-only.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 1
+  grep -q 'capability' "$TEST_ROOT/cap-start-with-stop-only.err" || { cat "$TEST_ROOT/cap-start-with-stop-only.err" >&2; return 1; }
 
   as_root "$safe" grant web-sys "$TEST_USER" >"$TEST_ROOT/grant-all.out" 2>"$TEST_ROOT/grant-all.err" || { cat "$TEST_ROOT/grant-all.out" "$TEST_ROOT/grant-all.err" >&2; return 1; }
   grant_hash=$(as_root sed -n 's/.*"hash": "\([0-9a-f][0-9a-f]*\)".*/\1/p' "$grant_public")

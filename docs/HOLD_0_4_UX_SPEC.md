@@ -222,19 +222,23 @@ Hash authority rule:
 
 1. Resolve the requesting subject and profile name.
 2. Load that subject's private grant/profile copy.
-3. Canonicalize the fields that define the privileged launch/request contract.
-4. Compute SHA-256 from the canonical subject-private material.
+3. Compute SHA-256 from the full subject-private grant/profile material.
 4. Compare the computed hash with the hash carried by a capability or sudoers
    entry.
 5. Refuse the request if they differ.
 
 For the inherited 0.3.x/current model, the hash input is the resolved absolute
 binary path plus argc/argv framing. For 0.4 grants, the hash input is the
-canonical serialized subject-private profile copy: the immutable command/argv
-recipe, persistent Docker-shaped profile flags (`interactive`, `tty`, `detach`,
-`restart`, etc. as implemented), operation/default-run policy, and any explicit
-0.4 request-validation rules. Do not include descriptive metadata such as
-comments, display labels, timestamps, or formatting.
+full subject-private profile/grant copy, not just the embedded CLI. That means
+the immutable command/argv recipe, allowed operations, persistent Docker-shaped
+profile flags (`interactive`, `tty`, `detach`, `restart`, etc. as implemented),
+operation/default-run policy, and any explicit 0.4 request-validation rules are
+all hash material. In the current implementation the serialized private JSON
+file is the hash material, so changing `actions` or any other private field
+invalidates the cap. If/when this moves to a decoded canonical tree, that tree
+must still include every semantic private field, not just `binary_path`/`argv`.
+Do not include non-semantic descriptive metadata such as comments, display
+labels, timestamps, or presentation formatting in future canonical material.
 
 If profile material changes in a way that affects privileged launch semantics,
 the hash changes. Any dependent subject-private copies and sudoers entries must
@@ -296,9 +300,13 @@ Protocol specifics:
   values against that private copy, and only then start/operate.
 - The encoded request is the authority for the requested operation. Do not infer
   the privileged verb from the sudoers regex alone.
+- The encoded request must not repeat the profile name. The fixed CLI/sudoers
+  envelope already carries `run <profile-name>`, and the cap hash binds that
+  profile to the subject-private copy. Duplicating it inside JSON creates a
+  second field that can drift.
 - The root receiver must reject malformed base64url, oversized decoded payloads,
-  unknown schema versions, unsupported verbs, profile-name/cap mismatches, and
-  any operation that is not allowed by the subject-private copy.
+  unknown schema versions, unsupported verbs, cap/profile mismatches, and any
+  operation that is not allowed by the subject-private copy.
 
 Minimum decoded request schema:
 
@@ -306,7 +314,6 @@ Minimum decoded request schema:
 {
   "v": 1,
   "op": "start",
-  "profile": "web-server",
   "selector": null,
   "all": false,
   "force": false,

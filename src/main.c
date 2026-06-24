@@ -17,7 +17,7 @@ static int shell_map_slash_view(char **argv, int argc, char ***mapped_out, int *
 static int shell_map_profile_context(const char *name, char **argv, int argc, char ***mapped_out, int *mapped_argc_out);
 static int hold_run_captive_shell(const char *program);
 static void print_command_usage_stderr(const char *command);
-static int build_cap_request_token(const char *op, const char *profile, bool force, char *out, size_t n);
+static int build_cap_request_token(const char *op, bool force, char *out, size_t n);
 
 static const char *program_basename(const char *path) {
     if (!path || !*path) {
@@ -33,15 +33,15 @@ static bool invoked_as_hold(const char *path) {
 }
 
 
-static int build_cap_request_token(const char *op, const char *profile, bool force, char *out, size_t n) {
-    if (!op || !profile || !hold_valid_alias(profile)) {
+static int build_cap_request_token(const char *op, bool force, char *out, size_t n) {
+    if (!op || !*op) {
         errno = EINVAL;
         return -1;
     }
-    char json[256];
+    char json[128];
     if (hold_checked_snprintf(json, sizeof(json),
-                              "{\"v\":1,\"op\":\"%s\",\"profile\":\"%s\",\"force\":%s}",
-                              op, profile, force ? "true" : "false") != 0) {
+                              "{\"v\":1,\"op\":\"%s\",\"force\":%s}",
+                              op, force ? "true" : "false") != 0) {
         return -1;
     }
     return hold_base64url_encode((const unsigned char *)json, strlen(json), out, n);
@@ -620,7 +620,7 @@ int main(int argc, char **argv) {
                             char grant_hash[PROFILE_HASH_STR_LEN];
                             if (hold_subject_grant_hash_for(&pre_system_store, subject, atom, grant_hash) == 0) {
                                 char token[1024];
-                                if (build_cap_request_token("start", atom, multi, token, sizeof(token)) != 0) {
+                                if (build_cap_request_token("start", multi, token, sizeof(token)) != 0) {
                                     free(cmd_argv);
                                     return 3;
                                 }
