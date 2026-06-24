@@ -130,6 +130,9 @@ int hold_elevate_with_sudo_parsed(const char *program,
         if (print_cmd) {
             extra += 1;
         }
+        if (!strcmp(command, "run")) {
+            extra += 1;
+        }
         if (!strcmp(command, "start") && multi) {
             extra += multi_count == 1 ? 1 : 2;
         }
@@ -171,6 +174,9 @@ int hold_elevate_with_sudo_parsed(const char *program,
                 snprintf(count_buf, sizeof(count_buf), "%d", multi_count);
                 canon[n++] = count_buf;
             }
+        }
+        if (!strcmp(command, "run")) {
+            canon[n++] = "--";
         }
     } else {
         if (tail) {

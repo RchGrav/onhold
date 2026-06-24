@@ -22,7 +22,7 @@ flowchart TD
     Dispatch --> StartCmd["start"]
     Dispatch --> List["list"]
     Dispatch --> Actions["tail dump console stop kill prune"]
-    Dispatch --> Alias["alias aliases"]
+    Dispatch --> Profile["profile profiles"]
     Dispatch --> Access["grant revoke"]
     Dispatch --> Help["help"]
 
@@ -35,12 +35,12 @@ flowchart TD
     class Start,StartCmd launch
     class Actions action
     class Access privilege
-    class List,Alias,Help script
+    class List,Profile,Help script
 ```
 
 Leading invocation switches include `--system`, `--elevated`, `--tail`/`-f`, `--console`, `--quiet`, and `--`. Once raw command parsing begins, remaining arguments belong to the child. In owned-command mode, On Hold continues parsing command-specific switches until a literal `--` marks the rest as owned command arguments.
 
-Known owned commands are `list`, `stop`, `kill`, `tail`, `dump`, `prune`, `console`, `start`, `alias`, `aliases`, `grant`, `revoke`, and `help`.
+Known owned commands are `list`, `run`, `start`, `stop`, `kill`, `tail`, `logs`, `status`, `inspect`, `dump`, `view`, `console`, `prune`, `profiles`, `profile`, `show`, `clean`, `doctor`, `shell`, `grant`, `revoke`, and `help`.
 
 ## Starts
 
@@ -57,19 +57,20 @@ hold -- <command-that-looks-like-hold-action> [args...]
 Owned starts:
 
 ```bash
-hold start <alias>
-hold start <alias> --multi
-hold start <alias> --multi 3
-hold start <alias> --multi=3
-hold start <alias> --console
+hold start <profile>
+hold start <profile> --multi
+hold start <profile> --multi 3
+hold start <profile> --multi=3
+hold start <profile> --console
 hold start <cmd> [args...]
+hold run -- <cmd> [args...]
 ```
 
 A successful start prints only the run ID to stdout before any followed log bytes. The human banner with the command, log path, tail command, optional console command, and stop command goes to stderr and is suppressed by `--quiet`.
 
 ## Listing
 
-`hold list [alias]` shows visible runs. Normal users see their private user-local runs plus redacted root public rows. Root sees authoritative private system records. `--iso` and `-l` select ISO time formatting.
+`hold list [profile]` shows visible runs. Normal users see their private user-local runs plus redacted root public rows. Root sees authoritative private system records. `--iso` and `-l` select ISO time formatting.
 
 Normal list does not self-elevate. Root-public rows are discovery data and can show `unknown` state because the public index is not continuously refreshed.
 
@@ -120,7 +121,7 @@ The stdout/stderr split exists because detached starts are commonly used in CI. 
 
 ## Implementation map
 
-For maintainers, the primary functions are `main`, `usage`, `show_help`, `help_profiles`, `help_targets`, `help_access`, `help_system`, `help_scripting`, `help_console`, `help_action`, `is_hold_owned_command`, `command_accepts_target_tokens`, `cmd_start_action`, `cmd_list_normal`, `cmd_list_system`, `cmd_signal_action`, `cmd_tail_action`, `cmd_dump_action`, `cmd_console_action`, `cmd_prune_action`, `cmd_alias_action`, `cmd_aliases_action`, and `cmd_grant_revoke_action`.
+For maintainers, the primary functions are `main`, `hold_usage`, `hold_show_help`, `help_profiles`, `help_targets`, `help_access`, `help_system`, `help_scripting`, `help_console`, `help_action`, `hold_cli_command_is_parser_owned`, `hold_cli_command_is_public`, `hold_validate_owned_command_arity`, `hold_cmd_start_action`, `hold_cmd_list_normal`, `hold_cmd_list_system`, `hold_cmd_signal_action`, `hold_cmd_tail_action`, `hold_cmd_dump_action`, `hold_cmd_console_action`, `hold_cmd_prune_action`, `hold_cmd_profile_action`, and `hold_cmd_grant_revoke_action`.
 
 ## Continue
 

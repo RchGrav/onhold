@@ -16,6 +16,7 @@ static int shell_exec_command(const char *program, int argc, char **argv);
 static int shell_map_slash_view(char **argv, int argc, char ***mapped_out, int *mapped_argc_out);
 static int shell_map_profile_context(const char *name, char **argv, int argc, char ***mapped_out, int *mapped_argc_out);
 static int hold_run_captive_shell(const char *program);
+static void print_command_usage_stderr(const char *command);
 
 static const char *program_basename(const char *path) {
     if (!path || !*path) {
@@ -346,6 +347,13 @@ static int hold_run_captive_shell(const char *program) {
     }
     free(line);
     return last_rc;
+}
+
+static void print_command_usage_stderr(const char *command) {
+    const char *usage = hold_cli_command_usage(command);
+    if (usage) {
+        fprintf(stderr, "%s\n", usage);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -752,7 +760,7 @@ int main(int argc, char **argv) {
         if (sub_is_profile_name) {
             const char *name = sub;
             if (cmd_argc < 2) {
-                fprintf(stderr, "usage: hold profile <name> <show|start|run|set|export> [args...]\n");
+                print_command_usage_stderr("profile");
                 free(cmd_argv);
                 return 5;
             }
@@ -839,7 +847,7 @@ int main(int argc, char **argv) {
                 cmd_argv = rewritten;
                 sub = cmd_argv[0];
             } else {
-                fprintf(stderr, "usage: hold profile <name> <show|start|run|set|export> [args...]\n");
+                print_command_usage_stderr("profile");
                 free(cmd_argv);
                 return 5;
             }
@@ -915,7 +923,7 @@ int main(int argc, char **argv) {
             free(cmd_argv);
             return rc;
         }
-        fprintf(stderr, "usage: hold profile <list|run|start|save|show|export|import|<name> set> [args...]\n");
+        print_command_usage_stderr("profile");
         free(cmd_argv);
         return 5;
     }

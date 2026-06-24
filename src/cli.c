@@ -40,7 +40,7 @@ static const struct hold_cli_command_spec command_specs[] = {
     {"console", 1, 1, 0, "usage: hold console <target>", "console"},
     {"prune", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold prune [target|all] [--all]", "prune"},
     {"profiles", 0, 1, 0, "usage: hold profiles [-v]", "profiles"},
-    {"profile", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold profile <name> <show|start|create|set|export|rename|delete> [args...]\n       hold profile <list|run|start|save|show|export|import> [args...]", "profile"},
+    {"profile", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold profile <name> <show|start|run|create|set|export|rename|delete> [args...]\n       hold profile <list|run|start|save|show|export|import> [args...]", "profile"},
     {"show", 1, 2, 0, "usage: hold show <runs|profiles|running|dormant|failed|stale> [name]", "show"},
     {"clean", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold clean [target|all]", "clean"},
     {"doctor", 0, 0, 0, "usage: hold doctor", "doctor"},

@@ -1988,6 +1988,18 @@ test_system_switch_canonicalizes_owned_command() {
   grep -qx -- '--system' "$TEST_ROOT/one.argv" || return 1
   grep -qx -- '--elevated' "$TEST_ROOT/one.argv" || return 1
   tail -n 2 "$TEST_ROOT/one.argv" | grep -qx 'abc12345'
+
+  set +e
+  "$HOLD_BIN" --system run -- /bin/true --child-flag >/dev/null 2>"$TEST_ROOT/run-system.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 77 ] || return 1
+  args=()
+  while IFS= read -r line; do args+=("$line"); done < "$HOLD_FAKE_SUDO_ARGV"
+  [ "${args[4]}" = "run" ] || return 1
+  [ "${args[5]}" = "--" ] || return 1
+  [ "${args[6]}" = "/bin/true" ] || return 1
+  [ "${args[7]}" = "--child-flag" ] || return 1
 }
 
 test_system_raw_self_elevation_preserves_child_switches_and_delimiter() {
@@ -2654,6 +2666,23 @@ test_public_cli_contract_guards() {
   grep -q 'hold profiles' "$TEST_ROOT/help-profiles.out" || { cat "$TEST_ROOT/help-profiles.out" >&2; return 1; }
   ! grep -Eq 'hold aliases?([[:space:]]|$)' "$TEST_ROOT/help-profiles.out" || { cat "$TEST_ROOT/help-profiles.out" >&2; return 1; }
 
+  "$HOLD_BIN" help profile >"$TEST_ROOT/help-profile.out" || return 1
+  grep -q 'hold profile <name> <show|start|run|create|set|export|rename|delete>' "$TEST_ROOT/help-profile.out" || {
+    cat "$TEST_ROOT/help-profile.out" >&2; return 1;
+  }
+
+  set +e; "$HOLD_BIN" profile web >/dev/null 2>"$TEST_ROOT/profile-name-usage.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "hold profile web: rc=$rc (want 5)" >&2; return 1; }
+  grep -q 'hold profile <name> <show|start|run|create|set|export|rename|delete>' "$TEST_ROOT/profile-name-usage.err" || {
+    cat "$TEST_ROOT/profile-name-usage.err" >&2; return 1;
+  }
+
+  set +e; "$HOLD_BIN" profile web nope >/dev/null 2>"$TEST_ROOT/profile-bad-op-usage.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "hold profile web nope: rc=$rc (want 5)" >&2; return 1; }
+  grep -q 'hold profile <name> <show|start|run|create|set|export|rename|delete>' "$TEST_ROOT/profile-bad-op-usage.err" || {
+    cat "$TEST_ROOT/profile-bad-op-usage.err" >&2; return 1;
+  }
+
   set +e; "$HOLD_BIN" alias deadbeef web >/dev/null 2>"$TEST_ROOT/alias-removed.err"; rc=$?; set -e
   [ "$rc" -eq 5 ] || { echo "hold alias: rc=$rc (want 5)" >&2; return 1; }
   grep -q 'alias command was removed' "$TEST_ROOT/alias-removed.err" || { cat "$TEST_ROOT/alias-removed.err" >&2; return 1; }
@@ -2680,7 +2709,7 @@ test_public_cli_contract_guards() {
   [ "$rc" -eq 5 ] || { echo "hold run web stop: rc=$rc (want 5)" >&2; return 1; }
   grep -q 'usage: hold run .* -- <cmd>' "$TEST_ROOT/run-namespace.err" || { cat "$TEST_ROOT/run-namespace.err" >&2; return 1; }
 
-  if grep -RInE '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|hold[[:space:]]+aliases?([[:space:]]|$)' \
+  if grep -RInE '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases' \
       README.md docs examples install.sh scripts Makefile >"$TEST_ROOT/forbidden-public-names.out" 2>/dev/null; then
     cat "$TEST_ROOT/forbidden-public-names.out" >&2
     return 1
