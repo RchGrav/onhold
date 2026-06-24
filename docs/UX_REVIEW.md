@@ -9,17 +9,17 @@ Date: 2026-06-23
 The implementation-oriented version of these decisions now lives in [Hold 0.4 UX and CLI specification draft](HOLD_0_4_UX_SPEC.md), including the detailed pager/live-filter/similarity-filter requirements.
 
 
-On Hold already has a strong product core: `hold <cmd>` is simpler than `nohup`, safer than PID files, and far lighter than `systemd`. The current CLI is scriptable and technically coherent, but it exposes internal concepts too early: run IDs, profiles, public/root stores, target scopes, grants, console mode, pruning, and validation semantics all appear as separate pieces the user must assemble.
+On Hold already has a strong product core: `hold <cmd>` is simpler than `nohup`, safer than PID files, and far lighter than `systemd`. The current CLI is scriptable and technically coherent, but it exposes internal concepts too early: run IDs, profiles, public/root stores, target scopes, grants, TTY mode, pruning, and validation semantics all appear as separate pieces the user must assemble.
 
 The highest-leverage UX move is to turn On Hold from a collection of legacy verbs into one guided command language for long-running jobs. For 0.4.0, the new `hold` UX is intended to replace the legacy primary surface, while preserving the good stdout/stderr, exit-code, and scriptability contracts for automation.
 
 Recommended direction:
 
 1. Move to one unified stacked command grammar shared by normal CLI, captive shell, and Cisco-style config files.
-2. Make `profile`, `run`, `stop`, `down`, `kill`, `ps`, `show`, `logs`, `console`, `dump`, `prune`, `rm`, `doctor`, `import`, and `export` the primary language everywhere.
-3. Let users stack captive-shell commands directly from the normal prompt, e.g. `hold profile web set env PORT=3000`, `hold show profile web`, `hold dump web`, `hold logs web --follow`.
-4. Make this a deliberate breaking CLI redesign for 0.4.0: replace current legacy commands (`alias`, `aliases`, `list`, `tail`, action-first forms) with the unified grammar instead of carrying them as primary UX. Keep `console` and `prune` because they fit the final language, and redefine `dump` as structured object output rather than log text.
-5. Add a profile editor: `hold profile web edit` and an interactive `profile web` submode for advanced recipe, cwd, env, console, restart/readiness metadata, and access policy.
+2. Make `profile`, `run`, `stop`, `down`, `kill`, `ps`, `show`, `logs`, `inspect`, `prune`, `rm`, `doctor`, `import`, and `export` the primary language everywhere.
+3. Let users stack captive-shell commands directly from the normal prompt, e.g. `hold profile web set env PORT=3000`, `hold show profile web`, `hold inspect web`, `hold logs web --follow`.
+4. Make this a deliberate breaking CLI redesign for 0.4.0: replace current legacy commands (`alias`, `aliases`, `list`, `tail`, action-first forms) with the unified grammar instead of carrying them as primary UX. Keep `prune` because it fits the final language, replace `console` with Docker-style `-i/-t/-it`, and replace `dump` with Docker-style `inspect`.
+5. Add a profile editor: `hold profile web edit` and an interactive `profile web` submode for advanced recipe, cwd, env, TTY/interactive flags, restart/readiness metadata, and access policy.
 6. Add profile config import/export so every captive-shell edit can be represented as a Cisco-style command transcript, while JSON remains canonical on disk.
 7. Add safer lifecycle affordances: save current run as a profile, singular-safe profile `stop`, concrete run-id `down`, “doctor/status”, suggested next commands, and cleanup prompts.
 
@@ -29,7 +29,7 @@ Recommended direction:
 - **Scriptability is protected**: successful starts print only the run ID to stdout; banners go to stderr.
 - **Safety story is excellent**: On Hold validates process identity before signaling, and refuses unsafe actions.
 - **Short run IDs are approachable**: 8 hex chars are easier than full UUIDs.
-- **Docs are unusually complete**: README, quickstart, technical loop, CLI contract, profiles, security, and console docs exist.
+- **Docs are unusually complete**: README, quickstart, technical loop, CLI contract, profiles, security, and TTY docs exist.
 - **Root delegation is differentiated**: scoped sudoers-managed profiles are a powerful capability few small launchers offer.
 
 ## Current UX friction
@@ -42,7 +42,7 @@ Suggested fix: add an interactive dashboard / command mode where users can type 
 
 ### 2. Profiles are the right reusable concept
 
-The docs already discuss protected profiles, and the user-facing command should consistently be `profile`. For advanced features, a profile can represent a managed reusable launch target with policy, console behavior, environment, cwd, readiness checks, and access controls.
+The docs already discuss protected profiles, and the user-facing command should consistently be `profile`. For advanced features, a profile can represent a managed reusable launch target with policy, TTY behavior, environment, cwd, readiness checks, and access controls.
 
 Suggested fix: make `profile` the primary noun and remove `alias` from the public 0.4.0 command surface.
 
@@ -66,14 +66,14 @@ Suggested fix options:
 
 ### 4. `list` omits key human context
 
-Current `hold list` columns are `RUNID STATE STARTED RESULT CMD`. It does not show profile label, console availability, scope, or log size/path. The user must remember or inspect separate commands.
+Current `hold list` columns are `RUNID STATE STARTED RESULT CMD`. It does not show profile label, TTY availability, scope, or log size/path. The user must remember or inspect separate commands.
 
 Suggested fix: default human list should include profile and affordances, e.g.:
 
 ```text
 NAME     ID        STATE    AGE  MODE     CMD
 web      04a7dda8  running  12s  log      /usr/bin/python -m http.server 9000
-api      fe21dfb8  running  2m   console  node server.js
+api      fe21dfb8  running  2m   tty      node server.js
 -        a1b2c3d4  exited   1h   log      sleep 1
 ```
 
@@ -100,7 +100,7 @@ Suggested fix: add `hold profile <name> edit` that opens `$EDITOR` or an interac
 
 ## Target model correction: profiles define, run IDs execute
 
-A profile is not itself a running thing. A profile is a reusable definition for launching a tool. A run ID is the stable identity for one concrete execution and is the safest singular target for `down`, `kill`, `logs`, `console`, `dump`, and targeted `rm`.
+A profile is not itself a running thing. A profile is a reusable definition for launching a tool. A run ID is the stable identity for one concrete execution and is the safest singular target for `down`, `kill`, `logs`, `inspect`, and targeted `rm`. Interactive TTY entry is handled by `-i/-t/-it`, especially `hold run -it <profile>` for profile starts or reconnects.
 
 That means the command grammar distinguishes profile lifecycle verbs, concrete execution verbs, and ad-hoc launch:
 
@@ -138,7 +138,7 @@ hold logs web --follow        # follow logs only if web resolves to one run
 
 ```text
 hold -- logs                  # launch an executable named logs
-hold --console -- logs        # launch executable logs with a console
+hold -it -- logs              # launch executable logs with an interactive TTY
 ```
 
 ## Recommended command additions
@@ -152,8 +152,8 @@ hold ps                     -> list active run IDs
 hold ps -a                  -> list active + inactive retained run IDs
 hold show <view|object>     -> friendly read-only alias/view command
 hold logs <target>          -> follow/plain log viewer
-hold logs <target> --plain  -> plain dump-style output
-hold dump <target>          -> structured object output, not log text
+hold logs <target> --plain  -> plain tail-style output
+hold inspect <target>       -> Docker-style detailed JSON/object output
 hold prune                  -> bulk inactive-history cleanup
 hold rm <target>            -> remove inactive run ID or profile
 hold rm --force <runid>     -> stop, verify, and remove one active run ID
@@ -161,6 +161,35 @@ hold restart <profile>      -> explicit relaunch sugar if release policy allows 
 hold status [target]        -> richer inspection
 hold doctor                 -> explain stores, permissions, stale records
 ```
+
+### Docker-familiar flags to adopt
+
+Borrow Docker flag names where the concept maps cleanly:
+
+```text
+hold -d --name web -p 8080:3000 -e NODE_ENV=production npm run start
+hold -it --rm bash
+hold run -i pythonshell
+hold run -it web
+hold run -d --restart always web
+hold logs -f -n 100 web
+hold inspect web
+```
+
+Target flag meanings:
+
+- `-d` / `--detach`: explicit background mode and run-id printout.
+- `-i` / `--interactive`: keep stdin open without requiring a PTY; e.g. `hold run -i pythonshell`.
+- `-t` / `--tty`: allocate a pseudo-TTY for terminal behavior.
+- `-it`: stdin-open plus TTY; the normal shell/full-terminal experience. Detach keys leave it running under Hold.
+- `--detach-keys`: configure the detach sequence, Docker-style.
+- `--name <profile>`: create/label a profile from the normalized launch recipe.
+- `-e` / `--env`, `--env-file`: launch/profile environment.
+- `-p` / `--publish`: port metadata for display/readiness/open helpers; do not pretend to implement container networking for host processes.
+- `-v` / `--volume`: volume/path metadata for profile config and future backend support; do not pretend to remount host paths for normal host-process launches.
+- `--rm`: auto-remove run-id data/logs when the run exits.
+- `--restart`, `--restart-delay`: restart policy.
+- `--privileged`: explicit high-risk privileged/elevated mode.
 
 ### Profile commands
 
@@ -186,7 +215,7 @@ hold run <profile>                -> launch reusable profile
 
 ### Friendly command aliases to evaluate after the core grammar lands
 
-The core 0.4 grammar should land first: bare ad-hoc launch, `run/stop` for profile lifecycle, and concrete run IDs for `down/kill/logs/console/dump/rm`.
+The core 0.4 grammar should land first: bare ad-hoc launch, `run/stop` for profile lifecycle, and concrete run IDs for `down/kill/logs/inspect/rm`.
 
 `show` can remain as a friendly alias because it is read-only and familiar. The
 guardrail is that it routes to canonical views/actions (`show runs` to `ps -a`,
@@ -197,7 +226,6 @@ After that is stable, optional shortcuts can be evaluated if they do not blur th
 
 ```text
 hold restart web            # stop/run a profile only when singular and explicit
-hold open 04a7dda8          # attach console if available, otherwise logs
 hold status web             # explain profile plus active run IDs
 ```
 
@@ -281,9 +309,9 @@ Example tree view:
 hold> tree running
 /running
   web
-    04a7dda8  12s  console off  python -m http.server 9000
+    04a7dda8  12s  tty off  python -m http.server 9000
   api
-    fe21dfb8  2m   console on   node server.js
+    fe21dfb8  2m   tty on   node server.js
 ```
 
 Profile-first view:
@@ -351,7 +379,7 @@ hold(/running/web)> down 04a7dda8
 hold(/profiles/web)> run
 hold(/profiles/web)> export --format cli
 hold(/failed/web)> logs a1b2c3d4
-hold(/failed/web)> dump a1b2c3d4
+hold(/failed/web)> inspect a1b2c3d4
 ```
 
 The important UX property: namespaces can connect backwards for discoverability, but concrete actions still resolve to stable run IDs or singular safe selectors before acting.
@@ -377,12 +405,12 @@ hold v0.4  daemonless process guardian
 Runs
   NAME      ID        STATE    AGE   MODE     COMMAND
   web       04a7dda8  running  12s   log      python -m http.server 9000
-  api       fe21dfb8  running  2m    console  node server.js
+  api       fe21dfb8  running  2m    tty      node server.js
   scratch   a1b2c3d4  exited   1h    log      sleep 1
 
 Profiles: web, api, cache(system)
 
-Type: run <profile>, stop <profile>, down <runid>, logs <name|id>, console <name|id>, profile, ps, prune, help, quit
+Type: run <profile>, run -it <profile>, stop <profile>, down <runid>, logs <name|id>, inspect <name|id>, profile, ps, prune, help, quit
 hold>
 ```
 
@@ -393,7 +421,7 @@ hold> profile web
 hold(profile:web)> show
 hold(profile:web)> set cwd /srv/web
 hold(profile:web)> set env NODE_ENV=development
-hold(profile:web)> set console on
+hold(profile:web)> set tty on
 hold(profile:web)> set readiness tcp localhost:3000 timeout 10s
 hold(profile:web)> save
 hold(profile:web)> run
@@ -403,7 +431,7 @@ hold> stop web
 hold> prune
 ```
 
-Rejected historical sketch: do not use a `run` submode such as `run api; tail; stop; prune` for 0.4.0. `run` is a profile lifecycle verb, and management actions stay as natural verbs (`logs`, `console`, `down`, `kill`, `dump`, `rm`) over a run ID or singular safe profile selector.
+Rejected historical sketch: do not use a `run` submode such as `run api; tail; stop; prune` for 0.4.0. `run` is a profile lifecycle verb, and management actions stay as natural verbs (`logs`, `down`, `kill`, `inspect`, `rm`) over a run ID or singular safe profile selector.
 
 ### Captive menu variant
 
@@ -411,7 +439,7 @@ A menu/TUI would be even easier for first-time users:
 
 - Arrow-key list of runs/profiles.
 - Enter opens action palette.
-- `l` logs, `c` console, `s` stop, `r` restart, `p` prune, `e` edit profile, `?` help.
+- `l` logs, `i` inspect, `s` stop, `r` restart, `p` prune, `e` edit profile, `?` help.
 - Prompts preview commands before privileged/destructive actions.
 
 Implementation can start as a simple line REPL without curses, then graduate to an optional TUI later.
@@ -431,12 +459,12 @@ Suggested conceptual shape:
   "command": ["/usr/bin/python3", "-m", "http.server", "9000"],
   "cwd": "/srv/web",
   "env": {"PYTHONUNBUFFERED": "1"},
-  "mode": {"console": false, "attach_logs_on_run": false, "allow_multi": false},
+  "mode": {"tty": false, "interactive": false, "show_logs_on_run": false, "allow_multi": false},
   "readiness": {"type": "tcp", "host": "127.0.0.1", "port": 9000, "timeout_s": 10},
   "cleanup": {"stop_timeout_s": 5, "prune_on_success": false},
   "description": "local docs server",
   "tags": ["dev"],
-  "access": {"alice": ["run", "stop", "logs", "console", "dump"]}
+  "access": {"alice": ["run", "stop", "logs", "inspect"]}
 }
 ```
 
@@ -446,7 +474,7 @@ Suggested conceptual shape:
    - command
    - working directory
    - environment variables
-   - console/log mode
+   - TTY/log mode
    - multi-run policy
    - readiness check
    - grants
@@ -460,7 +488,7 @@ Suggested conceptual shape:
    - `unset env DEBUG`
    - `grant alice run,stop,logs`
 
-Start with JSON because On Hold already has JSON infrastructure, but consider a more human format later if dependency policy allows it.
+Keep JSON as the canonical on-disk storage because On Hold already has JSON infrastructure, but make the human import/export format the Cisco-style CLI transcript.
 
 
 ## Profile import/export and config files
@@ -470,15 +498,14 @@ The captive shell should not become a configuration island. Every profile that c
 Recommended commands:
 
 ```text
-hold profile export <name>              # print one profile config to stdout
-hold profile export <name> -o web.json  # write one profile config
-hold profile export --all -o profiles/  # write one file per profile
-hold profile import web.json            # validate and create/update profile
-hold profile import profiles/           # import a directory of profiles
-hold profile validate web.json          # check without writing
-hold profile diff <name> web.json       # compare stored profile to file
-hold profile apply web.json             # validate, show change summary, then write
-hold profile print <name>               # human-readable equivalent of export
+hold export <name>                      # print CLI transcript config to stdout
+hold export <name> as web.hold          # write CLI transcript config
+hold export --all as profiles/          # write one CLI transcript per profile
+hold import web.hold as web             # validate and create/update profile from transcript
+hold import profiles/                   # import a directory of transcript files
+hold profile validate web.hold          # check transcript without writing
+hold profile diff <name> web.hold       # compare stored profile to transcript
+hold inspect <name>                     # JSON/object inspection for automation/debugging
 ```
 
 For captive shell parity:
@@ -495,14 +522,14 @@ hold(profile:web)> validate
 Design requirements:
 
 - **JSON remains canonical on disk**: the existing profile store shape should stay the authoritative internal storage format.
-- **Cisco-like config is a human interchange/editing format**: export can render a profile as the same commands a user would type in captive mode; import/apply parses those commands and writes validated JSON profiles.
-- **Round-trip safe**: `export --format cli -> import/apply -> export --format cli` should preserve semantically meaningful fields, even if comments/spacing are not preserved.
+- **Cisco-like config is the import/export format**: export renders canonical JSON profiles as the same commands a user would type in captive mode; import parses those commands and writes validated JSON profiles.
+- **Round-trip safe**: `export -> import -> export` should preserve semantically meaningful fields, even if comments/spacing are not preserved.
 - **Stdout friendly**: export defaults to stdout so users can pipe to files, review tools, or version control.
 - **Dry-run by default for risky writes**: import/apply should validate and show a summary before overwriting unless `--yes` is supplied.
 - **Secret aware**: environment values may need redaction/export modes, e.g. `--redact-secrets`, `--include-secrets`, or future secret references.
 - **Versioned schema in JSON**: include `version` in the canonical JSON so profile config can evolve without breaking old files.
 - **Scope explicit**: both JSON and CLI-config import should say whether the target is `user` or `system`, but system writes should still require explicit elevation.
-- **Machine output still available**: `--format json` / `--json` should print the canonical JSON profile for automation; `--format cli` should print the Cisco-like command file for humans.
+- **Machine inspection still available**: `inspect` / `--json` should print detailed JSON/object data for automation. Do not make JSON the default import/export UX.
 
 Example CLI-config export:
 
@@ -512,7 +539,7 @@ profile web
   command /usr/bin/python3 -m http.server 9000
   cwd /srv/web
   env PYTHONUNBUFFERED=1
-  console off
+  tty off
   multi deny
   readiness tcp 127.0.0.1 9000 timeout 10s
   cleanup stop-timeout 5s
@@ -522,10 +549,10 @@ exit
 Equivalent usage:
 
 ```sh
-hold profile export web --format cli > web.hold
-hold profile apply web.hold --dry-run
-hold profile apply web.hold --yes
-hold profile export web --format json > web.json
+hold export web > web.hold
+hold import web.hold as web --dry-run
+hold import web.hold as web --yes
+hold inspect web > web.json              # JSON/object inspection, not config export
 ```
 
 This makes the interactive shell a friendly editor for the same durable JSON artifact the CLI can manage, while giving humans a readable Cisco-style config transcript.
@@ -718,7 +745,7 @@ Protect the automation contract:
 ### Phase 2: Hybrid interactive shell
 
 - Add `hold shell` line-oriented REPL.
-- Support `help`, `ls`, `select`, `show`, `logs`, `console`, `down`, `kill`, `dump`, `rm`, `prune`, `run`, `stop`, `ps`, `runid`, and `profile`.
+- Support `help`, `ls`, `select`, `show`, `logs`, `down`, `kill`, `inspect`, `rm`, `prune`, `run`, `stop`, `ps`, `runid`, and `profile`.
 - Implement command completion/history if practical.
 - Add contextual help and suggested next actions.
 
@@ -748,4 +775,4 @@ This gives beginners an embarrassingly easy path while giving power users a comp
 
 ## Product decisions status
 
-The implementation-oriented decisions now live in [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md). Current direction: use `hold` for the operator command, make `profile` the primary noun, keep ad-hoc launch as bare `hold <cmd>`, use `run`/`stop` as profile lifecycle verbs, use concrete run IDs for `down`/`kill`/`logs`/`console`/`dump`/targeted `rm`, allow `show` as a friendly read-only alias/view command, keep `prune` as bulk inactive-run cleanup, and build the line-oriented Cisco/Docker-style captive shell before a richer TUI. Remaining release decisions include restart policy, exact `runid` namespace spelling, instance allocator scope, and how much of the full similarity/deque architecture must ship before 0.4.0.
+The implementation-oriented decisions now live in [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md). Current direction: use `hold` for the operator command, make `profile` the primary noun, keep ad-hoc launch as bare `hold <cmd>`, use `run`/`stop` as profile lifecycle verbs, use concrete run IDs for `down`/`kill`/`logs`/`inspect`/targeted `rm`, allow `show` as a friendly read-only alias/view command, keep `prune` as bulk inactive-run cleanup, and build the line-oriented Cisco/Docker-style captive shell before a richer TUI. Remaining release decisions include restart policy, exact `runid` namespace spelling, instance allocator scope, and how much of the full similarity/deque architecture must ship before 0.4.0.

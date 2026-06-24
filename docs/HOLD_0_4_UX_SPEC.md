@@ -30,7 +30,8 @@ Profiles may contain:
 - command/argv;
 - working directory;
 - environment variables;
-- console preference;
+- terminal/TTY preference;
+- Docker-familiar run flags and metadata (`--name`, `-d`, `-i`, `-t`, `-e`, `-p`, `-v`, `--rm`, `--restart`);
 - multi-run and instance allocation policy;
 - readiness/health metadata;
 - cleanup settings;
@@ -68,7 +69,7 @@ Run records have:
 - optional profile label;
 - scope;
 - timestamps;
-- console availability;
+- TTY availability;
 - observed launch/adoption facts;
 - normalized launch/security facts.
 
@@ -78,8 +79,7 @@ Run-ID lifecycle verbs should act on concrete executions:
 hold down 04a7dda8            # graceful stop for one concrete execution
 hold kill 04a7dda8            # force stop for one concrete execution
 hold logs 04a7dda8            # log viewer for one concrete execution
-hold console 04a7dda8         # attach to its PTY console, when present
-hold dump 04a7dda8            # structured run-record dump, not log text
+hold inspect 04a7dda8         # detailed JSON/object view, Docker-style
 hold rm 04a7dda8              # remove only if inactive
 hold rm --force 04a7dda8      # stop, verify, then remove an active run ID
 ```
@@ -100,14 +100,15 @@ The easiest path remains a bare command:
 ```sh
 hold npm run dev
 hold python server.py
-hold --console bash
+hold -it bash                 # allocate an interactive TTY; detach leaves it running
+hold --name web npm run dev   # create/label profile web from the launch recipe
 ```
 
 Use `--` only when the executable name would otherwise be parsed as a Hold option or reserved command:
 
 ```sh
 hold -- logs                  # launch an executable named "logs"
-hold --console -- logs        # launch executable "logs" with an attachable console
+hold -it -- logs              # launch executable "logs" with an interactive TTY
 ```
 
 Do not document strange flag-name executables as the primary mental model. The practical rule is: `--` ends Hold parsing when a child command conflicts with the Hold command language.
@@ -156,11 +157,11 @@ The 0.4.0 CLI surface should be a small set of top-level verbs plus navigable ob
 
 ```text
 Ad-hoc launch:
-  hold <cmd> [args...]
-  hold [hold-options] -- <cmd> [args...]        # only when cmd conflicts with Hold syntax
+  hold [run-options] <cmd> [args...]
+  hold [run-options] -- <cmd> [args...]         # only when cmd conflicts with Hold syntax
 
 Profile lifecycle:
-  hold run <profile> [--force|--multi N]        # N is required for --multi
+  hold run [run-options] <profile> [--force|--multi N]
   hold stop <profile> [--all]
 
 Concrete execution lifecycle:
@@ -174,8 +175,7 @@ Viewing and inspection:
   hold recent                                  # inactive/recent retained run-id view/list
   hold show <view|object>                      # read-only alias/view command
   hold logs <target> [--follow|-f] [--filter TEXT] [--similar TEXT] [--plain|--interactive]
-  hold console <target>
-  hold dump <target>                           # structured object dump, not log text
+  hold inspect <target>                        # detailed JSON/object view, Docker-style
 
 Cleanup/removal:
   hold prune                                   # bulk cleanup of inactive past runs
@@ -203,7 +203,81 @@ the only way to reach important data, and it should not blur the core nouns:
 profile web` may route to profile display, and `show tree` may render navigable
 views. Mutating operations should not hide under `show`.
 
-`logs` owns log text. Former dump-style log output belongs under `logs <target> --plain`. `dump` is reserved for structured/raw object data such as full run records, profile JSON/config, public index entries, and diagnostic store objects.
+`logs` owns log text. Former dump-style log output belongs under `logs <target> --plain`.
+
+`inspect` is the canonical Docker-style structured object command. It displays
+detailed JSON/object data for run IDs, profiles, and diagnostic store objects.
+Do not keep `dump` as a primary 0.4 command; if a raw developer-only dump remains
+temporarily, hide it from the main help and route users to `inspect`.
+
+### 3.1.1 Docker-familiar launch and log flags
+
+Hold should borrow Docker's familiar flag shape where the concepts map cleanly.
+This makes the product easier to learn and easier to sell: users can transfer
+muscle memory from `docker run`, `docker ps`, `docker logs`, and `docker inspect`
+without learning a novelty grammar.
+
+Launch flags:
+
+| Short | Long | Target meaning in Hold |
+| --- | --- | --- |
+| `-d` | `--detach` | Run in the background and print the run ID. This is Hold's normal service posture; the explicit flag is still accepted for Docker familiarity and for disambiguating `-it` flows. |
+| `-i` | `--interactive` | Keep stdin open for the child process without requiring a PTY. This supports raw interactive stdin flows, just like Docker `-i`. |
+| `-t` | `--tty` | Allocate a pseudo-TTY for terminal behavior such as prompts, line editing, colors, and full-screen programs. |
+| `-it` | `--interactive --tty` | Combine stdin-open plus PTY: the normal terminal/shell experience. For profiles, `hold run -it <profile>` starts the profile attached when inactive, or reconnects to the singular active interactive/TTY run for that profile. The detach key sequence leaves the run alive under Hold. |
+| `-e KEY=VALUE` | `--env KEY=VALUE` | Set environment variables for the launch/profile. |
+| — | `--env-file FILE` | Load environment variables from a file. |
+| `-p SPEC` | `--publish SPEC` | Record published-port metadata for display, readiness/open helpers, and profile config. Hold is not a container runtime, so this must not falsely claim network namespace port forwarding unless a future backend actually implements it. |
+| `-v SPEC` | `--volume SPEC` | Record volume/path metadata for profile config and future backend support. Hold host-process launches already see the host filesystem, so this is not isolation or remounting by itself. |
+| — | `--name PROFILE` | Create/label a profile from the normalized launch recipe and associate the new run with that profile. |
+| — | `--detach-keys SEQ` | Set the key sequence used to detach from an attached TTY without killing the run. Default should follow Docker familiarity: `Ctrl+P Ctrl+Q`, unless platform constraints require a documented alternative. |
+| — | `--rm` | Remove run-id data/logs when the run stops; useful for tests and ephemeral commands. |
+| — | `--restart POLICY` | Set restart behavior: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`. |
+| — | `--restart-delay DURATION` | Optional delay between restart attempts. |
+| — | `--privileged` | Explicitly request privileged/elevated behavior where supported. This is a high-risk flag and should require clear authorization and prominent help text. |
+
+Examples:
+
+```sh
+hold -d --name web -p 8080:3000 -e NODE_ENV=production npm run start
+hold -i python
+hold -it --rm bash
+hold run -i pythonshell
+hold run -it web
+hold run -d --restart always web
+hold run -d --restart on-failure:5 --restart-delay 5 web
+hold logs -f -n 100 web
+hold inspect web
+```
+
+`--name` rule:
+
+- If the profile name does not exist, create a profile from the normalized launch recipe and label the first run with that profile.
+- If the profile name exists and the launch recipe matches, treat it as a profile launch.
+- If the profile name exists and the recipe differs, refuse and suggest `hold run <profile>`, `hold profile <profile> edit`, or an explicit replacement flow. Do not silently mutate a profile from a launch command.
+
+Log flags:
+
+| Short | Long | Meaning |
+| --- | --- | --- |
+| `-f` | `--follow` | Continue streaming/watching logs. |
+| `-n N` | `--tail N` | Show only the last N lines before continuing/returning. |
+
+If a profile target supplied to `logs` resolves to multiple active/recent run
+IDs, refuse the ambiguous stream and show the filtered run-id list unless a
+future explicit multi-log mode is designed.
+
+Interactive TTY rule:
+
+- `hold -i <cmd> [args...]` starts an ad-hoc command with stdin kept open but no PTY.
+- `hold -t <cmd> [args...]` allocates a PTY; by itself it does not imply stdin should remain open.
+- `hold -it <cmd> [args...]` starts an ad-hoc command with stdin and a PTY: the familiar interactive terminal shape.
+- `hold run -i <profile>` starts or reconnects to a singular active interactive non-PTY profile run. Example: `hold run -i pythonshell` creates a stdin-open Python shell without PTY behavior.
+- `hold run -it <profile>` starts the profile attached when no matching active run exists.
+- If that profile already has exactly one active compatible interactive/TTY run, `hold run -i <profile>` or `hold run -it <profile>` reconnects to it instead of starting another copy.
+- If that profile has exactly one active run that is not compatible with the requested interactive mode, refuse and suggest `logs` or a new `run --force -i/-it` only if an additional instance is intended.
+- If that profile has multiple active runs, refuse and show candidate run IDs. Do not guess.
+- No separate primary `console` or `attach` command is needed in the 0.4 target grammar.
 
 ### 3.2 `prune` vs `rm`
 
@@ -264,7 +338,7 @@ The captive shell should feel like Cisco IOS, diskpart, and Docker had one small
 1. **Bare namespace commands enter that namespace.** `profile` enters `hold(profile)>`; `runid` enters `hold(runid)>`.
 2. **Namespaces list and select.** Namespace prompts expose `ls`, `select`, `help`, and `back` before object-specific actions.
 3. **Objects expose actions.** A selected profile or run ID lets the user omit the target because the prompt already supplies context.
-4. **Top-level verbs still exist.** `run`, `stop`, `down`, `logs`, `console`, `dump`, `prune`, and `rm` remain first-class top-level commands; navigation is for discoverability, not mandatory ceremony. `show` may remain as a read-only alias/view command.
+4. **Top-level verbs still exist.** `run`, `stop`, `down`, `logs`, `inspect`, `prune`, and `rm` remain first-class top-level commands; navigation is for discoverability, not mandatory ceremony. `show` may remain as a read-only alias/view command.
 5. **`ps` always lists run IDs.** At root it lists active run IDs; `ps -a` includes inactive retained run IDs. Inside a profile, `ps` lists that profile's run IDs.
 6. **Profiles can have run IDs; run IDs do not need profiles.** Profile-originated run IDs appear under both the profile context and the run-id views. Ad-hoc run IDs show profile as `-`.
 7. **Top-level commands require explicit source/destination.** Context commands inherit context and can use shorter forms.
@@ -305,8 +379,7 @@ hold> run web                  # start profile web
 hold> stop web                 # stop profile web only if singular active
 hold> down abcd1234            # stop concrete run ID
 hold> logs web                 # valid only if web resolves safely
-hold> console abcd1234
-hold> dump abcd1234            # structured object dump
+hold> inspect abcd1234         # detailed JSON/object view
 hold> prune                    # inactive history cleanup
 hold> rm abcd1234              # targeted inactive run deletion
 hold> rm --force abcd1234      # stop and delete active concrete run
@@ -348,7 +421,7 @@ hold(profile:web)> run --multi 3       # start exactly 3 instances
 hold(profile:web)> stop                # stop only if singular active
 hold(profile:web)> stop --all
 hold(profile:web)> edit
-hold(profile:web)> dump                # structured profile dump
+hold(profile:web)> inspect             # detailed profile object
 hold(profile:web)> import ./web.hold   # context supplies profile name
 hold(profile:web)> export ./web.hold   # context supplies profile name
 hold(profile:web)> rm                  # remove profile, subject to safety checks
@@ -374,10 +447,9 @@ Selected run-id context:
 ```text
 hold(runid:abcd1234)> ls
 hold(runid:abcd1234)> logs
-hold(runid:abcd1234)> console
 hold(runid:abcd1234)> down
 hold(runid:abcd1234)> kill
-hold(runid:abcd1234)> dump              # full structured run record
+hold(runid:abcd1234)> inspect           # full structured run record
 hold(runid:abcd1234)> save web          # create profile web from this run ID
 hold(runid:abcd1234)> rm                # remove if inactive
 hold(runid:abcd1234)> rm --force        # stop, verify, and remove if active
@@ -430,7 +502,7 @@ If a future shortcut redirects `hold(profile:web)> active` to an active-run view
 
 Completion is a first-class feature of the CLI library, not a special case inside
 `hold shell`. Any namespace that can be listed by `ps`, `ls`, or namespace entry
-commands such as `profile`/`runid`, dumped by `dump`, or described by `help`
+commands such as `profile`/`runid`, inspected by `inspect`, or described by `help`
 should also be available to tab completion through the same provider API. The
 command tree, help output, and completion candidates should share one source of
 truth wherever practical.
@@ -438,15 +510,15 @@ truth wherever practical.
 Completion namespaces include at minimum:
 
 ```text
-commands              help, profile, runid, run, stop, down, kill, ps, active, recent, show, logs, console, dump, prune, rm, import, export, doctor, exit, back
+commands              help, profile, runid, run, stop, down, kill, ps, active, recent, show, logs, inspect, prune, rm, import, export, doctor, exit, back
 profiles              named reusable launch definitions
 runids                active and unpruned run IDs
 recent-runids         newest unpruned run IDs, including inactive retained executions
 recent-commands       past ad-hoc argv recipes that have not been saved as profiles
 views                 active, recent, profile, runid, time, uptime, failed, stale, grants
-profile-context       ls, ps, run, stop, edit, dump, import, export, rm, select, help, back
-runid-context         ls, logs, console, down, kill, dump, save, rm, help, back
-state-actions         logs, console, down, kill, dump, prune/rm where valid for the selected object
+profile-context       ls, ps, run, stop, edit, inspect, import, export, rm, select, help, back
+runid-context         ls, logs, down, kill, inspect, save, rm, help, back
+state-actions         logs, down, kill, inspect, prune/rm where valid for the selected object
 ```
 
 The completion provider must be context-aware:
@@ -518,7 +590,9 @@ profile web
   set command -- /usr/bin/python3 -m http.server 9000
   set cwd /srv/web
   set env PYTHONUNBUFFERED=1
-  set console off
+  set interactive off
+  set tty off
+  set publish 9000:9000
   set multi deny
   set readiness tcp 127.0.0.1 9000 timeout 10s
   set cleanup stop-timeout 5s
@@ -528,11 +602,18 @@ exit
 Commands:
 
 ```sh
-hold export web as web.hold
-hold export web as web.json --format json
-hold import web.hold as web --dry-run
-hold import web.hold as web --yes
+hold export web as web.hold            # write CLI transcript form
+hold export web                        # print CLI transcript to stdout
+hold import web.hold as web --dry-run  # parse transcript and show changes
+hold import web.hold as web --yes      # compile transcript into canonical JSON profile storage
+hold inspect web                       # detailed JSON/object view
 ```
+
+Import/export are intentionally the human CLI transcript format. JSON remains the
+canonical on-disk profile storage, but `export` should decompile that JSON into
+the Cisco-style CLI form and `import` should compile the CLI form back into JSON.
+Use `inspect` for JSON/object inspection; do not make JSON the default
+import/export user experience.
 
 Import/apply should validate and show a change summary before overwriting unless `--yes` is supplied.
 
@@ -855,7 +936,7 @@ Resolved decisions for the current 0.4.0 direction:
 1. Use **On Hold** for the project and **`hold`** for the intended 0.4.0 operator command.
 2. Keep ad-hoc launch as bare `hold <cmd> [args...]`; use `--` only when a child executable conflicts with Hold syntax.
 3. Use `run` and `stop` as profile lifecycle verbs, not as a namespace for managing existing executions. `hold run web logs` remains invalid.
-4. Use concrete run IDs as the safest singular handles for `down`, `kill`, `logs`, `console`, `dump`, and targeted `rm`. Profile-name selectors are allowed only when they resolve safely.
+4. Use concrete run IDs as the safest singular handles for `down`, `kill`, `logs`, `inspect`, and targeted `rm`. Profile-name selectors are allowed only when they resolve safely.
 5. Keep `prune` for bulk inactive history cleanup and `rm` for targeted deletion; `rm --force` is the explicit stop-and-remove form for an active concrete run ID.
 6. Treat current Space-selected, local deterministic similarity as the minimum implemented v1 slice until the fuller `S/X/A/D/U` interaction model is implemented.
 
@@ -888,7 +969,7 @@ Requirements:
 Acceptance:
 
 - `make test` can no longer hang indefinitely.
-- A hung console/process test fails with actionable diagnostics.
+- A hung TTY/process test fails with actionable diagnostics.
 
 ### 11.2 Tighten CLI argument validation
 
@@ -896,8 +977,7 @@ Requirements:
 
 - In `src/main.c`, enforce exact arity for current owned commands while the parser is being replaced/refactored:
   - `tail`: exactly one target;
-  - `dump`: exactly one target;
-  - `console`: exactly one target;
+  - `inspect`: exactly one target;
   - `prune`: zero or one target.
 - Reject extra args with the correct usage message and exit code `5`.
 - Fix split-form `--multi` parsing so invalid non-option values after `--multi` are rejected instead of treated as target tokens.
@@ -927,20 +1007,20 @@ Acceptance:
 - All owned commands have one parser truth source for arity/flag validation.
 - Help text and parser behavior agree for all owned commands.
 
-### 11.4 Harden console attach authorization
+### 11.4 Harden interactive TTY authorization
 
 Requirements:
 
 - Add a platform helper to retrieve AF_UNIX peer credentials:
   - Linux: `SO_PEERCRED`;
   - macOS/BSD: `getpeereid` or `LOCAL_PEERCRED` where available.
-- In the console broker, after `accept`, verify peer UID before replaying output or forwarding input.
+- In the interactive TTY broker, after `accept`, verify peer UID before replaying output or forwarding input.
 - Permit:
   - run owner;
   - root;
   - any explicitly intended invoking user for elevated/system runs, if current behavior relies on that. Preserve this intentionally and test it.
-- Keep console socket file permissions at `0600`.
-- Add tests proving unrelated users cannot attach.
+- Keep TTY socket file permissions at `0600`.
+- Add tests proving unrelated users cannot connect to an interactive TTY run.
 
 Acceptance:
 
@@ -1075,7 +1155,7 @@ Acceptance:
 - pager/live-filter/similarity-filter behavior is implemented to the 0.4.0 interaction contract, with later minor releases limited to refinement rather than deferring the core product feature;
 - test suite cannot hang indefinitely;
 - parser rejects unsupported flags and extra positionals;
-- console attach authorization is peer-credential enforced;
+- Interactive TTY authorization is peer-credential enforced;
 - signal safety is stricter than display liveness;
 - system store and atomic writes reject symlink/temp-file attacks;
 - source ZIP builds report `VERSION` correctly;
