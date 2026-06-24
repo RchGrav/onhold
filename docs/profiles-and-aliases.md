@@ -1,18 +1,18 @@
 # Profiles and aliases
 
-> Status: This page documents the current alias-backed profile behavior. The 0.4.0 profile editor/transcript target and the gaps from the current branch are tracked in [Mund 0.4 UX and CLI specification](MUND_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md).
+> Status: This page documents the current alias-to-profile transition behavior. The 0.4.0 profile editor/transcript target and the gaps from the current branch are tracked in [Mund 0.4 UX and CLI specification](MUND_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md).
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Target resolution](target-resolution.md) | [Next: Security](security.md) | Related: [Store](store.md), [Launcher](launcher.md)
 
 Outer loop bridge: deep dive for quickstart Step 5, Create an Alias.
 
-Aliases turn a recorded command into a reusable launch target. Users get a friendly name such as `web`, while Sigmund keeps enough recipe information to start that same command again later.
+Profiles are the renamed and extended form of the original alias idea: a recorded command becomes a reusable launch target. Users get a friendly name such as `web`, while Sigmund keeps the core command recipe — resolved binary plus argv — needed to start that same command again later.
 
-There are two storage modes:
+There are two current storage modes during the rename/extension:
 
-- User-local aliases store a private launch recipe directly in the user's `aliases.json`.
-- System-managed aliases expose a public alias-to-hash mapping while keeping the protected launch recipe in root-private `profiles.json`.
+- User-local profiles store a private launch recipe directly in the user's profile-name mapping. On disk this still uses the existing `aliases.json` file until the storage filename/schema migration lands.
+- System-managed profiles expose a public name-to-hash mapping while keeping the protected launch recipe in root-private `profiles.json`.
 
-## From run to alias
+## From run to profile
 
 ```mermaid
 flowchart TD
@@ -20,11 +20,11 @@ flowchart TD
     Load --> Args["Read argv array"]
     Args --> Bin["Use recorded absolute argv0"]
     Bin --> Scope["Target store kind"]
-    Scope -->|user-local| Recipe["Store alias recipe"]
+    Scope -->|user-local| Recipe["Store profile recipe"]
     Scope -->|system-managed| Hash["Compute profile hash"]
     Hash --> Profile["Write root-private profile"]
     Hash --> PublicAlias["Write public alias to hash"]
-    Recipe --> Future["sigmund start alias"]
+    Recipe --> Future["mund profile name start"]
     PublicAlias --> Future
 
     classDef source fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
@@ -37,15 +37,15 @@ flowchart TD
     class Future launch
 ```
 
-`sigmund alias <id> <name>` first resolves `<id>` to a concrete run. It then reads the record, extracts `argv`, uses the recorded absolute `argv[0]`, and writes either a user recipe or a root profile plus public alias. If the target is a root-public run from a normal user, Sigmund self-elevates before creating the system alias.
+The legacy `sigmund alias <id> <name>` path, and the 0.4 profile replacement flow, first resolve `<id>` to a concrete run. It then reads the record, extracts `argv`, uses the recorded absolute `argv[0]`, and writes either a user profile recipe or a root profile plus public name mapping. If the target is a root-public run from a normal user, Sigmund self-elevates before creating the system-managed profile.
 
-This is intentional: `perform_start` resolves the executable before writing the run record. A run started as `../bin/daemon` records the absolute executable path, so an alias created later from another directory does not reinterpret that relative path.
+This is intentional: `perform_start` resolves the executable before writing the run record. A run started as `../bin/daemon` records the absolute executable path, so a profile created later from another directory does not reinterpret that relative path.
 
-The alias name is also recorded on future runs started through that alias. Later action commands resolve the alias by the label stored on run records, not by recomputing the launch recipe.
+The profile name is also recorded on future runs started through that profile. Later action commands resolve the profile label stored on run records, not by recomputing the launch recipe.
 
 ## Profile fingerprint
 
-System-managed aliases use a SHA-256 fingerprint as a stable capability key. `profile_hash_for_argv` hashes this NUL-delimited material:
+System-managed profiles use a SHA-256 fingerprint as a stable capability key. `profile_hash_for_argv` hashes this NUL-delimited material:
 
 ```text
 sigmund-profile
@@ -60,7 +60,7 @@ argv[1]
 
 The hash input intentionally excludes environment, current directory, UID, GID, hostname, timestamps, and Sigmund version. The source comment states that existing aliases, profiles, and sudoers grants are keyed to exactly this binary-path plus argv framing.
 
-This is not a run ID. A run ID names one run record. A profile hash names a protected launch recipe and appears in root-private profiles, public aliases, and sudo capability argv.
+This is not a run ID. A run ID names one run record. A profile hash names a protected launch recipe and appears in root-private profiles, public profile-name mappings, and sudo capability argv.
 
 ## Stored shapes
 
@@ -85,19 +85,19 @@ flowchart LR
     class SP private
 ```
 
-User aliases are private because they reveal the command. System public aliases reveal only an alias and profile hash; the command itself remains in root-private `profiles.json`.
+User-local profile recipes are private because they reveal the command. System public profile-name mappings reveal only a name and profile hash; the command itself remains in root-private `profiles.json`.
 
-## Starting aliases
+## Starting profiles
 
-`cmd_start_action` treats `sigmund start <token>` as an alias/profile start only when exactly one argument resolves through `resolve_start_profile_target`. For user-local recipes, Sigmund starts the stored recipe directly. For system-managed aliases visible to a normal user, it builds a start capability and crosses sudo. Root Sigmund verifies the alias/hash pair before loading the profile.
+`cmd_start_action` treats `sigmund start <token>` as a profile start only when exactly one argument resolves through `resolve_start_profile_target`. For user-local recipes, Sigmund starts the stored recipe directly. For system-managed profiles visible to a normal user, it builds a start capability and crosses sudo. Root Sigmund verifies the profile-name/hash pair before loading the profile.
 
-By default, `start <alias>` refuses if that alias already has a running process. `--multi` bypasses that guard. Bare `--multi` starts one additional run; `--multi N` and `--multi=N` start `N` runs. `--tail` cannot follow multiple starts.
+By default, starting a named profile refuses if that profile already has a running process. `--multi` bypasses that guard. Bare `--multi` starts one additional run; `--multi N` and `--multi=N` start `N` runs. `--tail` cannot follow multiple starts.
 
 ## Why this design works
 
-Aliases give a daemonless tool a small amount of durable intent without becoming a service configuration system. The recorded run provides the initial exact argv, and later starts reuse that immutable recipe. For root-managed aliases, the hash lets sudoers grants and capability argv refer to a fixed command without exposing the command in public discovery files.
+Profiles give a daemonless tool a small amount of durable intent without becoming a service configuration system. The recorded run provides the initial exact argv, and later starts reuse that immutable recipe. For root-managed profiles, the hash lets sudoers grants and capability argv refer to a fixed command without exposing the command in public discovery files.
 
-The validate-before-signal constraint still applies after aliasing. Aliases select candidate runs by recorded label, and signal actions validate those concrete run records before touching their process groups.
+The validate-before-signal constraint still applies after profile creation. Profiles select candidate runs by recorded label, and signal actions validate those concrete run records before touching their process groups.
 
 ## Implementation map
 
