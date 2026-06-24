@@ -664,6 +664,16 @@ int main(int argc, char **argv) {
                 return 5;
             }
             const char *op = cmd_argv[1];
+            if (!strcmp(op, "create")) {
+                if (cmd_argc < 3) {
+                    fprintf(stderr, "usage: mund profile <name> create -- <cmd> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int rc = sigmund_cmd_profile_create_command(&inv, &user_store, name, cmd_argc - 2, cmd_argv + 2);
+                free(cmd_argv);
+                return rc;
+            }
             if (!strcmp(op, "set")) {
                 if (cmd_argc < 4 || strcmp(cmd_argv[2], "command")) {
                     fprintf(stderr, "usage: mund profile <name> set command -- <cmd> [args...]\n");
@@ -703,6 +713,21 @@ int main(int argc, char **argv) {
                 show_argv[0] = "export";
                 show_argv[1] = (char *)name;
                 int rc = sigmund_cmd_profile_action(&inv, &user_store, 2, show_argv);
+                free(cmd_argv);
+                return rc;
+            }
+            if (!strcmp(op, "delete") && cmd_argc == 2) {
+                int rc = sigmund_cmd_profile_delete(&inv, &user_store, name);
+                free(cmd_argv);
+                return rc;
+            }
+            if (!strcmp(op, "rename")) {
+                if (cmd_argc != 3) {
+                    fprintf(stderr, "usage: mund profile <name> rename <new-name>\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int rc = sigmund_cmd_profile_rename(&inv, &user_store, name, cmd_argv[2]);
                 free(cmd_argv);
                 return rc;
             }

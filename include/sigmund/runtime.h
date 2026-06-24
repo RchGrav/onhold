@@ -118,6 +118,18 @@ int sigmund_cmd_profile_set_command(const struct sigmund_invocation *inv,
                                     const char *name,
                                     int argc,
                                     char **argv);
+int sigmund_cmd_profile_create_command(const struct sigmund_invocation *inv,
+                                       const struct sigmund_store *user_store,
+                                       const char *name,
+                                       int argc,
+                                       char **argv);
+int sigmund_cmd_profile_delete(const struct sigmund_invocation *inv,
+                               const struct sigmund_store *user_store,
+                               const char *name);
+int sigmund_cmd_profile_rename(const struct sigmund_invocation *inv,
+                               const struct sigmund_store *user_store,
+                               const char *old_name,
+                               const char *new_name);
 void sigmund_usage(void);
 int sigmund_cmd_elevated_capability_action(const struct sigmund_invocation *inv,
                                           const struct sigmund_store *system_store,

@@ -349,6 +349,78 @@ int sigmund_alias_upsert_recipe(const struct sigmund_store *store,
     return rc;
 }
 
+int sigmund_alias_delete(const struct sigmund_store *store, const char *alias, bool *deleted) {
+    if (deleted) {
+        *deleted = false;
+    }
+    if (!sigmund_valid_alias(alias)) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct sigmund_alias *entries = NULL;
+    size_t count = 0;
+    if (sigmund_load_aliases(store, &entries, &count) != 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].name, alias) != 0) {
+            continue;
+        }
+        sigmund_free_argv_alloc(entries[i].argv, entries[i].argc);
+        for (size_t j = i + 1; j < count; j++) {
+            entries[j - 1] = entries[j];
+        }
+        memset(&entries[count - 1], 0, sizeof(entries[count - 1]));
+        count--;
+        int rc = write_aliases_atomic(store, entries, count);
+        if (deleted && rc == 0) {
+            *deleted = true;
+        }
+        sigmund_free_aliases(entries, count);
+        return rc;
+    }
+    sigmund_free_aliases(entries, count);
+    return 0;
+}
+
+int sigmund_alias_rename(const struct sigmund_store *store, const char *old_alias, const char *new_alias) {
+    if (!sigmund_valid_alias(old_alias) || !sigmund_valid_alias(new_alias)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (strcmp(old_alias, new_alias) == 0) {
+        return 0;
+    }
+    struct sigmund_alias *entries = NULL;
+    size_t count = 0;
+    if (sigmund_load_aliases(store, &entries, &count) != 0) {
+        return -1;
+    }
+    ssize_t old_idx = -1;
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].name, new_alias) == 0) {
+            sigmund_free_aliases(entries, count);
+            errno = EEXIST;
+            return -1;
+        }
+        if (strcmp(entries[i].name, old_alias) == 0) {
+            old_idx = (ssize_t)i;
+        }
+    }
+    if (old_idx < 0) {
+        sigmund_free_aliases(entries, count);
+        errno = ENOENT;
+        return -1;
+    }
+    if (sigmund_checked_snprintf(entries[old_idx].name, sizeof(entries[old_idx].name), "%s", new_alias) != 0) {
+        sigmund_free_aliases(entries, count);
+        return -1;
+    }
+    int rc = write_aliases_atomic(store, entries, count);
+    sigmund_free_aliases(entries, count);
+    return rc;
+}
+
 int sigmund_parse_alias_cap_atom(const char *atom,
                                 char alias[ALIAS_MAX_LEN + 1],
                                 char hash[PROFILE_HASH_STR_LEN]) {

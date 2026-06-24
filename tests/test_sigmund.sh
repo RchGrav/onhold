@@ -1637,6 +1637,61 @@ test_profile_name_first_set_command() {
   printf '%s\n' "$got" | grep -qx 'name first edit'
 }
 
+test_profile_name_first_crud() {
+  "$SIGMUND_BIN" profile crud-prof create -- /bin/echo 'crud profile' \
+    >"$TEST_ROOT/profile-crud.create.out" 2>"$TEST_ROOT/profile-crud.create.err" || {
+      cat "$TEST_ROOT/profile-crud.create.out" "$TEST_ROOT/profile-crud.create.err" >&2
+      return 1
+    }
+  [ ! -s "$TEST_ROOT/profile-crud.create.out" ] || return 1
+  [ ! -s "$TEST_ROOT/profile-crud.create.err" ] || return 1
+
+  if "$SIGMUND_BIN" profile crud-prof create -- /bin/echo duplicate \
+      >"$TEST_ROOT/profile-crud.dup.out" 2>"$TEST_ROOT/profile-crud.dup.err"; then
+    cat "$TEST_ROOT/profile-crud.dup.out" "$TEST_ROOT/profile-crud.dup.err" >&2
+    return 1
+  fi
+  grep -Fq "profile 'crud-prof' already exists" "$TEST_ROOT/profile-crud.dup.err" || {
+    cat "$TEST_ROOT/profile-crud.dup.err" >&2
+    return 1
+  }
+
+  "$SIGMUND_BIN" profile crud-prof rename renamed-prof \
+    >"$TEST_ROOT/profile-crud.rename.out" 2>"$TEST_ROOT/profile-crud.rename.err" || {
+      cat "$TEST_ROOT/profile-crud.rename.out" "$TEST_ROOT/profile-crud.rename.err" >&2
+      return 1
+    }
+  [ ! -s "$TEST_ROOT/profile-crud.rename.out" ] || return 1
+  [ ! -s "$TEST_ROOT/profile-crud.rename.err" ] || return 1
+
+  if "$SIGMUND_BIN" profile crud-prof show >"$TEST_ROOT/profile-crud.old.out" 2>"$TEST_ROOT/profile-crud.old.err"; then
+    cat "$TEST_ROOT/profile-crud.old.out" "$TEST_ROOT/profile-crud.old.err" >&2
+    return 1
+  fi
+  grep -Fq "profile 'crud-prof' not found" "$TEST_ROOT/profile-crud.old.err" || return 1
+
+  "$SIGMUND_BIN" profile renamed-prof show >"$TEST_ROOT/profile-crud.show" || return 1
+  grep -Fxq "profile renamed-prof" "$TEST_ROOT/profile-crud.show" || return 1
+  grep -Eq "^set command -- (/usr)?/bin/echo 'crud profile'$" "$TEST_ROOT/profile-crud.show" || {
+    cat "$TEST_ROOT/profile-crud.show" >&2
+    return 1
+  }
+
+  "$SIGMUND_BIN" profile renamed-prof delete \
+    >"$TEST_ROOT/profile-crud.delete.out" 2>"$TEST_ROOT/profile-crud.delete.err" || {
+      cat "$TEST_ROOT/profile-crud.delete.out" "$TEST_ROOT/profile-crud.delete.err" >&2
+      return 1
+    }
+  [ ! -s "$TEST_ROOT/profile-crud.delete.out" ] || return 1
+  [ ! -s "$TEST_ROOT/profile-crud.delete.err" ] || return 1
+
+  if "$SIGMUND_BIN" profile renamed-prof show >"$TEST_ROOT/profile-crud.deleted.out" 2>"$TEST_ROOT/profile-crud.deleted.err"; then
+    cat "$TEST_ROOT/profile-crud.deleted.out" "$TEST_ROOT/profile-crud.deleted.err" >&2
+    return 1
+  fi
+  grep -Fq "profile 'renamed-prof' not found" "$TEST_ROOT/profile-crud.deleted.err" || return 1
+}
+
 test_profile_json_export_and_import() {
   local json out id got store
   store="$HOME/.local/state/sigmund"
@@ -2736,6 +2791,7 @@ run_test "alias start requires --multi when already running and --all stops all"
 run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
 run_test "profile transcript import/export round-trips a user-local recipe" test_profile_transcript_import_export_roundtrip
 run_test "profile name-first set command edits a user-local recipe" test_profile_name_first_set_command
+run_test "profile name-first create rename and delete manage a user-local recipe" test_profile_name_first_crud
 run_test "profile JSON export/import round-trips a user-local recipe" test_profile_json_export_and_import
 run_test "invalid alias names are rejected" test_invalid_alias_names_rejected
 run_test "short hex-looking alias names are allowed" test_short_hex_alias_name_allowed

@@ -595,6 +595,78 @@ int sigmund_cmd_profile_set_command(const struct sigmund_invocation *inv,
     return profile_write_command_recipe(user_store, name, argc, argv);
 }
 
+int sigmund_cmd_profile_create_command(const struct sigmund_invocation *inv,
+                                       const struct sigmund_store *user_store,
+                                       const char *name,
+                                       int argc,
+                                       char **argv) {
+    if (inv->euid_root) {
+        fprintf(stderr, "sigmund: error: profile editing is user-local; run it as the profile owner\n");
+        return 5;
+    }
+    if (!sigmund_valid_alias(name)) {
+        fprintf(stderr, "sigmund: error: invalid profile name '%s'\n", name ? name : "");
+        return 5;
+    }
+    if (sigmund_alias_exists_in_store(user_store, name)) {
+        fprintf(stderr, "sigmund: error: profile '%s' already exists\n", name);
+        return 5;
+    }
+    return profile_write_command_recipe(user_store, name, argc, argv);
+}
+
+int sigmund_cmd_profile_delete(const struct sigmund_invocation *inv,
+                               const struct sigmund_store *user_store,
+                               const char *name) {
+    if (inv->euid_root) {
+        fprintf(stderr, "sigmund: error: profile editing is user-local; run it as the profile owner\n");
+        return 5;
+    }
+    if (!sigmund_valid_alias(name)) {
+        fprintf(stderr, "sigmund: error: invalid profile name '%s'\n", name ? name : "");
+        return 5;
+    }
+    bool deleted = false;
+    if (sigmund_alias_delete(user_store, name, &deleted) != 0) {
+        sigmund_die_errno("sigmund: failed to delete profile");
+    }
+    if (!deleted) {
+        fprintf(stderr, "sigmund: error: profile '%s' not found\n", name);
+        return 5;
+    }
+    return 0;
+}
+
+int sigmund_cmd_profile_rename(const struct sigmund_invocation *inv,
+                               const struct sigmund_store *user_store,
+                               const char *old_name,
+                               const char *new_name) {
+    if (inv->euid_root) {
+        fprintf(stderr, "sigmund: error: profile editing is user-local; run it as the profile owner\n");
+        return 5;
+    }
+    if (!sigmund_valid_alias(old_name)) {
+        fprintf(stderr, "sigmund: error: invalid profile name '%s'\n", old_name ? old_name : "");
+        return 5;
+    }
+    if (!sigmund_valid_alias(new_name)) {
+        fprintf(stderr, "sigmund: error: invalid profile name '%s'\n", new_name ? new_name : "");
+        return 5;
+    }
+    if (sigmund_alias_rename(user_store, old_name, new_name) != 0) {
+        if (errno == ENOENT) {
+            fprintf(stderr, "sigmund: error: profile '%s' not found\n", old_name);
+            return 5;
+        }
+        if (errno == EEXIST) {
+            fprintf(stderr, "sigmund: error: profile '%s' already exists\n", new_name);
+            return 5;
+        }
+        sigmund_die_errno("sigmund: failed to rename profile");
+    }
+    return 0;
+}
+
 void sigmund_usage(void) {
     printf("sigmund %s - more than nohup, less than systemd\n\n"
            "Run a command that outlives your shell, then find it, watch it, and stop it\n"

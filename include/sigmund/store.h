@@ -36,6 +36,8 @@ int sigmund_alias_upsert_recipe(const struct sigmund_store *store,
                                const char *binary_path,
                                int argc,
                                char **argv);
+int sigmund_alias_delete(const struct sigmund_store *store, const char *alias, bool *deleted);
+int sigmund_alias_rename(const struct sigmund_store *store, const char *old_alias, const char *new_alias);
 int sigmund_load_record(const char *path, struct sigmund_run_record *r);
 int sigmund_load_public_index(const char *path, struct sigmund_public_index *pi);
 int sigmund_load_public_index_by_id(const struct sigmund_store *store, const char *id, struct sigmund_public_index *pi);

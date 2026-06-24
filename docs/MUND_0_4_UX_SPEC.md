@@ -124,7 +124,7 @@ mund profile <name> export [--format cli|json]
 mund profile <name> grant <principal> [actions]
 mund profile <name> revoke <principal> [actions]
 
-Current branch profile v1 evidence: `mund profile <name> set command -- <cmd> [args...]` updates a user-local, alias-backed profile recipe and round-trips through profile transcript/JSON export. The remaining field editors (`cwd`, `env`, `console`, `multi`, readiness, cleanup, grants, delete/rename) are still release-gated follow-up work.
+Current branch profile v1 evidence: `mund profile <name> create -- <cmd> [args...]`, `set command -- <cmd> [args...]`, `rename <new-name>`, and `delete` manage a user-local, alias-backed profile recipe and round-trip through profile transcript/JSON export. The remaining field editors (`cwd`, `env`, `console`, `multi`, readiness, cleanup, grants) are still release-gated follow-up work.
 
 mund show runs
 mund show profiles
