@@ -50,9 +50,9 @@ static const struct hold_cli_command_spec command_specs[] = {
     {"help", 0, 1, 0, "usage: hold help [topic]", "help"},
 };
 
-static const struct hold_cli_command_spec retired_command_specs[] = {
-    {"alias", 0, -1, 0, "usage: hold profile save <id> as <name> [-v]", NULL},
-    {"aliases", 0, -1, 0, "usage: hold profiles [-v]", NULL},
+static const char *retired_command_names[] = {
+    "alias",
+    "aliases",
 };
 
 static const struct hold_cli_command_spec *find_public_command_spec(const char *s) {
@@ -67,21 +67,16 @@ static const struct hold_cli_command_spec *find_public_command_spec(const char *
     return NULL;
 }
 
-static const struct hold_cli_command_spec *find_retired_command_spec(const char *s) {
+static bool is_retired_command_name(const char *s) {
     if (!s) {
-        return NULL;
+        return false;
     }
-    for (size_t i = 0; i < sizeof(retired_command_specs) / sizeof(retired_command_specs[0]); i++) {
-        if (!strcmp(retired_command_specs[i].name, s)) {
-            return &retired_command_specs[i];
+    for (size_t i = 0; i < sizeof(retired_command_names) / sizeof(retired_command_names[0]); i++) {
+        if (!strcmp(retired_command_names[i], s)) {
+            return true;
         }
     }
-    return NULL;
-}
-
-static const struct hold_cli_command_spec *find_command_spec(const char *s) {
-    const struct hold_cli_command_spec *spec = find_public_command_spec(s);
-    return spec ? spec : find_retired_command_spec(s);
+    return false;
 }
 
 static int help_profiles(void) {
@@ -245,8 +240,8 @@ int hold_show_help(const char *topic) {
     return 5;
 }
 
-bool hold_is_hold_owned_command(const char *s) {
-    return find_command_spec(s) != NULL;
+bool hold_cli_command_is_parser_owned(const char *s) {
+    return find_public_command_spec(s) != NULL || is_retired_command_name(s);
 }
 
 bool hold_cli_command_is_public(const char *s) {
@@ -259,7 +254,7 @@ bool hold_cli_command_allows_all(const char *s) {
 }
 
 bool hold_cli_command_is_retired(const char *s) {
-    return find_retired_command_spec(s) != NULL;
+    return is_retired_command_name(s);
 }
 
 const char *hold_cli_command_usage(const char *s) {

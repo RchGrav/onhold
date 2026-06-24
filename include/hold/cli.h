@@ -6,7 +6,7 @@
 #include "hold/types.h"
 
 int hold_show_help(const char *topic);
-bool hold_is_hold_owned_command(const char *s);
+bool hold_cli_command_is_parser_owned(const char *s);
 bool hold_cli_command_is_public(const char *s);
 bool hold_cli_command_allows_all(const char *s);
 bool hold_cli_command_is_retired(const char *s);

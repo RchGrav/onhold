@@ -410,7 +410,7 @@ int main(int argc, char **argv) {
         return 5;
     }
 
-    bool owned = !force_raw && !tail && hold_is_hold_owned_command(argv[argi]);
+    bool owned = !force_raw && !tail && hold_cli_command_is_parser_owned(argv[argi]);
     const char *command = owned ? argv[argi++] : NULL;
     int cmd_argc = 0;
     char **cmd_argv = NULL;
@@ -623,8 +623,8 @@ int main(int argc, char **argv) {
     if (!inv.euid_root || is_list || (owned && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                                                !strcmp(command, "tail") || !strcmp(command, "dump") ||
                                                !strcmp(command, "view") || !strcmp(command, "prune") ||
-                                               !strcmp(command, "console") || !strcmp(command, "aliases") ||
-                                               !strcmp(command, "profile") || !strcmp(command, "show")))) {
+                                               !strcmp(command, "console") || !strcmp(command, "profile") ||
+                                               !strcmp(command, "show")))) {
         if (!inv.euid_root) {
             if (hold_ensure_user_store_for_current_user(&user_store) != 0) {
                 hold_die_errno("hold: failed to init user storage");
