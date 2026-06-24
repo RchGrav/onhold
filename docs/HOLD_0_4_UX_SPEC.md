@@ -386,6 +386,14 @@ back               return to the previous context
 exit               leave the captive shell
 ```
 
+Command aliases in the captive shell:
+
+- `alias <name> "<command string>"` creates a command macro for the current context.
+- This is not the legacy profile/alias model; profiles remain launch definitions.
+- In a profile context, aliases are profile-local convenience commands unless explicitly marked global by a future design.
+- Export/import should preserve aliases in the CLI transcript form.
+- Aliases expand to the same command language the user could type manually, then run through the normal parser and safety checks.
+
 ### 4.2 Root and namespace contexts
 
 Root prompt examples:
@@ -441,6 +449,9 @@ hold(profile:web)> run --multi 3       # start exactly 3 instances
 hold(profile:web)> stop                # stop only if singular active
 hold(profile:web)> stop --all
 hold(profile:web)> edit
+hold(profile:web)> set env.DATABASE_URL=postgres://...
+hold(profile:web)> set env.LOG_LEVEL=info
+hold(profile:web)> alias myapp "run myapp --with-flags"
 hold(profile:web)> interactive         # save long-form profile option
 hold(profile:web)> no interactive
 hold(profile:web)> tty
@@ -604,7 +615,15 @@ The reusable CLI library should therefore expose for 0.4.0:
 
 ## 5. CLI transcript config
 
-CLI transcript config is a human import/export format. JSON remains canonical on disk. Profile submodes and transcript files should mimic Cisco IOS: direct commands configure fields, and `no <command>` removes or disables them. Avoid making `set` the primary grammar. Boolean run options use positive commands plus `no` negation, not short flags: `interactive`, `no interactive`, `tty`, `no tty`, `detach`, `no detach`.
+CLI transcript config is a human import/export format. JSON remains canonical on disk. Profile submodes and transcript files should mimic Cisco IOS: direct commands configure common fields, `set <path>=<value>` edits structured key paths, and `no <command-or-path>` removes or disables values. Avoid making `set` the universal grammar; use it where a dotted object path is clearer than a bespoke command. Boolean run options use positive commands plus `no` negation, not short flags: `interactive`, `no interactive`, `tty`, `no tty`, `detach`, `no detach`.
+
+Config command rules:
+
+- Prefer direct IOS-style commands for common profile fields: `description`, `command`, `cwd`, `env`, `publish`, `volume`, `interactive`, `tty`, `detach`, `multi`, `readiness`, `cleanup`, `grant`.
+- Use `set <path>=<value>` for structured properties, maps, or uncommon nested fields.
+- `set env.DATABASE_URL=postgres://...` and `env DATABASE_URL=postgres://...` are equivalent for environment variables; export may choose one canonical form.
+- Use `no <command>` or `no <path>` to remove/disable values: `no tty`, `no interactive`, `no env.DEBUG`, `no alias myapp`.
+- `alias <name> "<command string>"` stores a command macro in the current transcript context, not a profile definition.
 
 Example:
 
@@ -613,10 +632,12 @@ profile web
   description "local docs server"
   command -- /usr/bin/python3 -m http.server 9000
   cwd /srv/web
-  env PYTHONUNBUFFERED=1
+  set env.DATABASE_URL=postgres://localhost/app
+  set env.LOG_LEVEL=info
   no interactive
   no tty
   publish 9000:9000
+  alias myapp "run myapp --with-flags"
   multi deny
   readiness tcp 127.0.0.1 9000 timeout 10s
   cleanup stop-timeout 5s

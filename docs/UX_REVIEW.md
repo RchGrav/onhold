@@ -17,7 +17,7 @@ Recommended direction:
 
 1. Move to one unified stacked command grammar shared by normal CLI, captive shell, and Cisco-style config files.
 2. Make `profile`, `run`, `stop`, `down`, `kill`, `ps`, `show`, `logs`, `inspect`, `prune`, `rm`, `doctor`, `import`, and `export` the primary language everywhere.
-3. Let users stack captive-shell commands directly from the normal prompt, e.g. `hold profile web env PORT=3000`, `hold show profile web`, `hold inspect web`, `hold logs web --follow`.
+3. Let users stack captive-shell commands directly from the normal prompt, e.g. `hold profile web set env.PORT=3000`, `hold show profile web`, `hold inspect web`, `hold logs web --follow`.
 4. Make this a deliberate breaking CLI redesign for 0.4.0: replace current legacy commands (`alias`, `aliases`, `list`, `tail`, action-first forms) with the unified grammar instead of carrying them as primary UX. Keep `prune` because it fits the final language, replace `console` with Docker-style `-i/-t/-it`, and replace `dump` with Docker-style `inspect`.
 5. Add a profile editor: `hold profile web edit` and an interactive `profile web` submode for advanced recipe, cwd, env, TTY/interactive flags, restart/readiness metadata, and access policy.
 6. Add profile config import/export so every captive-shell edit can be represented as a Cisco-style command transcript, while JSON remains canonical on disk.
@@ -422,7 +422,9 @@ hold>
 hold> profile web
 hold(profile:web)> show
 hold(profile:web)> cwd /srv/web
-hold(profile:web)> env NODE_ENV=development
+hold(profile:web)> set env.DATABASE_URL=postgres://...
+hold(profile:web)> set env.LOG_LEVEL=info
+hold(profile:web)> alias myapp "run myapp --with-flags"
 hold(profile:web)> interactive
 hold(profile:web)> tty
 hold(profile:web)> readiness tcp localhost:3000 timeout 10s
@@ -488,7 +490,9 @@ Suggested conceptual shape:
 3. **Command submode** for incremental changes:
    - `command -- node server.js`
    - `env PORT=3000`
+   - `set env.DATABASE_URL=postgres://...`
    - `no env DEBUG`
+   - `alias myapp "run myapp --with-flags"`
    - `grant alice run,stop,logs`
 
 Keep JSON as the canonical on-disk storage because On Hold already has JSON infrastructure, but make the human import/export format the Cisco-style CLI transcript.
@@ -525,7 +529,7 @@ hold(profile:web)> validate
 Design requirements:
 
 - **JSON remains canonical on disk**: the existing profile store shape should stay the authoritative internal storage format.
-- **Cisco-like config is the import/export format**: export renders canonical JSON profiles as the same commands a user would type in captive mode; import parses those commands and writes validated JSON profiles.
+- **Cisco-like config is the import/export format**: export renders canonical JSON profiles as the same commands a user would type in captive mode; import parses those commands and writes validated JSON profiles. Common fields can use direct commands, while dotted structured fields can use `set path=value`.
 - **Round-trip safe**: `export -> import -> export` should preserve semantically meaningful fields, even if comments/spacing are not preserved.
 - **Stdout friendly**: export defaults to stdout so users can pipe to files, review tools, or version control.
 - **Dry-run by default for risky writes**: import/apply should validate and show a summary before overwriting unless `--yes` is supplied.
@@ -541,9 +545,11 @@ profile web
   description local docs server
   command /usr/bin/python3 -m http.server 9000
   cwd /srv/web
-  env PYTHONUNBUFFERED=1
+  set env.DATABASE_URL=postgres://localhost/app
+  set env.LOG_LEVEL=info
   no interactive
   no tty
+  alias myapp "run myapp --with-flags"
   multi deny
   readiness tcp 127.0.0.1 9000 timeout 10s
   cleanup stop-timeout 5s
