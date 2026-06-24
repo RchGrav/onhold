@@ -238,25 +238,43 @@ captive shell. OS shell integration should complete real text using the same
 namespace provider where possible. The captive shell should also use `Tab` to
 complete real text from the same provider. This is the release-relevant UX win.
 
-Ghost text is explicitly not a 0.4.0 requirement. Normal Bash/Zsh/Fish
-completion should not attempt inline predictive ghost rendering. A future captive
-TTY shell may add ghost suffix rendering or arrow-key suggestion cycling after
-the basic provider is stable, but that is polish rather than release-gating
-behavior.
+Tab completion should follow normal shell expectations:
+
+- if there is exactly one match, complete it and add a trailing space when the token is complete;
+- if multiple matches share a longer common prefix, extend only through the first non-unique character;
+- if matches remain ambiguous, show the candidate list with short descriptions where available;
+- pressing `Tab` again may reprint or page the candidate list rather than changing the input unexpectedly.
+
+This applies equally to prior command/argument strings. If recent commands share
+a prefix, completion extends only through the shared prefix; it does not guess
+which full argv recipe the user intended.
+
+Inside the captive shell, Up/Down may cycle candidate replacements for the
+current token or command line. The original text, including blank input, is part
+of the cycle so the user can always return to exactly where they started:
+
+```text
+mund> s<Tab>       # ambiguous: save/show/start/status/stop, completes only shared prefix if any
+mund> s<Down>      # save
+mund> <Down>       # show
+mund> <Down>       # start
+mund> <Up>         # show
+mund> <cycle...>   # eventually returns to the original `s` or blank input
+```
+
+No ghost text is part of the design. Completion either inserts real text, shows
+candidates, or cycles concrete candidate replacements in Mund-owned interactive
+contexts.
 
 The reusable CLI library should therefore expose for 0.4.0:
 
 - line editing and history for the captive shell;
 - a pluggable completion namespace/provider API;
+- longest-common-prefix completion for ambiguous matches;
+- candidate-list rendering with descriptions;
 - command/help metadata usable by both `help` and completion;
 - a plain shell-completion mode that emits candidates without terminal UI control;
-- captive-shell `Tab` completion using the same candidates.
-
-Later optional polish:
-
-- captive-TTY ghost suffix rendering;
-- up/down suggestion cycling before command execution;
-- richer command-palette presentation.
+- captive-shell `Tab` completion and Up/Down candidate cycling using the same candidates.
 
 ## 5. CLI transcript config
 
