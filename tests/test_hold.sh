@@ -1788,6 +1788,27 @@ test_docker_env_persists_with_named_profile() {
   printf '%s\n' "$got" | grep -qx 'fromdocker'
 }
 
+
+test_docker_env_file_persists_with_named_profile() {
+  local out id got store envfile
+  store="$HOME/.local/state/hold"
+  envfile="$TEST_ROOT/docker.env"
+  cat >"$envfile" <<'EOF'
+# hold env file
+HOLD_ENV_FILE_ONE=alpha
+HOLD_ENV_FILE_TWO=value with spaces
+EOF
+  out=$("$HOLD_BIN" run --name envfile -e HOLD_INLINE=inline --env-file "$envfile" /usr/bin/env 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.2
+  grep -Fq '"env": ["HOLD_INLINE=inline", "HOLD_ENV_FILE_ONE=alpha", "HOLD_ENV_FILE_TWO=value with spaces"]' "$store/aliases.json" || { cat "$store/aliases.json" >&2; return 1; }
+  got=$("$HOLD_BIN" logs --plain -n 500 "$id") || return 1
+  printf '%s\n' "$got" | grep -qx 'HOLD_INLINE=inline' || { printf '%s\n' "$got" >&2; return 1; }
+  printf '%s\n' "$got" | grep -qx 'HOLD_ENV_FILE_ONE=alpha' || { printf '%s\n' "$got" >&2; return 1; }
+  printf '%s\n' "$got" | grep -qx 'HOLD_ENV_FILE_TWO=value with spaces' || { printf '%s\n' "$got" >&2; return 1; }
+}
+
 test_captive_profile_env_persists_and_runs() {
   local out id got store
   store="$HOME/.local/state/hold"
@@ -3587,6 +3608,7 @@ run_test "alias from relative executable keeps absolute recorded argv0" test_ali
 run_test "profile start requires --force when already running and --all stops all" test_alias_multi_gate_and_all_stop
 run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
 run_test "Docker --env persists with a named profile" test_docker_env_persists_with_named_profile
+run_test "Docker --env-file persists with a named profile" test_docker_env_file_persists_with_named_profile
 run_test "captive profile env persists and runs" test_captive_profile_env_persists_and_runs
 run_test "captive profile mode loads and edits an existing recipe" test_captive_profile_loads_existing_recipe_for_edit
 run_test "captive profile mode preserves quoted argv and env values" test_captive_profile_quoted_argv_and_env_round_trip

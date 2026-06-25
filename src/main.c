@@ -16,6 +16,7 @@ static bool parse_docker_run_flag(const char *arg,
                                   bool *tty,
                                   bool *privileged);
 static int append_env_assignment(const char *arg, char ***env_out, int *envc_out);
+static int append_env_file(const char *path, char ***env_out, int *envc_out);
 static int run_recipe_matches_profile(const struct hold_store *store,
                                       const char *name,
                                       int argc,
@@ -106,12 +107,55 @@ static int append_env_assignment(const char *arg, char ***env_out, int *envc_out
     if (setenv(key, eq + 1, 1) != 0) {
         hold_die_errno("hold: failed to set launch environment");
     }
+    char *copy = strdup(arg);
+    if (!copy) return 3;
     char **next = realloc(*env_out, ((size_t)*envc_out + 1) * sizeof(*next));
-    if (!next) return 3;
-    next[*envc_out] = (char *)arg;
+    if (!next) {
+        free(copy);
+        return 3;
+    }
+    next[*envc_out] = copy;
     *env_out = next;
     (*envc_out)++;
     return 0;
+}
+
+static int append_env_file(const char *path, char ***env_out, int *envc_out) {
+    if (!path || !*path) {
+        fprintf(stderr, "hold: error: --env-file requires a path\n");
+        return 5;
+    }
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "hold: error: cannot read env file '%s': %s\n", path, strerror(errno));
+        return 5;
+    }
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t nr;
+    unsigned long lineno = 0;
+    int rc = 0;
+    while ((nr = getline(&line, &cap, f)) >= 0) {
+        lineno++;
+        while (nr > 0 && (line[nr - 1] == '\n' || line[nr - 1] == '\r')) {
+            line[--nr] = '\0';
+        }
+        char *p = line;
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (!*p || *p == '#') continue;
+        rc = append_env_assignment(p, env_out, envc_out);
+        if (rc != 0) {
+            fprintf(stderr, "hold: error: invalid --env-file entry at %s:%lu\n", path, lineno);
+            break;
+        }
+    }
+    free(line);
+    if (ferror(f) && rc == 0) {
+        fprintf(stderr, "hold: error: failed reading env file '%s': %s\n", path, strerror(errno));
+        rc = 5;
+    }
+    fclose(f);
+    return rc;
 }
 
 static int run_recipe_matches_profile(const struct hold_store *store,
@@ -278,6 +322,22 @@ int main(int argc, char **argv) {
             argi++;
             continue;
         }
+        if (!strcmp(argv[argi], "--env-file")) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                return 5;
+            }
+            int env_rc = append_env_file(argv[argi + 1], &docker_env, &docker_envc);
+            if (env_rc != 0) { free(docker_env); return env_rc; }
+            argi += 2;
+            continue;
+        }
+        if (!strncmp(argv[argi], "--env-file=", 11)) {
+            int env_rc = append_env_file(argv[argi] + 11, &docker_env, &docker_envc);
+            if (env_rc != 0) { free(docker_env); return env_rc; }
+            argi++;
+            continue;
+        }
         if (!strcmp(argv[argi], "-p") || !strcmp(argv[argi], "--publish") ||
             !strcmp(argv[argi], "-v") || !strcmp(argv[argi], "--volume") ||
             !strcmp(argv[argi], "--detach-keys") || !strcmp(argv[argi], "--restart") ||
@@ -429,6 +489,31 @@ int main(int argc, char **argv) {
             if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
                 !strncmp(argv[i], "--env=", 6)) {
                 int env_rc = append_env_assignment(argv[i] + 6, &docker_env, &docker_envc);
+                if (env_rc != 0) {
+                    free(cmd_argv);
+                    free(docker_env);
+                    return env_rc;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                !strcmp(argv[i], "--env-file")) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int env_rc = append_env_file(argv[++i], &docker_env, &docker_envc);
+                if (env_rc != 0) {
+                    free(cmd_argv);
+                    free(docker_env);
+                    return env_rc;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                !strncmp(argv[i], "--env-file=", 11)) {
+                int env_rc = append_env_file(argv[i] + 11, &docker_env, &docker_envc);
                 if (env_rc != 0) {
                     free(cmd_argv);
                     free(docker_env);
