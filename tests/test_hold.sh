@@ -2495,6 +2495,37 @@ test_hold_unified_cli_surface() {
   "$HOLD_BIN" clean hold-web >/dev/null || return 1
 }
 
+test_docker_shaped_cli_flags_and_rm() {
+  local out id id2
+  out=$("$HOLD_BIN" run -d --name docker-web -e HOLD_DOCKER_ENV=ok -- /bin/sh -c 'echo "$HOLD_DOCKER_ENV"; sleep 0.1' 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  grep -q "created profile 'docker-web'" <<<"$out" || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.2
+  "$HOLD_BIN" logs -n 1 --plain "$id" >"$TEST_ROOT/docker-logs-tail.out" || return 1
+  grep -q '^ok$' "$TEST_ROOT/docker-logs-tail.out" || { cat "$TEST_ROOT/docker-logs-tail.out" >&2; return 1; }
+  "$HOLD_BIN" ps -a >"$TEST_ROOT/docker-ps.out" || return 1
+  grep -q "$id" "$TEST_ROOT/docker-ps.out" || { cat "$TEST_ROOT/docker-ps.out" >&2; return 1; }
+  "$HOLD_BIN" profiles >"$TEST_ROOT/docker-profiles.out" || return 1
+  grep -q 'docker-web' "$TEST_ROOT/docker-profiles.out" || { cat "$TEST_ROOT/docker-profiles.out" >&2; return 1; }
+
+  out=$("$HOLD_BIN" -d --name docker-direct /bin/sh -c 'echo direct; sleep 5' 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id2=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id2" ] || { printf '%s\n' "$out" >&2; return 1; }
+  "$HOLD_BIN" rm --force "$id2" >/dev/null || return 1
+  set +e; "$HOLD_BIN" inspect "$id2" >"$TEST_ROOT/docker-rm-inspect.out" 2>&1; rc=$?; set -e
+  [ "$rc" -ne 0 ] || { cat "$TEST_ROOT/docker-rm-inspect.out" >&2; return 1; }
+  "$HOLD_BIN" rm docker-direct >/dev/null || return 1
+  "$HOLD_BIN" profiles >"$TEST_ROOT/docker-profiles-after-rm.out" || return 1
+  ! grep -q 'docker-direct' "$TEST_ROOT/docker-profiles-after-rm.out" || { cat "$TEST_ROOT/docker-profiles-after-rm.out" >&2; return 1; }
+}
+
 test_hold_shell_reserved_for_capture_mode() {
   "$HOLD_BIN" help shell >"$TEST_ROOT/hold-shell-help.out" || return 1
   grep -q 'system-shell capture mode' "$TEST_ROOT/hold-shell-help.out" || { cat "$TEST_ROOT/hold-shell-help.out" >&2; return 1; }
@@ -3211,6 +3242,7 @@ run_test "signal refuses tampered live process-group identity" test_signal_refus
 run_test "stop supports multiple IDs in one command" test_stop_multiple_ids
 run_test "argument edge cases" test_argument_edges
 run_test "hold unified CLI surface" test_hold_unified_cli_surface
+run_test "Docker-shaped run/logs/ps/rm surface" test_docker_shaped_cli_flags_and_rm
 run_test "hold shell is reserved for system-shell capture mode" test_hold_shell_reserved_for_capture_mode
 run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture

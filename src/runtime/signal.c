@@ -602,9 +602,15 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
                 return 5;
             }
             opts.similar_examples[opts.similar_example_count++] = argv[i];
-        } else if (!strcmp(argv[i], "--limit")) {
+        } else if (!strcmp(argv[i], "--limit") || !strcmp(argv[i], "--tail") || !strcmp(argv[i], "-n")) {
             if (++i >= argc || !parse_view_limit(argv[i], &opts.max_results)) {
-                fprintf(stderr, "hold: error: invalid --limit\n");
+                fprintf(stderr, "hold: error: invalid log line limit\n");
+                return 5;
+            }
+            opts.visible_capacity = opts.max_results;
+        } else if (!strncmp(argv[i], "--tail=", 7)) {
+            if (!parse_view_limit(argv[i] + 7, &opts.max_results)) {
+                fprintf(stderr, "hold: error: invalid log line limit\n");
                 return 5;
             }
             opts.visible_capacity = opts.max_results;

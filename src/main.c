@@ -10,6 +10,23 @@
 
 static void print_command_usage_stderr(const char *command);
 static int build_cap_request_token(const char *op, bool force, char *out, size_t n);
+static bool parse_docker_run_flag(const char *arg,
+                                  bool *detach,
+                                  bool *interactive,
+                                  bool *tty,
+                                  bool *privileged);
+static int apply_env_assignment(const char *arg);
+static int run_recipe_matches_profile(const struct hold_store *store,
+                                      const char *name,
+                                      int argc,
+                                      char **argv,
+                                      bool *matched);
+static int ensure_named_run_profile(const struct hold_invocation *inv,
+                                    const struct hold_store *store,
+                                    const char *name,
+                                    int argc,
+                                    char **argv);
+static bool is_legacy_run_namespace_verb(const char *arg);
 
 static int build_cap_request_token(const char *op, bool force, char *out, size_t n) {
     if (!op || !*op) {
@@ -32,6 +49,145 @@ static void print_command_usage_stderr(const char *command) {
     }
 }
 
+static bool parse_docker_run_flag(const char *arg,
+                                  bool *detach,
+                                  bool *interactive,
+                                  bool *tty,
+                                  bool *privileged) {
+    if (!arg || arg[0] != '-') return false;
+    if (!strcmp(arg, "-d") || !strcmp(arg, "--detach")) {
+        *detach = true;
+        return true;
+    }
+    if (!strcmp(arg, "-i") || !strcmp(arg, "--interactive")) {
+        *interactive = true;
+        return true;
+    }
+    if (!strcmp(arg, "-t") || !strcmp(arg, "--tty")) {
+        *tty = true;
+        return true;
+    }
+    if (!strcmp(arg, "-it") || !strcmp(arg, "-ti")) {
+        *interactive = true;
+        *tty = true;
+        return true;
+    }
+    if (!strcmp(arg, "--privileged")) {
+        *privileged = true;
+        return true;
+    }
+    return false;
+}
+
+static int apply_env_assignment(const char *arg) {
+    const char *eq = arg ? strchr(arg, '=') : NULL;
+    if (!arg || !*arg || !eq || eq == arg) {
+        fprintf(stderr, "hold: error: expected KEY=VALUE after --env/-e\n");
+        return 5;
+    }
+    size_t key_len = (size_t)(eq - arg);
+    char key[256];
+    if (key_len >= sizeof(key)) {
+        fprintf(stderr, "hold: error: environment key is too long\n");
+        return 5;
+    }
+    memcpy(key, arg, key_len);
+    key[key_len] = '\0';
+    for (size_t i = 0; key[i]; i++) {
+        if (key[i] == '=') {
+            fprintf(stderr, "hold: error: invalid environment key\n");
+            return 5;
+        }
+    }
+    if (setenv(key, eq + 1, 1) != 0) {
+        hold_die_errno("hold: failed to set launch environment");
+    }
+    return 0;
+}
+
+static int run_recipe_matches_profile(const struct hold_store *store,
+                                      const char *name,
+                                      int argc,
+                                      char **argv,
+                                      bool *matched) {
+    *matched = false;
+    struct hold_profile recipe;
+    if (hold_alias_lookup_recipe(store, name, &recipe) != 0) {
+        return 0;
+    }
+    char binary_path[HOLD_PATH_MAX];
+    if (argc <= 0 || hold_resolve_binary_path(argv[0], binary_path, sizeof(binary_path)) != 0) {
+        hold_free_profile(&recipe);
+        return -1;
+    }
+    bool same = recipe.argc == argc && !strcmp(recipe.binary_path, binary_path);
+    for (int i = 0; same && i < argc; i++) {
+        same = !strcmp(recipe.argv[i], argv[i]);
+    }
+    *matched = same;
+    hold_free_profile(&recipe);
+    return 1;
+}
+
+static int ensure_named_run_profile(const struct hold_invocation *inv,
+                                    const struct hold_store *store,
+                                    const char *name,
+                                    int argc,
+                                    char **argv) {
+    if (!name) return 0;
+    if (!hold_valid_alias(name)) {
+        fprintf(stderr, "hold: error: invalid profile name '%s'\n", name);
+        return 5;
+    }
+    if (argc <= 0 || !argv || !argv[0]) {
+        fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+        return 5;
+    }
+    if (inv->euid_root && store->kind == STORE_USER_LOCAL) {
+        fprintf(stderr, "hold: error: create user-local profiles as that user\n");
+        return 5;
+    }
+    if (hold_alias_exists_in_store(store, name)) {
+        bool matched = false;
+        int rc = run_recipe_matches_profile(store, name, argc, argv, &matched);
+        if (rc < 0) return 5;
+        if (!matched) {
+            fprintf(stderr,
+                    "hold: error: profile '%s' already exists with a different launch recipe; use `hold run %s` or edit it in configuration mode\n",
+                    name,
+                    name);
+            return 5;
+        }
+        return 0;
+    }
+    char binary_path[HOLD_PATH_MAX];
+    if (hold_resolve_binary_path(argv[0], binary_path, sizeof(binary_path)) != 0) {
+        if (errno == ENOENT) {
+            fprintf(stderr, "hold: cannot start '%s': command not found\n", argv[0]);
+        } else {
+            fprintf(stderr, "hold: cannot start '%s': %s\n", argv[0], strerror(errno));
+        }
+        return 1;
+    }
+    if (hold_alias_upsert_recipe(store, name, binary_path, argc, argv) != 0) {
+        hold_die_errno("hold: failed to write profile");
+    }
+    hold_sig_note(inv, "hold: created profile '%s'\n", name);
+    return 0;
+}
+
+static bool is_legacy_run_namespace_verb(const char *arg) {
+    static const char *verbs[] = {
+        "stop", "kill", "logs", "tail", "dump", "inspect", "console", "rm", "prune",
+        "profile", "show", "status", "ps", "list"
+    };
+    if (!arg) return false;
+    for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); i++) {
+        if (!strcmp(arg, verbs[i])) return true;
+    }
+    return false;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         hold_usage();
@@ -49,9 +205,71 @@ int main(int argc, char **argv) {
     bool quiet = false;
     bool print_cmd = false;
     bool list_iso = false;
+    bool rm_force = false;
+    bool docker_detach = false;
+    bool docker_interactive = false;
+    bool docker_tty = false;
+    bool docker_privileged = false;
+    const char *docker_name = NULL;
     int multi_count = 1;
 
     while (argi < argc) {
+        if (parse_docker_run_flag(argv[argi], &docker_detach, &docker_interactive, &docker_tty, &docker_privileged)) {
+            if (docker_privileged) {
+                requested_system = true;
+            }
+            if (docker_tty) {
+                console_mode = true;
+            }
+            argi++;
+            continue;
+        }
+        if (!strcmp(argv[argi], "--name")) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                return 5;
+            }
+            docker_name = argv[argi + 1];
+            argi += 2;
+            continue;
+        }
+        if (!strcmp(argv[argi], "-e") || !strcmp(argv[argi], "--env")) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                return 5;
+            }
+            int env_rc = apply_env_assignment(argv[argi + 1]);
+            if (env_rc != 0) return env_rc;
+            argi += 2;
+            continue;
+        }
+        if (!strncmp(argv[argi], "--env=", 6)) {
+            int env_rc = apply_env_assignment(argv[argi] + 6);
+            if (env_rc != 0) return env_rc;
+            argi++;
+            continue;
+        }
+        if (!strcmp(argv[argi], "-p") || !strcmp(argv[argi], "--publish") ||
+            !strcmp(argv[argi], "-v") || !strcmp(argv[argi], "--volume") ||
+            !strcmp(argv[argi], "--detach-keys") || !strcmp(argv[argi], "--restart") ||
+            !strcmp(argv[argi], "--restart-delay")) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                return 5;
+            }
+            argi += 2;
+            continue;
+        }
+        if (!strncmp(argv[argi], "--publish=", 10) || !strncmp(argv[argi], "--volume=", 9) ||
+            !strncmp(argv[argi], "--detach-keys=", 14) || !strncmp(argv[argi], "--restart=", 10) ||
+            !strncmp(argv[argi], "--restart-delay=", 16)) {
+            argi++;
+            continue;
+        }
+        if (!strcmp(argv[argi], "--rm")) {
+            argi++;
+            continue;
+        }
         if (!strcmp(argv[argi], "--system")) {
             requested_system = true;
             argi++;
@@ -126,6 +344,14 @@ int main(int argc, char **argv) {
                 all = true;
                 continue;
             }
+            if (!literal_owned_arg && !strcmp(command, "ps") && !strcmp(argv[i], "-a")) {
+                all = true;
+                continue;
+            }
+            if (!literal_owned_arg && !strcmp(command, "rm") && !strcmp(argv[i], "--force")) {
+                rm_force = true;
+                continue;
+            }
             if (!literal_owned_arg && (!strcmp(command, "stop") || !strcmp(command, "kill")) &&
                 !strcmp(argv[i], "--print")) {
                 print_cmd = true;
@@ -134,6 +360,68 @@ int main(int argc, char **argv) {
             if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
                 (!strcmp(argv[i], "--tail") || !strcmp(argv[i], "-f"))) {
                 tail = true;
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                parse_docker_run_flag(argv[i], &docker_detach, &docker_interactive, &docker_tty, &docker_privileged)) {
+                if (docker_privileged) {
+                    requested_system = true;
+                }
+                if (docker_tty) {
+                    console_mode = true;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                !strcmp(argv[i], "--name")) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                docker_name = argv[++i];
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                (!strcmp(argv[i], "-e") || !strcmp(argv[i], "--env"))) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int env_rc = apply_env_assignment(argv[++i]);
+                if (env_rc != 0) {
+                    free(cmd_argv);
+                    return env_rc;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                !strncmp(argv[i], "--env=", 6)) {
+                int env_rc = apply_env_assignment(argv[i] + 6);
+                if (env_rc != 0) {
+                    free(cmd_argv);
+                    return env_rc;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--publish") ||
+                 !strcmp(argv[i], "-v") || !strcmp(argv[i], "--volume") ||
+                 !strcmp(argv[i], "--detach-keys") || !strcmp(argv[i], "--restart") ||
+                 !strcmp(argv[i], "--restart-delay"))) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                i++;
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                (!strncmp(argv[i], "--publish=", 10) || !strncmp(argv[i], "--volume=", 9) ||
+                 !strncmp(argv[i], "--detach-keys=", 14) || !strncmp(argv[i], "--restart=", 10) ||
+                 !strncmp(argv[i], "--restart-delay=", 16) || !strcmp(argv[i], "--rm"))) {
                 continue;
             }
             if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strcmp(argv[i], "--console")) {
@@ -221,8 +509,9 @@ int main(int argc, char **argv) {
         free(cmd_argv);
         return rc;
     }
-    if (owned && !strcmp(command, "run") && !saw_owned_delimiter && !cap_run_form) {
-        fprintf(stderr, "usage: hold run [--tail|-f] [--console] -- <cmd> [args...]\n");
+    if (owned && !strcmp(command, "run") && !saw_owned_delimiter &&
+        cmd_argc >= 2 && is_legacy_run_namespace_verb(cmd_argv[1])) {
+        fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]; use -- <cmd> when a command conflicts with Hold syntax\n");
         free(cmd_argv);
         return 5;
     }
@@ -244,6 +533,12 @@ int main(int argc, char **argv) {
         hold_die_errno("hold: failed to resolve invocation context");
     }
     inv.quiet = quiet;
+    if (docker_detach) {
+        tail = false;
+    }
+    if (docker_interactive && !docker_tty) {
+        /* Parsed for Docker-shaped CLI compatibility; non-PTY stdin plumbing is a later runner slice. */
+    }
     if (inv.elevated && !inv.euid_root) {
         fprintf(stderr, "hold: internal error: --elevated without root authority\n");
         if (owned) {
@@ -255,6 +550,7 @@ int main(int argc, char **argv) {
     if (owned && !strcmp(command, "logs")) {
         command = "__view";
     }
+    if (owned && !strcmp(command, "ps")) command = "list";
     if (owned && !strcmp(command, "inspect")) command = "dump";
     if (owned && !strcmp(command, "status")) command = "list";
     if (owned && !strcmp(command, "clean")) command = "prune";
@@ -332,7 +628,7 @@ int main(int argc, char **argv) {
                                                !strcmp(command, "tail") || !strcmp(command, "dump") ||
                                                !strcmp(command, "__view") || !strcmp(command, "prune") ||
                                                !strcmp(command, "console") || !strcmp(command, "profile") ||
-                                               !strcmp(command, "show")))) {
+                                               !strcmp(command, "show") || !strcmp(command, "rm")))) {
         if (!inv.euid_root) {
             if (hold_ensure_user_store_for_current_user(&user_store) != 0) {
                 hold_die_errno("hold: failed to init user storage");
@@ -368,7 +664,17 @@ int main(int argc, char **argv) {
             }
             hold_die_errno("hold: failed to init start storage");
         }
-        int rc = hold_perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL);
+        int rc;
+        if (docker_name) {
+            rc = ensure_named_run_profile(&inv, &start_store, docker_name, cmd_argc, cmd_argv);
+            if (rc == 0) {
+                rc = hold_perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, docker_name);
+            }
+        } else if (saw_owned_delimiter) {
+            rc = hold_perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL);
+        } else {
+            rc = hold_cmd_start_action(&inv, &user_store, &system_store, argv[0], &start_store, tail, console_mode, multi, multi_count, cmd_argc, cmd_argv);
+        }
         free(cmd_argv);
         return rc;
     }
@@ -387,6 +693,11 @@ int main(int argc, char **argv) {
                 hold_die_errno("hold: failed to init invoking-user storage");
             }
             hold_die_errno("hold: failed to init start storage");
+        }
+        if (docker_name) {
+            int rc = ensure_named_run_profile(&inv, &start_store, docker_name, cmd_argc, cmd_argv);
+            if (rc != 0) return rc;
+            return hold_perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, docker_name);
         }
         return hold_perform_start(&inv, &start_store, tail, console_mode, cmd_argc, cmd_argv, NULL, NULL);
     }
@@ -705,6 +1016,25 @@ int main(int argc, char **argv) {
     if (!strcmp(command, "prune")) {
         const char *target = cmd_argc > 0 ? cmd_argv[0] : NULL;
         int rc = hold_cmd_prune_action(&inv, &user_store, &system_store, argv[0], target, all);
+        free(cmd_argv);
+        return rc;
+    }
+    if (!strcmp(command, "rm")) {
+        const char *target = cmd_argv[0];
+        int rc = 0;
+        if (!rm_force && !inv.euid_root && hold_valid_alias(target) && hold_alias_exists_in_store(&user_store, target)) {
+            rc = hold_cmd_profile_delete(&inv, &user_store, target);
+            free(cmd_argv);
+            return rc;
+        }
+        if (rm_force) {
+            rc = hold_cmd_signal_action(&inv, &user_store, &system_store, argv[0], "stop", 1, cmd_argv, SIGTERM, true, false, false);
+            if (rc != 0) {
+                free(cmd_argv);
+                return rc;
+            }
+        }
+        rc = hold_cmd_prune_action(&inv, &user_store, &system_store, argv[0], target, false);
         free(cmd_argv);
         return rc;
     }

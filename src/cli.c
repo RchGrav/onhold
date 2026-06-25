@@ -27,18 +27,20 @@ struct hold_cli_command_spec {
 
 static const struct hold_cli_command_spec command_specs[] = {
     {"list", 0, 1, 0, "usage: hold list [profile]", "list"},
-    {"run", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold run [--tail|-f] [--console] -- <cmd> [args...]", "run"},
+    {"ps", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold ps [-a|--all]", "ps"},
+    {"run", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold run [run-options] <cmd|profile> [args...]", "run"},
     {"start", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold start <profile> [--force|--multi [N]] [--console]\n       hold start <cmd> [args...]", "start"},
     {"stop", 1, -1, HOLD_CLI_ALLOW_ALL, "usage: hold stop [--print] [--all] <target>...", "stop"},
     {"kill", 1, -1, HOLD_CLI_ALLOW_ALL, "usage: hold kill [--print] [--all] <target>...", "kill"},
     {"tail", 1, 1, 0, "usage: hold tail <target>", "tail"},
-    {"logs", 1, -1, 0, "usage: hold logs <target> [--follow|-f] [--plain|--interactive]", "logs"},
+    {"logs", 1, -1, 0, "usage: hold logs <target> [--follow|-f] [--tail|-n N] [--plain|--interactive]", "logs"},
     {"status", 0, 1, 0, "usage: hold status [profile|target]", "status"},
     {"inspect", 1, 1, 0, "usage: hold inspect <target>", "inspect"},
     {"dump", 1, 1, 0, "usage: hold dump <target>", "dump"},
     {"__view", 1, -1, 0, "usage: hold __view <target> [internal viewer test options]", "__view"},
     {"console", 1, 1, 0, "usage: hold console <target>", "console"},
     {"prune", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold prune [target|all] [--all]", "prune"},
+    {"rm", 1, 1, 0, "usage: hold rm [--force] <inactive-runid|profile>", "rm"},
     {"profiles", 0, 1, 0, "usage: hold profiles [-v]", "profiles"},
     {"profile", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold profile <name> <show|start|run|create|set|export|rename|delete> [args...]\n       hold profile <run|start|save|show|export|import> [args...]", "profile"},
     {"show", 1, 2, 0, "usage: hold show <runs|profiles|running|dormant|failed|stale> [name]", "show"},
@@ -178,6 +180,8 @@ static int help_console(void) {
 static int help_action(const char *action) {
     if (!strcmp(action, "list")) {
         printf("usage: hold list [profile] [--iso|-l]\n\nShow all visible runs, optionally filtered by recorded profile label.\n");
+    } else if (!strcmp(action, "ps")) {
+        printf("usage: hold ps [-a|--all]\n\nDocker-shaped run listing. Shows Hold run IDs; profile-backed runs include their profile label where available.\n");
     } else if (!strcmp(action, "start")) {
         printf("usage: hold start <profile> [--force|--multi [N]] [--console]\n       hold start <cmd> [args...]\n\nStart a saved profile recipe, or use explicit start form for a raw command.\n");
     } else if (!strcmp(action, "stop")) {
@@ -185,10 +189,10 @@ static int help_action(const char *action) {
     } else if (!strcmp(action, "kill")) {
         printf("usage: hold kill [--print] [--all] <target>...\n\nForce matching runs down with KILL.\n");
     } else if (!strcmp(action, "run")) {
-        printf("usage: hold run [--tail|-f] [--console] -- <cmd> [args...]\n\nStart an ad-hoc command explicitly. The -- delimiter keeps command args unambiguous.\n");
+        printf("usage: hold run [run-options] <cmd|profile> [args...]\n\nDocker-shaped launch. Common options:\n  -d, --detach          run in the background\n  -i, --interactive     keep stdin open (non-PTY stdin plumbing is in progress)\n  -t, --tty             allocate Hold's PTY/console path\n  -e, --env KEY=VALUE   set launch environment\n      --name PROFILE    create/label a profile from this launch recipe\n      --privileged      request Hold's elevated/root-managed path\nUse -- before a command whose name conflicts with a Hold command or option.\n");
     } else if (!strcmp(action, "tail") || !strcmp(action, "logs")) {
         if (!strcmp(action, "logs")) {
-            printf("usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n\nOpen the log viewer for a run. In a TTY, type directly in the full-screen viewer to filter dynamically; Backspace relaxes the filter, Space excludes lines like the highlighted line, and Ctrl-R resets filters. Non-TTY output stays script-friendly.\n");
+            printf("usage: hold logs <target> [--follow|-f] [--tail|-n N] [--plain|--interactive]\n\nOpen the log viewer for a run. In a TTY, type directly in the full-screen viewer to filter dynamically; Backspace relaxes the filter, Space excludes lines like the highlighted line, and Ctrl-R resets filters. Non-TTY output stays script-friendly.\n");
         } else {
             printf("usage: hold tail <target>\n\nFollow live output for a profile match, or follow an id's log directly.\n");
         }
@@ -200,6 +204,8 @@ static int help_action(const char *action) {
         printf("usage: hold __view <target> [internal viewer test options]\n\nInternal regression/debug entrypoint for the log viewer engine. The product UX is hold logs <target>, then type inside the full-screen viewer to filter dynamically.\n");
     } else if (!strcmp(action, "prune")) {
         printf("usage: hold prune [target|all] [--all]\n\nClear removable past run data. Running valid runs are never pruned.\n");
+    } else if (!strcmp(action, "rm")) {
+        printf("usage: hold rm [--force] <inactive-runid|profile>\n\nRemove an inactive run record/log or delete a user-local profile. With --force, stop and remove one concrete active run ID.\n");
     } else if (!strcmp(action, "profiles")) {
         printf("usage: hold profiles [-v]\n\nList visible profiles. User profiles show commands; system commands are redacted.\n");
     } else if (!strcmp(action, "profile")) {
