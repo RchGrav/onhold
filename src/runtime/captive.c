@@ -24,6 +24,10 @@ struct captive_profile_stage {
     size_t arg_count;
     char *env[CAPTIVE_MAX_ENV];
     size_t env_count;
+    char *ports[CAPTIVE_MAX_ARGS];
+    size_t port_count;
+    char *volumes[CAPTIVE_MAX_ARGS];
+    size_t volume_count;
     bool mode_interactive;
     bool mode_tty;
     bool mode_detach;
@@ -47,6 +51,8 @@ struct captive_session {
 static void stage_clear(struct captive_profile_stage *stage) {
     for (size_t i = 0; i < stage->arg_count; i++) free(stage->args[i]);
     for (size_t i = 0; i < stage->env_count; i++) free(stage->env[i]);
+    for (size_t i = 0; i < stage->port_count; i++) free(stage->ports[i]);
+    for (size_t i = 0; i < stage->volume_count; i++) free(stage->volumes[i]);
     memset(stage, 0, sizeof(*stage));
 }
 
@@ -88,6 +94,36 @@ static int stage_load_recipe(struct captive_profile_stage *stage, const struct h
                 goto done;
             }
             stage->env_count++;
+        }
+    }
+    if (recipe.portc > 0) {
+        if ((size_t)recipe.portc > CAPTIVE_MAX_ARGS) {
+            fprintf(stderr, "%% Existing profile has too many publish entries for captive editing\n");
+            rc = 5;
+            goto done;
+        }
+        for (int i = 0; i < recipe.portc; i++) {
+            stage->ports[stage->port_count] = strdup(recipe.ports[i]);
+            if (!stage->ports[stage->port_count]) {
+                rc = 3;
+                goto done;
+            }
+            stage->port_count++;
+        }
+    }
+    if (recipe.volumec > 0) {
+        if ((size_t)recipe.volumec > CAPTIVE_MAX_ARGS) {
+            fprintf(stderr, "%% Existing profile has too many volume entries for captive editing\n");
+            rc = 5;
+            goto done;
+        }
+        for (int i = 0; i < recipe.volumec; i++) {
+            stage->volumes[stage->volume_count] = strdup(recipe.volumes[i]);
+            if (!stage->volumes[stage->volume_count]) {
+                rc = 3;
+                goto done;
+            }
+            stage->volume_count++;
         }
     }
     stage->mode_interactive = recipe.mode_interactive;
@@ -220,6 +256,8 @@ static void help_profile(void) {
     printf("  binary        Set the target executable\n");
     printf("  argv          Append base argv tokens\n");
     printf("  env           Set an environment variable\n");
+    printf("  publish       Record published port metadata\n");
+    printf("  volume        Record volume/path metadata\n");
     printf("  alias         Define a profile-local alias (reserved)\n");
     printf("  param         Expose a validated optional parameter (reserved)\n");
     printf("  multi         Allow multiple concurrent instances\n");
@@ -302,6 +340,20 @@ static void profile_info(const struct captive_profile_stage *stage) {
         for (size_t i = 0; i < stage->env_count; i++) printf(" %s", stage->env[i]);
     }
     printf("\n");
+    printf("  publish   :");
+    if (stage->port_count == 0) {
+        printf(" -");
+    } else {
+        for (size_t i = 0; i < stage->port_count; i++) printf(" %s", stage->ports[i]);
+    }
+    printf("\n");
+    printf("  volume    :");
+    if (stage->volume_count == 0) {
+        printf(" -");
+    } else {
+        for (size_t i = 0; i < stage->volume_count; i++) printf(" %s", stage->volumes[i]);
+    }
+    printf("\n");
     printf("  modes     :%s%s%s%s%s\n",
            stage->mode_interactive ? " interactive" : "",
            stage->mode_tty ? " tty" : "",
@@ -329,6 +381,49 @@ static int profile_append_args(struct captive_profile_stage *stage, int argc, ch
         stage->arg_count++;
     }
     stage->dirty = true;
+    return 0;
+}
+
+static int profile_append_metadata(char **items, size_t *count, size_t max, const char *kind, int argc, char **argv) {
+    if (argc != 2 || !argv[1] || !argv[1][0]) {
+        fprintf(stderr, "%% Usage: %s <spec>\n", kind);
+        return 5;
+    }
+    if (*count >= max) {
+        fprintf(stderr, "%% Too many %s entries\n", kind);
+        return 5;
+    }
+    char *copy = strdup(argv[1]);
+    if (!copy) return 3;
+    items[(*count)++] = copy;
+    return 0;
+}
+
+static void profile_clear_metadata(char **items, size_t *count, bool *dirty) {
+    for (size_t i = 0; i < *count; i++) free(items[i]);
+    memset(items, 0, sizeof(items[0]) * CAPTIVE_MAX_ARGS);
+    *count = 0;
+    *dirty = true;
+}
+
+static int profile_remove_metadata(char **items, size_t *count, const char *kind, int argc, char **argv, bool *dirty) {
+    if (argc == 2 || (argc == 3 && !strcmp(argv[2], "all"))) {
+        profile_clear_metadata(items, count, dirty);
+        return 0;
+    }
+    if (argc != 3) {
+        fprintf(stderr, "%% Usage: no %s [spec|all]\n", kind);
+        return 5;
+    }
+    for (size_t i = 0; i < *count; i++) {
+        if (!strcmp(items[i], argv[2])) {
+            free(items[i]);
+            for (size_t j = i + 1; j < *count; j++) items[j - 1] = items[j];
+            items[--(*count)] = NULL;
+            *dirty = true;
+            return 0;
+        }
+    }
     return 0;
 }
 
@@ -544,10 +639,10 @@ static int profile_commit(struct captive_session *s) {
                                       argv,
                                       (int)stage->env_count,
                                       stage->env,
-                                      0,
-                                      NULL,
-                                      0,
-                                      NULL,
+                                      (int)stage->port_count,
+                                      stage->ports,
+                                      (int)stage->volume_count,
+                                      stage->volumes,
                                       stage->mode_interactive,
                                       stage->mode_tty,
                                       stage->mode_detach,
@@ -592,6 +687,14 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  WORD       KEY VALUE or KEY=VALUE\n");
             return 0;
         }
+        if (!strcmp(argv[0], "publish")) {
+            printf("  WORD       Port metadata spec, e.g. 8080:3000\n");
+            return 0;
+        }
+        if (!strcmp(argv[0], "volume")) {
+            printf("  WORD       Volume/path metadata spec, e.g. /host:/name\n");
+            return 0;
+        }
         if (!strcmp(argv[0], "param")) {
             printf("  WORD       Long flag to expose (e.g. --port)\n");
             return 0;
@@ -606,6 +709,8 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
         }
         if (!strcmp(argv[0], "no")) {
             printf("  env         Remove an environment variable or all env\n");
+            printf("  publish     Remove published port metadata\n");
+            printf("  volume      Remove volume/path metadata\n");
             printf("  argv        Clear base argv tokens\n");
             printf("  interactive Disable stdin-open profile mode\n");
             printf("  tty         Disable pseudo-TTY profile mode\n");
@@ -619,6 +724,8 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
         if (!strcmp(argv[0], "default")) {
             printf("  argv        Clear base argv tokens\n");
             printf("  env         Clear environment entries\n");
+            printf("  publish     Clear published port metadata\n");
+            printf("  volume      Clear volume/path metadata\n");
             printf("  interactive Reset stdin-open mode to default\n");
             printf("  tty         Reset pseudo-TTY mode to default\n");
             printf("  console     Alias for default tty\n");
@@ -640,6 +747,16 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     }
     if (!strcmp(argv[0], "argv")) return profile_append_args(&s->profile, argc, argv);
     if (!strcmp(argv[0], "env")) return profile_set_env(&s->profile, argc, argv);
+    if (!strcmp(argv[0], "publish")) {
+        int rc = profile_append_metadata(s->profile.ports, &s->profile.port_count, CAPTIVE_MAX_ARGS, "publish", argc, argv);
+        if (rc == 0) s->profile.dirty = true;
+        return rc;
+    }
+    if (!strcmp(argv[0], "volume")) {
+        int rc = profile_append_metadata(s->profile.volumes, &s->profile.volume_count, CAPTIVE_MAX_ARGS, "volume", argc, argv);
+        if (rc == 0) s->profile.dirty = true;
+        return rc;
+    }
     if (!strcmp(argv[0], "restart")) return profile_set_restart(&s->profile, argc, argv);
     if (!strcmp(argv[0], "restart-delay") || !strcmp(argv[0], "restart_delay_seconds")) return profile_set_restart_delay(&s->profile, argc, argv);
     if (!strcmp(argv[0], "alias") || !strcmp(argv[0], "param") || !strcmp(argv[0], "pty-shim")) {
@@ -647,6 +764,12 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     }
     if (argc == 1 && profile_set_mode(&s->profile, argv[0], true) == 0) return 0;
     if (!strcmp(argv[0], "no") && argc >= 2 && !strcmp(argv[1], "env")) return profile_no_env(&s->profile, argc, argv);
+    if (!strcmp(argv[0], "no") && argc >= 2 && !strcmp(argv[1], "publish")) {
+        return profile_remove_metadata(s->profile.ports, &s->profile.port_count, "publish", argc, argv, &s->profile.dirty);
+    }
+    if (!strcmp(argv[0], "no") && argc >= 2 && !strcmp(argv[1], "volume")) {
+        return profile_remove_metadata(s->profile.volumes, &s->profile.volume_count, "volume", argc, argv, &s->profile.dirty);
+    }
     if (!strcmp(argv[0], "no") && argc == 2 && !strcmp(argv[1], "argv")) {
         profile_clear_argv(&s->profile);
         return 0;
@@ -674,6 +797,14 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             return 0;
         }
         if (!strcmp(argv[1], "env")) return profile_no_env(&s->profile, 2, argv);
+        if (!strcmp(argv[1], "publish")) {
+            profile_clear_metadata(s->profile.ports, &s->profile.port_count, &s->profile.dirty);
+            return 0;
+        }
+        if (!strcmp(argv[1], "volume")) {
+            profile_clear_metadata(s->profile.volumes, &s->profile.volume_count, &s->profile.dirty);
+            return 0;
+        }
         if (!strcmp(argv[1], "restart")) {
             profile_clear_restart(&s->profile);
             return 0;

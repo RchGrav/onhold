@@ -2322,6 +2322,86 @@ EOF
 }
 
 
+test_captive_profile_publish_volume_metadata_preserves_edits_and_clears() {
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -d --name iosmeta -p 8080:3000 -v "$TEST_ROOT:/work" -- /bin/sh -c 'sleep 1' 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  "$HOLD_BIN" stop "$id" >/dev/null 2>&1 || true
+
+  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-meta-preserve.out" 2>"$TEST_ROOT/captive-meta-preserve.err" || { cat "$TEST_ROOT/captive-meta-preserve.out" "$TEST_ROOT/captive-meta-preserve.err" >&2; return 1; }
+enable
+configure terminal
+profile iosmeta
+info
+env HOLD_META_TOUCHED yes
+commit
+end
+exit
+EOF
+  grep -q 'publish   : 8080:3000' "$TEST_ROOT/captive-meta-preserve.out" || { cat "$TEST_ROOT/captive-meta-preserve.out" >&2; return 1; }
+  grep -q "volume    : $TEST_ROOT:/work" "$TEST_ROOT/captive-meta-preserve.out" || { cat "$TEST_ROOT/captive-meta-preserve.out" >&2; return 1; }
+  "$HOLD_BIN" profile export iosmeta --json >"$TEST_ROOT/iosmeta-preserve.json" || return 1
+  python3 - "$TEST_ROOT/iosmeta-preserve.json" "$TEST_ROOT" <<'PY' || { cat "$TEST_ROOT/iosmeta-preserve.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+root = sys.argv[2]
+if profile.get('ports') != ['8080:3000']:
+    raise SystemExit(f"ports not preserved: {profile.get('ports')!r}")
+if profile.get('volumes') != [f'{root}:/work']:
+    raise SystemExit(f"volumes not preserved: {profile.get('volumes')!r}")
+if 'HOLD_META_TOUCHED=yes' not in profile.get('env', []):
+    raise SystemExit(f"env edit missing after commit: {profile.get('env')!r}")
+PY
+
+  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-meta-edit.out" 2>"$TEST_ROOT/captive-meta-edit.err" || { cat "$TEST_ROOT/captive-meta-edit.out" "$TEST_ROOT/captive-meta-edit.err" >&2; return 1; }
+enable
+configure terminal
+profile iosmeta
+publish 127.0.0.1:8443:443
+volume cache:/cache
+no publish 8080:3000
+commit
+end
+exit
+EOF
+  "$HOLD_BIN" profile export iosmeta --json >"$TEST_ROOT/iosmeta-edit.json" || return 1
+  python3 - "$TEST_ROOT/iosmeta-edit.json" "$TEST_ROOT" <<'PY' || { cat "$TEST_ROOT/iosmeta-edit.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+root = sys.argv[2]
+if profile.get('ports') != ['127.0.0.1:8443:443']:
+    raise SystemExit(f"ports not edited: {profile.get('ports')!r}")
+if profile.get('volumes') != [f'{root}:/work', 'cache:/cache']:
+    raise SystemExit(f"volumes not edited: {profile.get('volumes')!r}")
+PY
+
+  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-meta-clear.out" 2>"$TEST_ROOT/captive-meta-clear.err"
+enable
+configure terminal
+profile iosmeta
+no volume all
+default publish
+commit
+end
+exit
+EOF
+  rc=$?
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-meta-clear.out" "$TEST_ROOT/captive-meta-clear.err" >&2; return 1; }
+  "$HOLD_BIN" profile export iosmeta --json >"$TEST_ROOT/iosmeta-clear.json" || return 1
+  python3 - "$TEST_ROOT/iosmeta-clear.json" <<'PY' || { cat "$TEST_ROOT/iosmeta-clear.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+if 'ports' in profile or 'volumes' in profile:
+    raise SystemExit(f"publish/volume fields not cleared: {profile!r}")
+PY
+}
+
+
 test_captive_profile_restart_metadata_preserves_edits_and_clears() {
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
@@ -4887,6 +4967,7 @@ run_test "Docker --rm removes run artifacts after exit" test_docker_rm_removes_r
 run_test "Docker --rm removes profile run artifacts after exit" test_docker_rm_removes_profile_run_artifacts_after_exit
 run_test "captive profile env persists and runs" test_captive_profile_env_persists_and_runs
 run_test "captive profile mode loads and edits an existing recipe" test_captive_profile_loads_existing_recipe_for_edit
+run_test "captive profile publish/volume metadata preserves edits and clears" test_captive_profile_publish_volume_metadata_preserves_edits_and_clears
 run_test "captive profile restart metadata preserves edits and clears" test_captive_profile_restart_metadata_preserves_edits_and_clears
 run_test "captive profile mode preserves quoted argv and env values" test_captive_profile_quoted_argv_and_env_round_trip
 run_test "profile transcript import/export round-trips a user-local recipe" test_profile_transcript_import_export_roundtrip
