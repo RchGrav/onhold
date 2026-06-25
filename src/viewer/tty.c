@@ -58,6 +58,7 @@ struct viewer_state {
     bool cache_scan_limited;
     bool cache_reached_eof;
     bool at_live_edge;
+    bool at_oldest_edge;
     bool newer_available;
     struct viewer_row *visible;
     size_t visible_count;
@@ -184,8 +185,8 @@ static enum viewer_key read_key(unsigned char *printable, int timeout_ms) {
     if (c == 127) return VIEWER_KEY_BACKSPACE;
     if (c == 'j') return VIEWER_KEY_DOWN;
     if (c == 'k') return VIEWER_KEY_UP;
-    if (c == 'f' || c == 6) return VIEWER_KEY_PAGE_DOWN;
-    if (c == 'b' || c == 2) return VIEWER_KEY_PAGE_UP;
+    if (c == 6) return VIEWER_KEY_PAGE_DOWN;
+    if (c == 2) return VIEWER_KEY_PAGE_UP;
     if (c == 27) {
         unsigned char a = 0, b = 0, d = 0;
         if (read_byte(&a) != 0) return VIEWER_KEY_QUIT;
@@ -223,6 +224,7 @@ static void cache_clear(struct viewer_state *state) {
     state->cache_bytes_read = 0;
     state->cache_lines_scanned = 0;
     state->cache_match_count = 0;
+    state->at_oldest_edge = false;
 }
 
 static void cache_free(struct viewer_state *state) {
@@ -263,6 +265,7 @@ static int cache_load_result(struct viewer_state *state, const struct hold_log_f
     state->cache_bytes_read = result->bytes_read;
     state->cache_lines_scanned = result->lines_scanned;
     state->cache_match_count = result->match_count;
+    state->at_oldest_edge = !result->scan_limited && result->match_count <= result->line_count;
     state->cache_valid = true;
     state->scan_generation++;
     if (state->selected >= state->visible_count && state->visible_count > 0) state->selected = state->visible_count - 1;
@@ -432,18 +435,16 @@ static int refill_cache(struct viewer_state *state) {
             }
         }
         if (hold_log_filter_backward_fd(state->fd, &opts, state->start_offset, scan_budget, &result) != 0) return -1;
-        if (state->start_offset > 0 && result.prev_offset == 0) {
+        if (state->start_offset > 0 && !result.scan_limited && result.line_count == 0) {
             state->start_offset = 0;
             state->scan_mode = VIEWER_SCAN_FORWARD;
             state->history_count = 0;
             state->at_live_edge = false;
-            if (result.line_count < visible_rows) {
-                hold_log_filter_result_free(&result);
-                memset(&result, 0, sizeof(result));
-                opts.scan_byte_budget = scan_budget;
-                if (lseek(state->fd, 0, SEEK_SET) < 0) return -1;
-                if (hold_log_filter_fd(state->fd, &opts, &result) != 0) return -1;
-            }
+            hold_log_filter_result_free(&result);
+            memset(&result, 0, sizeof(result));
+            opts.scan_byte_budget = scan_budget;
+            if (lseek(state->fd, 0, SEEK_SET) < 0) return -1;
+            if (hold_log_filter_fd(state->fd, &opts, &result) != 0) return -1;
         }
     } else {
         opts.scan_byte_budget = scan_budget;
@@ -671,8 +672,17 @@ static void page_down(struct viewer_state *state) {
 
 static void page_up(struct viewer_state *state) {
     if (state->follow || state->scan_mode == VIEWER_SCAN_BACKWARD) {
-        state->scan_mode = VIEWER_SCAN_BACKWARD;
         state->at_live_edge = false;
+        if (state->at_oldest_edge) {
+            if (state->visible_count > 0) {
+                state->start_offset = state->visible[0].offset;
+                state->scan_mode = VIEWER_SCAN_FORWARD;
+                state->history_count = 0;
+            }
+            state->selected = 0;
+            return;
+        }
+        state->scan_mode = VIEWER_SCAN_BACKWARD;
         if (state->visible_count > 0 && state->prev_offset > 0 && state->prev_offset < state->start_offset) {
             push_history(state, state->start_offset);
             state->start_offset = state->prev_offset;

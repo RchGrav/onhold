@@ -988,6 +988,58 @@ PY
 }
 
 
+test_log_view_follow_page_up_stops_at_first_filtered_match() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -- /bin/sh -c 'for i in $(seq 1 20); do echo "filtered-noise-$i"; done; for i in $(seq 1 40); do echo "filtered-target-line-$i"; done; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.3
+  set +e
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"filtered-target"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-filtered-top.out" 2>"$TEST_ROOT/view-follow-filtered-top.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-filtered-top.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/view-follow-filtered-top.out" <<'PY' || { cat "$TEST_ROOT/view-follow-filtered-top.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw)
+frames = plain.split('filter: filtered-target')
+if len(frames) < 2:
+    raise SystemExit('filter prompt never rendered')
+final = frames[-1]
+if 'filtered-target-line-1' not in final:
+    raise SystemExit('final top-filtered page did not keep the first matching line visible')
+if re.search(r'\n~\r?\n~\r?\n~\r?\n~', final):
+    raise SystemExit('final top-filtered page fell into an empty overscrolled page')
+stats = re.findall(r'scan_gen=(\d+) offset=(\d+) prev=(\d+) next=(\d+).*?follow=(tail|browsing|exited)', plain)
+if not stats:
+    raise SystemExit('missing debug stats')
+if stats[-1][4] != 'browsing':
+    raise SystemExit(f'expected final filtered top page to stay browsed away, got {stats[-1][4]}')
+PY
+}
+
+test_log_view_printable_f_starts_dynamic_filter() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -- /bin/sh -c 'echo "aaa unrelated"; echo "f-only-visible"; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.3
+  set +e
+  python3 -c 'import sys,time; sys.stdout.write("fq"); sys.stdout.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 6 cols 100; $HOLD_BIN logs $id --interactive --debug-stats" /dev/null >"$TEST_ROOT/view-filter-f.out" 2>"$TEST_ROOT/view-filter-f.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-filter-f.err" >&2; return 1; }
+  grep -q 'filter: f' "$TEST_ROOT/view-filter-f.out" || { cat "$TEST_ROOT/view-filter-f.out" >&2; return 1; }
+  grep -q 'f-only-visible' "$TEST_ROOT/view-filter-f.out" || { cat "$TEST_ROOT/view-filter-f.out" >&2; return 1; }
+}
+
 test_log_view_follow_exited_page_up_keeps_backward_navigation() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
@@ -3465,6 +3517,8 @@ run_test "log viewer space excludes similar lines and Ctrl-R resets filters" tes
 run_test "internal viewer selection movement uses cached filter rows" test_log_view_selection_uses_cached_rows
 run_test "internal viewer follow pages older and newer filtered windows" test_log_view_follow_pages_filtered_windows
 run_test "internal viewer follow page-up stays at the first log page" test_log_view_follow_page_up_stays_at_start
+run_test "internal viewer follow page-up stops at first filtered match" test_log_view_follow_page_up_stops_at_first_filtered_match
+run_test "internal viewer printable f starts the dynamic filter" test_log_view_printable_f_starts_dynamic_filter
 run_test "internal viewer follow page-up still works after the run exits" test_log_view_follow_exited_page_up_keeps_backward_navigation
 run_test "internal viewer follow marks newer data while browsed away" test_log_view_follow_browsed_away_marks_newer_without_yank
 run_test "internal viewer follow ignores nonmatching newer data while browsed away" test_log_view_follow_ignores_nonmatching_newer_data
