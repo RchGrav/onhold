@@ -1032,6 +1032,40 @@ PY
 }
 
 
+test_log_view_follow_arrow_up_to_top_does_not_wrap_to_tail() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 45); do echo "arrowtop-line-$i"; done; sleep 0.3' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.3
+  set +e
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[A" * 80); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-arrow-top.out" 2>"$TEST_ROOT/view-follow-arrow-top.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-arrow-top.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/view-follow-arrow-top.out" <<'PYCHECK' || { cat "$TEST_ROOT/view-follow-arrow-top.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw).replace('\r', '')
+stats = re.findall(r'scan_gen=(\d+) offset=(\d+) prev=(\d+) next=(\d+).*?follow=(tail|browsing|exited)', plain)
+if not stats:
+    raise SystemExit('missing debug stats')
+last = stats[-1]
+if last[1] != '0' or last[4] != 'browsing':
+    raise SystemExit(f'ArrowUp at oldest page wrapped away from top instead of staying browsing offset 0: {last}')
+final = plain[-1400:]
+for wanted in ('arrowtop-line-1', 'arrowtop-line-2', 'arrowtop-line-3', 'arrowtop-line-4'):
+    if wanted not in final:
+        raise SystemExit(f'final page wrapped off oldest line {wanted}')
+if any(f'arrowtop-line-{i}' in final for i in range(38, 46)):
+    raise SystemExit('final ArrowUp page jumped back to the live tail')
+PYCHECK
+}
+
+
 test_log_view_follow_page_down_from_top_does_not_wrap_to_tail() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
@@ -4721,6 +4755,7 @@ run_test "internal viewer selection movement uses cached filter rows" test_log_v
 run_test "internal viewer follow pages older and newer filtered windows" test_log_view_follow_pages_filtered_windows
 run_test "internal viewer follow page-up stays at the first log page" test_log_view_follow_page_up_stays_at_start
 run_test "internal viewer follow oldest page does not wrap back to tail" test_log_view_follow_oldest_page_does_not_wrap_to_tail
+run_test "internal viewer follow arrow-up to top does not wrap to tail" test_log_view_follow_arrow_up_to_top_does_not_wrap_to_tail
 run_test "internal viewer follow page-down from top does not wrap to tail" test_log_view_follow_page_down_from_top_does_not_wrap_to_tail
 run_test "internal viewer follow page-down stops on the last real page" test_log_view_follow_page_down_stops_on_last_real_page
 run_test "internal viewer follow page-up returns to top after paging down" test_log_view_follow_page_up_after_top_page_down_returns_to_top
