@@ -1103,6 +1103,39 @@ if any(f'idempotent-top-line-{i}' in final for i in range(70, 81)):
 PYCHECK
 }
 
+test_log_view_home_key_pins_oldest_page_without_tail_loop() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 90); do echo "homepin-line-$i"; done; sleep 0.6; echo "homepin-line-91"; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.2
+  set +e
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[H"); out.flush(); time.sleep(0.9); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-homepin.out" 2>"$TEST_ROOT/view-follow-homepin.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-homepin.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/view-follow-homepin.out" <<'PY' || { cat "$TEST_ROOT/view-follow-homepin.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw).replace('\r', '')
+stats = re.findall(r'scan_gen=(\d+) offset=(\d+) prev=(\d+) next=(\d+).*?follow=(tail|browsing|exited)', plain)
+if not stats:
+    raise SystemExit('missing debug stats')
+last = stats[-1]
+if last[1] != '0' or last[4] not in ('browsing', 'exited'):
+    raise SystemExit(f'Home/top navigation did not stay anchored at offset 0: {last}')
+final = 'hold logs' + plain.split('hold logs')[-1]
+for wanted in ('homepin-line-1', 'homepin-line-2', 'homepin-line-3', 'homepin-line-4'):
+    if wanted not in final:
+        raise SystemExit(f'final Home-pinned page lost oldest line {wanted}')
+if any(f'homepin-line-{i}' in final for i in range(80, 92)):
+    raise SystemExit('Home-pinned page looped back to the bottom/tail')
+PY
+}
+
 test_log_view_follow_page_down_from_top_does_not_wrap_to_tail() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
@@ -4962,6 +4995,7 @@ run_test "internal viewer follow page-up stays at the first log page" test_log_v
 run_test "internal viewer follow oldest page does not wrap back to tail" test_log_view_follow_oldest_page_does_not_wrap_to_tail
 run_test "internal viewer follow arrow-up to top does not wrap to tail" test_log_view_follow_arrow_up_to_top_does_not_wrap_to_tail
 run_test "internal viewer top navigation is idempotent after reaching oldest page" test_log_view_follow_top_navigation_is_idempotent
+run_test "internal viewer Home key pins oldest page without tail loop" test_log_view_home_key_pins_oldest_page_without_tail_loop
 run_test "internal viewer follow page-down from top does not wrap to tail" test_log_view_follow_page_down_from_top_does_not_wrap_to_tail
 run_test "internal viewer follow page-down stops on the last real page" test_log_view_follow_page_down_stops_on_last_real_page
 run_test "internal viewer follow page-up returns to top after paging down" test_log_view_follow_page_up_after_top_page_down_returns_to_top

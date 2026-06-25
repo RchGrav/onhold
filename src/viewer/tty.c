@@ -17,6 +17,8 @@ enum viewer_key {
     VIEWER_KEY_DOWN,
     VIEWER_KEY_PAGE_UP,
     VIEWER_KEY_PAGE_DOWN,
+    VIEWER_KEY_TOP,
+    VIEWER_KEY_BOTTOM,
     VIEWER_KEY_BACKSPACE,
     VIEWER_KEY_TOGGLE,
     VIEWER_KEY_HELP,
@@ -199,8 +201,15 @@ static enum viewer_key read_key(unsigned char *printable, int timeout_ms) {
         if (read_byte(&b) != 0) return VIEWER_KEY_QUIT;
         if (b == 'A') return VIEWER_KEY_UP;
         if (b == 'B') return VIEWER_KEY_DOWN;
-        if (b == '5' || b == '6') {
-            if (read_byte(&d) == 0 && d == '~') return b == '5' ? VIEWER_KEY_PAGE_UP : VIEWER_KEY_PAGE_DOWN;
+        if (b == 'H') return VIEWER_KEY_TOP;
+        if (b == 'F') return VIEWER_KEY_BOTTOM;
+        if (b == '1' || b == '4' || b == '5' || b == '6' || b == '7' || b == '8') {
+            if (read_byte(&d) == 0 && d == '~') {
+                if (b == '5') return VIEWER_KEY_PAGE_UP;
+                if (b == '6') return VIEWER_KEY_PAGE_DOWN;
+                if (b == '1' || b == '7') return VIEWER_KEY_TOP;
+                if (b == '4' || b == '8') return VIEWER_KEY_BOTTOM;
+            }
         }
         return VIEWER_KEY_NONE;
     }
@@ -270,7 +279,11 @@ static int cache_load_result(struct viewer_state *state, const struct hold_log_f
     state->cache_bytes_read = result->bytes_read;
     state->cache_lines_scanned = result->lines_scanned;
     state->cache_match_count = result->match_count;
-    state->at_oldest_edge = !result->scan_limited && result->match_count <= result->line_count;
+    if (state->scan_mode == VIEWER_SCAN_BACKWARD) {
+        state->at_oldest_edge = !result->scan_limited && result->match_count <= result->line_count;
+    } else {
+        state->at_oldest_edge = state->start_offset == 0;
+    }
     state->cache_valid = true;
     state->scan_generation++;
     if (state->selected >= state->visible_count && state->visible_count > 0) state->selected = state->visible_count - 1;
@@ -284,6 +297,7 @@ static void cache_invalidate(struct viewer_state *state) {
 
 static void configure_filter_opts(const struct viewer_state *state, struct hold_log_filter_options *opts);
 static void enter_browsing_mode(struct viewer_state *state, bool stabilize_visible_page);
+static void clear_local_scan_limit(struct viewer_state *state);
 
 static bool refresh_terminal_size(struct viewer_state *state) {
     size_t old_rows = state->rows, old_cols = state->cols;
@@ -543,8 +557,7 @@ static int refill_cache(struct viewer_state *state) {
         if (lseek(state->fd, state->start_offset, SEEK_SET) < 0) return -1;
         if (hold_log_filter_fd(state->fd, &opts, &result) != 0) return -1;
     }
-    state->local_scan_limit_active = false;
-    state->local_scan_limit_end = 0;
+    clear_local_scan_limit(state);
     int rc = cache_load_result(state, &result, visible_rows);
     hold_log_filter_result_free(&result);
     return rc;
@@ -579,7 +592,7 @@ static int render_bottom_bar(const struct viewer_state *state) {
     bar[width] = '\0';
 
     if (state->overlay == VIEWER_OVERLAY_HELP) {
-        const char *help = " type filter | Space exclude similar | Backspace relax | arrows/Pg move | q quit | any key closes ";
+        const char *help = " type filter | Space exclude similar | Backspace relax | arrows/Pg/Home/End move | q quit | any key closes ";
         put_bar_text(bar, width, 0, help);
         int rc = viewer_puts("\033[7m");
         if (rc == 0) rc = viewer_write_all(STDOUT_FILENO, bar, width);
@@ -739,8 +752,7 @@ static void push_history(struct viewer_state *state, off_t off) {
 }
 
 static void page_down(struct viewer_state *state) {
-    state->local_scan_limit_active = false;
-    state->local_scan_limit_end = 0;
+    clear_local_scan_limit(state);
     if (state->scan_mode == VIEWER_SCAN_BACKWARD) {
         if (state->at_live_edge) {
             return;
@@ -783,6 +795,11 @@ static void page_down(struct viewer_state *state) {
     cache_invalidate(state);
 }
 
+static void clear_local_scan_limit(struct viewer_state *state) {
+    state->local_scan_limit_active = false;
+    state->local_scan_limit_end = 0;
+}
+
 static void pin_to_oldest_visible_page(struct viewer_state *state) {
     state->at_live_edge = false;
     state->scan_mode = VIEWER_SCAN_FORWARD;
@@ -797,6 +814,8 @@ static void pin_to_oldest_visible_page(struct viewer_state *state) {
      * simply skips nonmatching lines until it finds the first visible match.
      */
     state->start_offset = 0;
+    state->at_oldest_edge = true;
+    clear_local_scan_limit(state);
     cache_invalidate(state);
 }
 
@@ -813,9 +832,26 @@ static void enter_browsing_mode(struct viewer_state *state, bool stabilize_visib
     }
 }
 
+static void jump_to_newest_page(struct viewer_state *state) {
+    clear_local_scan_limit(state);
+    state->history_count = 0;
+    state->selected = 0;
+    state->newer_available = false;
+    state->scan_mode = VIEWER_SCAN_BACKWARD;
+    off_t end = lseek(state->fd, 0, SEEK_END);
+    if (end < 0) end = state->tail_anchor;
+    if (end < 0) end = 0;
+    state->start_offset = end;
+    state->tail_anchor = end;
+    state->newer_scan_offset = end;
+    state->newer_floor_offset = end;
+    state->at_live_edge = state->follow;
+    state->at_oldest_edge = false;
+    cache_invalidate(state);
+}
+
 static void page_up(struct viewer_state *state) {
-    state->local_scan_limit_active = false;
-    state->local_scan_limit_end = 0;
+    clear_local_scan_limit(state);
     enter_browsing_mode(state, false);
     if (state->scan_mode == VIEWER_SCAN_BACKWARD) {
         state->at_live_edge = false;
@@ -945,6 +981,12 @@ int hold_log_viewer_tty_fd(int fd,
             need_render = true;
         } else if (key == VIEWER_KEY_PAGE_UP) {
             page_up(&state);
+            need_render = true;
+        } else if (key == VIEWER_KEY_TOP) {
+            pin_to_oldest_visible_page(&state);
+            need_render = true;
+        } else if (key == VIEWER_KEY_BOTTOM) {
+            jump_to_newest_page(&state);
             need_render = true;
         } else if (key == VIEWER_KEY_BACKSPACE) {
             size_t n = strlen(state.filter);
