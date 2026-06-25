@@ -569,7 +569,12 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
 
         if (tail) {
             hold_free_argv_alloc(launch_argv, argc);
-            int tail_rc = hold_tail_log_until_exit(&r, false, true);
+            int tail_rc = 0;
+            if (console_mode) {
+                tail_rc = hold_run_native_console(r.console_sock);
+            } else {
+                tail_rc = hold_tail_log_until_exit(&r, false, true);
+            }
             if (auto_remove) {
                 char boot[128] = {0};
                 bool have_boot = hold_current_boot_id(boot, sizeof(boot));

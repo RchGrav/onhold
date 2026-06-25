@@ -3057,6 +3057,41 @@ test_docker_interactive_stdin_pipes_to_child() {
   fi
 }
 
+test_docker_tty_foreground_attaches_and_detaches() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local id rc
+  cat >"$TEST_ROOT/docker-tty-child.sh" <<'EOF'
+#!/bin/sh
+IFS= read line
+printf 'tty:%s\n' "$line"
+sleep 30
+EOF
+  chmod +x "$TEST_ROOT/docker-tty-child.sh"
+  set +e
+  python3 - <<'PY' | script -qfec "$HOLD_BIN run -it $TEST_ROOT/docker-tty-child.sh" /dev/null >"$TEST_ROOT/docker-tty.out" 2>"$TEST_ROOT/docker-tty.err"
+import sys, time
+out = sys.stdout.buffer
+time.sleep(0.5)
+out.write(b"hello-tty\n")
+out.flush()
+time.sleep(0.5)
+out.write(b"\x10\x11")
+out.flush()
+time.sleep(0.1)
+PY
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { echo "run -it rc=$rc" >&2; cat "$TEST_ROOT/docker-tty.out" "$TEST_ROOT/docker-tty.err" >&2; return 1; }
+  grep -q 'tty:hello-tty' "$TEST_ROOT/docker-tty.out" || { cat "$TEST_ROOT/docker-tty.out" >&2; return 1; }
+  id=$(tr -d '\r' <"$TEST_ROOT/docker-tty.out" | extract_id)
+  [ -n "$id" ] || { cat "$TEST_ROOT/docker-tty.out" >&2; return 1; }
+  grep -q '"console_sock": "' "$HOME/.local/state/hold/$id.json" || { cat "$HOME/.local/state/hold/$id.json" >&2; return 1; }
+  "$HOLD_BIN" ps >"$TEST_ROOT/docker-tty-ps.out" || return 1
+  grep -Eq "^$id[[:space:]]+running" "$TEST_ROOT/docker-tty-ps.out" || { cat "$TEST_ROOT/docker-tty-ps.out" >&2; return 1; }
+  "$HOLD_BIN" stop "$id" >/dev/null || return 1
+}
+
 test_runid_and_named_profile_normalize_relative_file_args() {
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id script profile_json
@@ -3950,6 +3985,7 @@ run_test "Docker run foreground follows output by default" test_docker_run_foreg
 run_test "unsupported Docker-shaped options fail loudly" test_docker_unsupported_options_fail_loudly
 run_test "Docker publish and volume flags record metadata" test_docker_publish_and_volume_record_metadata
 run_test "Docker -i keeps non-PTY stdin open" test_docker_interactive_stdin_pipes_to_child
+run_test "Docker -it foreground attaches and detaches" test_docker_tty_foreground_attaches_and_detaches
 run_test "run IDs and named profiles normalize relative file args" test_runid_and_named_profile_normalize_relative_file_args
 run_test "hold shell runs a real shell and normal exit creates no runid" test_hold_shell_runs_real_shell_without_creating_runid_on_exit
 run_test "hold shell adopt normalizes relative foreground argv paths" test_hold_shell_adopt_normalizes_relative_foreground_argv_paths
