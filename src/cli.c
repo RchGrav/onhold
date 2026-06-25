@@ -171,7 +171,7 @@ static int help_console(void) {
            "  hold console <target>        IOS/operator attach command when needed\n\n"
            "Console attach is native: On Hold saves your terminal, enters an alternate\n"
            "screen for interactive attaches, forwards terminal size changes to the PTY,\n"
-           "and restores your original screen on exit. Ctrl-] detaches without asking\n"
+           "and restores your original screen on exit. Ctrl-P Ctrl-Q detaches without asking\n"
            "On Hold to stop the run.\n");
     return 0;
 }

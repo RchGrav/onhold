@@ -73,13 +73,13 @@ flowchart LR
     class Sock,Log state
 ```
 
-`run_native_console` checks that the socket path exists and is a socket, connects directly, and speaks On Hold's console attach protocol. For an interactive TTY it saves the current terminal settings, switches to raw mode, enters the alternate screen, forwards window-size changes to the PTY, and restores the original terminal state on detach or exit. Ctrl-] detaches without stopping the run. Non-TTY attaches stream stdin/stdout without screen switching.
+`run_native_console` checks that the socket path exists and is a socket, connects directly, and speaks On Hold's console attach protocol. For an interactive TTY it saves the current terminal settings, switches to raw mode, enters the alternate screen, forwards window-size changes to the PTY, and restores the original terminal state on detach or exit. Ctrl-P Ctrl-Q detaches without stopping the run. Non-TTY attaches stream stdin/stdout without screen switching.
 
 The broker keeps a small in-memory replay buffer of recent PTY output. When a client attaches or reattaches, the broker writes that replay first and then resumes live streaming. This gives an idle reattach something to draw on the fresh alternate screen without sending input to the target process. It is recent output replay, not a full terminal-emulator snapshot, so extremely old or very large screen histories may still require the program to redraw itself.
 
 ## Detach Without Stopping
 
-Press `Ctrl-]` while attached with `hold console <target>` to release the console and return to your local shell. This closes only the attach client; the broker, PTY, and target process keep running so you can reattach later with the same `hold console <target>` command.
+Press `Ctrl-P Ctrl-Q` while attached with `hold console <target>` to release the console and return to your local shell. This closes only the attach client; the broker, PTY, and target process keep running so you can reattach later with the same `hold console <target>` command.
 
 Do not use `Ctrl-C` when you mean detach. `Ctrl-C` is delivered to the attached process and may interrupt or stop it. Typing `exit` exits the shell or program inside the console.
 

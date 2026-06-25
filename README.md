@@ -134,7 +134,7 @@ id="$(hold --console bash)"
 hold console "$id"
 ```
 
-Press `Ctrl-]` to detach from a console without stopping the run.
+Press `Ctrl-P Ctrl-Q` to detach from a console without stopping the run.
 
 ## Documentation
 

@@ -4,6 +4,21 @@
 #include "hold/core.h"
 #include "hold/console_internal.h"
 
+
+static int64_t hold_console_now_usec(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (int64_t)ts.tv_sec * 1000000 + (int64_t)(ts.tv_nsec / 1000);
+}
+
+static int hold_console_forward_pending_ctrl_p(int sock, bool *pending_ctrl_p) {
+    if (!*pending_ctrl_p) return 0;
+    unsigned char c = CONSOLE_ATTACH_CTRL_P;
+    if (hold_write_console_frame(sock, CONSOLE_FRAME_DATA, &c, 1) != 0) return -1;
+    *pending_ctrl_p = false;
+    return 0;
+}
+
 int hold_run_native_console(const char *sock_path) {
     int sock = hold_connect_console_socket(sock_path);
     if (sock < 0) {
@@ -45,6 +60,8 @@ int hold_run_native_console(const char *sock_path) {
 
     int rc = 0;
     bool stdin_open = true;
+    bool pending_ctrl_p = false;
+    int64_t pending_ctrl_p_deadline = 0;
     if (hold_write_all(sock, CONSOLE_ATTACH_MAGIC, CONSOLE_ATTACH_MAGIC_LEN) != 0) {
         rc = 3;
         goto out;
@@ -71,7 +88,16 @@ int hold_run_native_console(const char *sock_path) {
             }
         }
 
-        int sr = select(maxfd + 1, &rfds, NULL, NULL, NULL);
+        struct timeval tv;
+        struct timeval *tvp = NULL;
+        if (pending_ctrl_p) {
+            int64_t now = hold_console_now_usec();
+            int64_t remaining = pending_ctrl_p_deadline > now ? pending_ctrl_p_deadline - now : 0;
+            tv.tv_sec = (time_t)(remaining / 1000000);
+            tv.tv_usec = (suseconds_t)(remaining % 1000000);
+            tvp = &tv;
+        }
+        int sr = select(maxfd + 1, &rfds, NULL, NULL, tvp);
         if (sr < 0) {
             if (errno == EINTR) {
                 continue;
@@ -79,31 +105,43 @@ int hold_run_native_console(const char *sock_path) {
             rc = 3;
             break;
         }
+        if (pending_ctrl_p && (sr == 0 || hold_console_now_usec() >= pending_ctrl_p_deadline)) {
+            if (hold_console_forward_pending_ctrl_p(sock, &pending_ctrl_p) != 0) {
+                rc = 3;
+                break;
+            }
+            if (sr == 0) continue;
+        }
 
         if (stdin_open && FD_ISSET(STDIN_FILENO, &rfds)) {
             unsigned char buf[4096];
             ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
             if (n > 0) {
                 if (interactive) {
-                    size_t write_start = 0;
                     for (ssize_t i = 0; i < n; i++) {
-                        if (buf[i] != CONSOLE_ATTACH_DETACH) {
+                        if (pending_ctrl_p) {
+                            if (buf[i] == CONSOLE_ATTACH_CTRL_Q) {
+                                if (hold_write_console_frame(sock, CONSOLE_FRAME_DETACH, NULL, 0) != 0) {
+                                    rc = 3;
+                                }
+                                goto out;
+                            }
+                            if (hold_console_forward_pending_ctrl_p(sock, &pending_ctrl_p) != 0) {
+                                rc = 3;
+                                break;
+                            }
+                        }
+                        if (buf[i] == CONSOLE_ATTACH_CTRL_P) {
+                            pending_ctrl_p = true;
+                            pending_ctrl_p_deadline = hold_console_now_usec() + CONSOLE_ATTACH_DETACH_TIMEOUT_USEC;
                             continue;
                         }
-                        if ((size_t)i > write_start &&
-                            hold_write_console_frame(sock, CONSOLE_FRAME_DATA, buf + write_start, (uint16_t)((size_t)i - write_start)) != 0) {
+                        if (hold_write_console_frame(sock, CONSOLE_FRAME_DATA, buf + i, 1) != 0) {
                             rc = 3;
+                            break;
                         }
-                        if (rc == 0 && hold_write_console_frame(sock, CONSOLE_FRAME_DETACH, NULL, 0) != 0) {
-                            rc = 3;
-                        }
-                        goto out;
                     }
                     if (rc != 0) {
-                        break;
-                    }
-                    if (hold_write_console_frame(sock, CONSOLE_FRAME_DATA, buf, (uint16_t)n) != 0) {
-                        rc = 3;
                         break;
                     }
                 } else if (hold_write_console_frame(sock, CONSOLE_FRAME_DATA, buf, (uint16_t)n) != 0) {
@@ -111,6 +149,10 @@ int hold_run_native_console(const char *sock_path) {
                     break;
                 }
             } else if (n == 0) {
+                if (hold_console_forward_pending_ctrl_p(sock, &pending_ctrl_p) != 0) {
+                    rc = 3;
+                    break;
+                }
                 stdin_open = false;
                 shutdown(sock, SHUT_WR);
             } else if (errno != EINTR) {

@@ -677,7 +677,7 @@ Root-managed prune follows the same resolver and elevation rules as other action
 
 ### 13.1 Console behavior
 
-`hold console <target>` attaches to a running console-enabled run through the recorded private socket. Interactive attaches save the local terminal, enter an alternate screen, forward terminal resize events to the child PTY, and restore the original terminal state when the attach exits. Ctrl-] detaches without stopping the run. Non-interactive attaches stream stdin/stdout without changing screen state. On attach, the broker replays recent PTY output before live output so reattaches can redraw an idle console without sending input to the child.
+`hold console <target>` attaches to a running console-enabled run through the recorded private socket. Interactive attaches save the local terminal, enter an alternate screen, forward terminal resize events to the child PTY, and restore the original terminal state when the attach exits. Ctrl-P Ctrl-Q detaches without stopping the run. Non-interactive attaches stream stdin/stdout without changing screen state. On attach, the broker replays recent PTY output before live output so reattaches can redraw an idle console without sending input to the child.
 
 A run ID targets that one run directly. A profile resolves by recorded profile label and the `console` verb intent-set: running runs with `console_sock`. More than one matching profile run exits 6 and prints candidates; zero candidates for a known profile exits 0. A finished run reports that it has exited and points the user to `hold dump <id>`. A non-console run reports that it has no console.
 
