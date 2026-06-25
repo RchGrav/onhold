@@ -976,8 +976,12 @@ max_gen = max(int(gen) for gen, _, _ in stats)
 offset, follow = stats[-1][1:]
 if follow != 'browsing':
     raise SystemExit(f'expected final top page to stay in browsing mode, got follow={follow}')
+if offset != '0':
+    raise SystemExit(f'expected final top page to anchor at offset 0, got offset={offset}')
 if 'topjump-line-1' not in plain:
     raise SystemExit('top line never rendered')
+if 'topjump-line-4' not in plain:
+    raise SystemExit('top page did not fill downward from the first line')
 if max_gen > 11:
     raise SystemExit(f'page-up at log start kept rescanning/wrapping; max scan_gen={max_gen} final offset={offset}')
 PY
