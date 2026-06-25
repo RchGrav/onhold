@@ -1809,6 +1809,41 @@ EOF
   printf '%s\n' "$got" | grep -qx 'HOLD_ENV_FILE_TWO=value with spaces' || { printf '%s\n' "$got" >&2; return 1; }
 }
 
+
+test_docker_rm_removes_run_artifacts_after_exit() {
+  local out id store json log
+  store="$HOME/.local/state/hold"
+  out=$("$HOLD_BIN" run --rm -- /bin/sh -c 'echo rm-gone; sleep 0.3' 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  json="$store/$id.json"
+  log="$store/$id.log"
+  [ -f "$json" ] || { find "$store" -maxdepth 1 -type f -print >&2 || true; return 1; }
+  [ -f "$log" ] || { find "$store" -maxdepth 1 -type f -print >&2 || true; return 1; }
+  sleep 0.1
+  [ -f "$json" ] || { echo "--rm removed record before process exit" >&2; return 1; }
+  path_absent_soon "$json" || { echo "--rm did not remove record $json" >&2; cat "$json" >&2 2>/dev/null || true; return 1; }
+  path_absent_soon "$log" || { echo "--rm did not remove log $log" >&2; return 1; }
+}
+
+
+test_docker_rm_removes_profile_run_artifacts_after_exit() {
+  local out id store json log
+  store="$HOME/.local/state/hold"
+  out=$("$HOLD_BIN" run --name rmprofile /bin/sh -c 'sleep 0.3' 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.4
+  out=$("$HOLD_BIN" run --rm rmprofile 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  json="$store/$id.json"
+  log="$store/$id.log"
+  [ -f "$json" ] || { find "$store" -maxdepth 1 -type f -print >&2 || true; return 1; }
+  path_absent_soon "$json" || { echo "--rm profile run did not remove record $json" >&2; return 1; }
+  path_absent_soon "$log" || { echo "--rm profile run did not remove log $log" >&2; return 1; }
+}
+
 test_captive_profile_env_persists_and_runs() {
   local out id got store
   store="$HOME/.local/state/hold"
@@ -3609,6 +3644,8 @@ run_test "profile start requires --force when already running and --all stops al
 run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
 run_test "Docker --env persists with a named profile" test_docker_env_persists_with_named_profile
 run_test "Docker --env-file persists with a named profile" test_docker_env_file_persists_with_named_profile
+run_test "Docker --rm removes run artifacts after exit" test_docker_rm_removes_run_artifacts_after_exit
+run_test "Docker --rm removes profile run artifacts after exit" test_docker_rm_removes_profile_run_artifacts_after_exit
 run_test "captive profile env persists and runs" test_captive_profile_env_persists_and_runs
 run_test "captive profile mode loads and edits an existing recipe" test_captive_profile_loads_existing_recipe_for_edit
 run_test "captive profile mode preserves quoted argv and env values" test_captive_profile_quoted_argv_and_env_round_trip

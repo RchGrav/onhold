@@ -44,12 +44,14 @@ static int resolve_start_profile_target(const struct hold_invocation *inv,
                                         const struct hold_store *system_store,
                                         const char *token,
                                         struct start_profile_target *out);
-static int perform_explicit_start(const struct hold_invocation *inv,
-                                  const struct hold_store *store,
-                                  bool tail,
-                                  bool console_mode,
-                                  int argc,
-                                  char **argv);
+static int perform_explicit_start_options(const struct hold_invocation *inv,
+                                            const struct hold_store *store,
+                                            bool tail,
+                                            bool console_mode,
+                                            bool auto_remove,
+                                            int argc,
+                                            char **argv);
+static void spawn_auto_remove_watcher(const struct hold_store *store, const struct hold_run_record *record);
 
 static const char *explicit_start_argv0(bool owned, const char *command, int argc, char **argv) {
     if (argc <= 0 || !argv || !argv[0]) {
@@ -84,6 +86,47 @@ static int apply_child_env(int envc, char **env) {
     }
     return 0;
 }
+
+static void close_stdio_to_devnull(void) {
+    int fd = open("/dev/null", O_RDWR);
+    if (fd < 0) {
+        return;
+    }
+    dup2(fd, STDIN_FILENO);
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    if (fd > STDERR_FILENO) {
+        close(fd);
+    }
+}
+
+static void spawn_auto_remove_watcher(const struct hold_store *store, const struct hold_run_record *record) {
+    if (!store || !record || !hold_valid_id(record->id)) {
+        return;
+    }
+    pid_t watcher = fork();
+    if (watcher != 0) {
+        return;
+    }
+    close_stdio_to_devnull();
+    struct hold_store watch_store = *store;
+    struct hold_run_record watch_record = *record;
+    for (;;) {
+        char boot[128] = {0};
+        bool have_boot = hold_current_boot_id(boot, sizeof(boot));
+        enum run_state st = hold_eval_state(&watch_record, have_boot ? boot : NULL);
+        if (st == STATE_EXITED || st == STATE_FAILED || st == STATE_STALE) {
+            bool removed = false;
+            hold_prune_one_run(&watch_store, watch_record.id, have_boot ? boot : NULL, true, &removed);
+            _exit(0);
+        }
+        struct timespec sl = {.tv_sec = 0, .tv_nsec = 200 * 1000000L};
+        while (nanosleep(&sl, &sl) != 0 && errno == EINTR) {
+            continue;
+        }
+    }
+}
+
 
 bool hold_start_target_is_within_invoking_home(const struct hold_invocation *inv,
                                                  bool owned,
@@ -133,6 +176,20 @@ int hold_perform_start_with_env(const struct hold_invocation *inv,
                                   const char *run_alias,
                                   int envc,
                                   char **env) {
+    return hold_perform_start_with_env_options(inv, store, tail, console_mode, false, argc, argv, exec_path, run_alias, envc, env);
+}
+
+int hold_perform_start_with_env_options(const struct hold_invocation *inv,
+                                          const struct hold_store *store,
+                                          bool tail,
+                                          bool console_mode,
+                                          bool auto_remove,
+                                          int argc,
+                                          char **argv,
+                                          const char *exec_path,
+                                          const char *run_alias,
+                                          int envc,
+                                          char **env) {
     if (argc <= 0 || !argv || !argv[0] || envc < 0 || (envc > 0 && !env)) {
         hold_usage();
         return 5;
@@ -474,7 +531,18 @@ int hold_perform_start_with_env(const struct hold_invocation *inv,
 
         if (tail) {
             hold_free_argv_alloc(launch_argv, argc);
-            return hold_tail_log_until_exit(&r, false, true);
+            int tail_rc = hold_tail_log_until_exit(&r, false, true);
+            if (auto_remove) {
+                char boot[128] = {0};
+                bool have_boot = hold_current_boot_id(boot, sizeof(boot));
+                bool removed = false;
+                int prune_rc = hold_prune_one_run(store, r.id, have_boot ? boot : NULL, true, &removed);
+                if (tail_rc == 0 && prune_rc != 0) return prune_rc;
+            }
+            return tail_rc;
+        }
+        if (auto_remove) {
+            spawn_auto_remove_watcher(store, &r);
         }
         hold_free_argv_alloc(launch_argv, argc);
         return 0;
@@ -754,20 +822,31 @@ int hold_elevate_start_token(const char *program,
     return hold_elevate_with_sudo_canonical(program, n, canon);
 }
 
+static int hold_perform_profile_start_options(const struct hold_invocation *inv,
+                                                const struct hold_store *store,
+                                                bool tail,
+                                                bool console_mode,
+                                                bool auto_remove,
+                                                const char *hash,
+                                                const char *alias) {
+    struct hold_profile p;
+    if (hold_load_profile_by_hash(store, hash, &p) != 0) {
+        fprintf(stderr, "hold: error: profile %s is unavailable\n", hash);
+        return 5;
+    }
+    int rc = hold_perform_start_with_env_options(inv, store, tail, console_mode, auto_remove, p.argc, p.argv, p.binary_path, alias, p.envc, p.env);
+    hold_free_profile(&p);
+    return rc;
+}
+
+
 int hold_perform_profile_start(const struct hold_invocation *inv,
                                  const struct hold_store *store,
                                  bool tail,
                                  bool console_mode,
                                  const char *hash,
                                  const char *alias) {
-    struct hold_profile p;
-    if (hold_load_profile_by_hash(store, hash, &p) != 0) {
-        fprintf(stderr, "hold: error: profile %s is unavailable\n", hash);
-        return 5;
-    }
-    int rc = hold_perform_start_with_env(inv, store, tail, console_mode, p.argc, p.argv, p.binary_path, alias, p.envc, p.env);
-    hold_free_profile(&p);
-    return rc;
+    return hold_perform_profile_start_options(inv, store, tail, console_mode, false, hash, alias);
 }
 
 int hold_cmd_start_action(const struct hold_invocation *inv,
@@ -781,6 +860,21 @@ int hold_cmd_start_action(const struct hold_invocation *inv,
                             int multi_count,
                             int argc,
                             char **argv) {
+    return hold_cmd_start_action_options(inv, user_store, system_store, program, fallback_store, tail, console_mode, false, multi, multi_count, argc, argv);
+}
+
+int hold_cmd_start_action_options(const struct hold_invocation *inv,
+                                    const struct hold_store *user_store,
+                                    const struct hold_store *system_store,
+                                    const char *program,
+                                    const struct hold_store *fallback_store,
+                                    bool tail,
+                                    bool console_mode,
+                                    bool auto_remove,
+                                    bool multi,
+                                    int multi_count,
+                                    int argc,
+                                    char **argv) {
     if (argc == 1) {
         struct start_profile_target target;
         int rc = resolve_start_profile_target(inv, user_store, system_store, argv[0], &target);
@@ -827,10 +921,11 @@ int hold_cmd_start_action(const struct hold_invocation *inv,
                 start_rc = 0;
                 for (int i = 0; i < starts; i++) {
                     if (target.has_recipe) {
-                        start_rc = hold_perform_start_with_env(inv,
+                        start_rc = hold_perform_start_with_env_options(inv,
                                                  &target.store,
                                                  tail,
                                                  console_mode,
+                                                 auto_remove,
                                                  target.recipe.argc,
                                                  target.recipe.argv,
                                                  target.recipe.binary_path,
@@ -838,10 +933,11 @@ int hold_cmd_start_action(const struct hold_invocation *inv,
                                                  target.recipe.envc,
                                                  target.recipe.env);
                     } else {
-                        start_rc = hold_perform_profile_start(inv,
+                        start_rc = hold_perform_profile_start_options(inv,
                                                          &target.store,
                                                          tail,
                                                          console_mode,
+                                                         auto_remove,
                                                          target.hash,
                                                          target.has_alias ? target.alias : NULL);
                     }
@@ -859,7 +955,7 @@ int hold_cmd_start_action(const struct hold_invocation *inv,
         fprintf(stderr, "hold: error: --multi applies only to profile starts\n");
         return 5;
     }
-    return perform_explicit_start(inv, fallback_store, tail, console_mode, argc, argv);
+    return perform_explicit_start_options(inv, fallback_store, tail, console_mode, auto_remove, argc, argv);
 }
 
 int hold_ensure_start_store_for_command(const struct hold_invocation *inv,
@@ -885,12 +981,13 @@ int hold_ensure_start_store_for_command(const struct hold_invocation *inv,
     return hold_ensure_user_store_for_current_user(store);
 }
 
-static int perform_explicit_start(const struct hold_invocation *inv,
-                                  const struct hold_store *store,
-                                  bool tail,
-                                  bool console_mode,
-                                  int argc,
-                                  char **argv) {
+static int perform_explicit_start_options(const struct hold_invocation *inv,
+                                            const struct hold_store *store,
+                                            bool tail,
+                                            bool console_mode,
+                                            bool auto_remove,
+                                            int argc,
+                                            char **argv) {
     if (argc <= 0) {
         fprintf(stderr, "usage: hold start <cmd> [args...]\n");
         return 5;
@@ -901,7 +998,7 @@ static int perform_explicit_start(const struct hold_invocation *inv,
         shell_argv[1] = "-c";
         shell_argv[2] = argv[0];
         shell_argv[3] = NULL;
-        return hold_perform_start(inv, store, tail, console_mode, 3, shell_argv, NULL, NULL);
+        return hold_perform_start_with_env_options(inv, store, tail, console_mode, auto_remove, 3, shell_argv, NULL, NULL, 0, NULL);
     }
-    return hold_perform_start(inv, store, tail, console_mode, argc, argv, NULL, NULL);
+    return hold_perform_start_with_env_options(inv, store, tail, console_mode, auto_remove, argc, argv, NULL, NULL, 0, NULL);
 }
