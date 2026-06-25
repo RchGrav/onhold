@@ -658,14 +658,11 @@ static void page_down(struct viewer_state *state) {
 
 static void page_up(struct viewer_state *state) {
     if (state->follow) {
-        push_history(state, state->start_offset);
         state->scan_mode = VIEWER_SCAN_BACKWARD;
         state->at_live_edge = false;
-        if (state->visible_count > 0 && state->prev_offset < state->start_offset) {
+        if (state->visible_count > 0 && state->prev_offset > 0 && state->prev_offset < state->start_offset) {
+            push_history(state, state->start_offset);
             state->start_offset = state->prev_offset;
-        } else if (state->start_offset == 0) {
-            off_t end = lseek(state->fd, 0, SEEK_END);
-            if (end >= 0) state->start_offset = end;
         }
         state->selected = 0;
         cache_invalidate(state);

@@ -951,6 +951,35 @@ test_log_view_follow_pages_filtered_windows() {
   grep -q 'follow=tail' "$TEST_ROOT/view-follow-pages.out" || { cat "$TEST_ROOT/view-follow-pages.out" >&2; return 1; }
 }
 
+test_log_view_follow_page_up_stays_at_start() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -- /bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9; do echo "topjump-line-$i"; done; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.3
+  set +e
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~q"); out.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top.out" 2>"$TEST_ROOT/view-follow-top.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-top.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/view-follow-top.out" <<'PY' || { cat "$TEST_ROOT/view-follow-top.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw)
+stats = re.findall(r'scan_gen=\d+ offset=(\d+).*?follow=(tail|browsing)', plain)
+if not stats:
+    raise SystemExit('missing debug stats')
+offset, follow = stats[-1]
+if follow != 'browsing' or offset != '15':
+    raise SystemExit(f'expected final top page offset=15 follow=browsing, got offset={offset} follow={follow}')
+if 'topjump-line-1' not in plain:
+    raise SystemExit('top line never rendered')
+PY
+}
+
 test_log_view_follow_browsed_away_marks_newer_without_yank() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
@@ -3193,6 +3222,7 @@ run_test "log viewer shows integrated chrome help and info overlays" test_log_vi
 run_test "log viewer space excludes similar lines and Ctrl-R resets filters" test_log_viewer_space_excludes_and_ctrl_r_resets_filters
 run_test "internal viewer selection movement uses cached filter rows" test_log_view_selection_uses_cached_rows
 run_test "internal viewer follow pages older and newer filtered windows" test_log_view_follow_pages_filtered_windows
+run_test "internal viewer follow page-up stays at the first log page" test_log_view_follow_page_up_stays_at_start
 run_test "internal viewer follow marks newer data while browsed away" test_log_view_follow_browsed_away_marks_newer_without_yank
 run_test "internal viewer follow ignores nonmatching newer data while browsed away" test_log_view_follow_ignores_nonmatching_newer_data
 run_test "internal viewer follow finds sparse newer match after large burst" test_log_view_follow_finds_sparse_newer_match_after_large_burst
