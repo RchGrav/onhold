@@ -77,6 +77,9 @@ print-version:
 
 check: test
 
+review-build:
+	@bash scripts/build_review.sh
+
 # Full local CI mirror (one command, same rigor as GitHub CI): static + dynamic
 # -Werror builds, the regression suite + hash-vector, ASan/UBSan, cppcheck, and
 # the layer-dependency lint. Skips (visibly) only what the local toolchain lacks.
@@ -91,4 +94,4 @@ clean:
 	rm -f hold hold-dynamic hash-vector viewer-filter-test
 	rm -rf obj obj-test
 
-.PHONY: all clean test check ci lint hash-vector viewer-filter-test print-version
+.PHONY: all clean test check ci lint hash-vector viewer-filter-test print-version review-build
