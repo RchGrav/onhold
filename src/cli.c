@@ -43,6 +43,8 @@ static const struct hold_cli_command_spec command_specs[] = {
     {"rm", 1, 1, 0, "usage: hold rm [--force] <inactive-runid|profile>", "rm"},
     {"profiles", 0, 1, 0, "usage: hold profiles [-v]", "profiles"},
     {"profile", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold profile <name> <show|start|run|create|set|export|rename|delete> [args...]\n       hold profile <run|start|save|show|export|import> [args...]", "profile"},
+    {"export", 1, -1, 0, "usage: hold export <profile> [as <file>] [--format cli|json]", "export"},
+    {"import", 1, -1, 0, "usage: hold import <file> [as <profile>] [--dry-run|--yes]", "import"},
     {"show", 1, 2, 0, "usage: hold show <runs|profiles|running|dormant|failed|stale> [name]", "show"},
     {"clean", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold clean [target|all]", "clean"},
     {"doctor", 0, 0, 0, "usage: hold doctor", "doctor"},
@@ -88,8 +90,9 @@ static int help_profiles(void) {
            "  hold profile <name> create -- <cmd>  create/update a saved command recipe\n"
            "  hold profile save <id> as <name>   save a recent run as a profile\n"
            "  hold profiles [-v]           list visible profiles\n"
-           "  hold profile export <name>   export a typed-shell transcript\n"
-           "  hold profile import <file>   import/update a user-local profile\n"
+           "  hold export <name>           export a Cisco IOS-style transcript\n"
+           "  hold export <name> as FILE   write transcript to FILE\n"
+           "  hold import FILE as <name>   import/update a user-local profile\n"
            "  hold run <name>              start a fresh run under that name\n\n"
            "The name is also recorded on runs started as <name>, so later\n"
            "ps, logs, inspect, stop, kill, rm, and prune commands can use <name>.\n"
@@ -207,6 +210,10 @@ static int help_action(const char *action) {
         printf("usage: hold rm [--force] <inactive-runid|profile>\n\nRemove an inactive run record/log or delete a user-local profile. With --force, stop and remove one concrete active run ID.\n");
     } else if (!strcmp(action, "profiles")) {
         printf("usage: hold profiles [-v]\n\nList visible profiles. User profiles show commands; system commands are redacted.\n");
+    } else if (!strcmp(action, "export")) {
+        printf("usage: hold export <profile> [as <file>] [--format cli|json]\n\nExport a profile as the Cisco IOS-style command transcript an operator would type in captive configuration mode. Use `as <file>` to write the transcript instead of stdout.\n");
+    } else if (!strcmp(action, "import")) {
+        printf("usage: hold import <file> [as <profile>] [--dry-run|--yes]\n\nImport a Cisco IOS-style profile transcript into canonical user-local profile storage. `as <profile>` overrides the transcript profile name; --dry-run validates without writing.\n");
     } else if (!strcmp(action, "profile")) {
         printf("usage: hold profile <name> <show|start|run|create|set|export|rename|delete> [args...]\n       hold profile <run|start|save|show|export|import> [args...]\n\nWork with profile definitions and profile-backed runs. The name-first editor supports:\n  hold profile web create -- /usr/bin/python3 -m http.server 9000\n  hold profile web set command -- /usr/bin/python3 -m http.server 9000\n  hold profile web export [--format cli|json]\n  hold profile save <runid> as web [-v]\n  hold profiles [-v]\n  hold profile web rename api\n  hold profile api delete\nImport/export supports Cisco IOS-style transcripts:\n  enable\n  configure terminal\n  profile web\n  binary /usr/bin/python3\n  argv -m http.server 9000\n  commit\n  end\n  write\n");
     } else if (!strcmp(action, "status")) {

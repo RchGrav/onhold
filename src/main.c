@@ -1292,6 +1292,22 @@ int main(int argc, char **argv) {
         return rc;
     }
 
+    if (owned && (!strcmp(command, "export") || !strcmp(command, "import"))) {
+        char **profile_argv = calloc((size_t)cmd_argc + 2, sizeof(*profile_argv));
+        if (!profile_argv) {
+            free(cmd_argv);
+            return 3;
+        }
+        profile_argv[0] = (char *)command;
+        for (int i = 0; i < cmd_argc; i++) {
+            profile_argv[i + 1] = cmd_argv[i];
+        }
+        int rc = hold_cmd_profile_action(&inv, &user_store, cmd_argc + 1, profile_argv);
+        free(profile_argv);
+        free(cmd_argv);
+        return rc;
+    }
+
     if (!owned) {
         struct hold_store start_store;
         if (hold_ensure_start_store_for_command(&inv, requested_system, false, NULL, cmd_argc, cmd_argv, &start_store) != 0) {

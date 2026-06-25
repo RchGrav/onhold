@@ -13,11 +13,11 @@ static int attach_console_record(const struct hold_invocation *inv,
                                  enum run_state st);
 static int print_aliases_for_store(const char *scope, const struct hold_store *store, bool verbose);
 static void profile_shell_quote(FILE *f, const char *s);
-static int profile_export_transcript(const char *name, const struct hold_profile *recipe);
-static int profile_export_json(const char *name, const struct hold_profile *recipe);
+static int profile_export_transcript(FILE *out, const char *name, const struct hold_profile *recipe);
+static int profile_export_json(FILE *out, const char *name, const struct hold_profile *recipe);
 static int profile_shell_split(const char *line, char ***argv_out, int *argc_out);
-static int profile_import_transcript(const struct hold_store *store, const char *path);
-static int profile_import_json(const struct hold_store *store, const char *j);
+static int profile_import_transcript(const struct hold_store *store, const char *path, const char *override_name, bool dry_run);
+static int profile_import_json(const struct hold_store *store, const char *j, const char *override_name, bool dry_run);
 static void profile_free_tokens(char **argv, int argc);
 static int profile_write_command_recipe(const struct hold_store *store,
                                         const char *name,
@@ -264,99 +264,99 @@ static void profile_shell_quote(FILE *f, const char *s) {
     fputc('\'', f);
 }
 
-static int profile_export_transcript(const char *name, const struct hold_profile *recipe) {
-    fputs("enable\nconfigure terminal\nprofile ", stdout);
-    profile_shell_quote(stdout, name);
-    fputs("\nbinary ", stdout);
-    profile_shell_quote(stdout, recipe->binary_path);
-    fputc('\n', stdout);
+static int profile_export_transcript(FILE *out, const char *name, const struct hold_profile *recipe) {
+    fputs("enable\nconfigure terminal\nprofile ", out);
+    profile_shell_quote(out, name);
+    fputs("\nbinary ", out);
+    profile_shell_quote(out, recipe->binary_path);
+    fputc('\n', out);
     if (recipe->argc > 1) {
-        fputs("argv", stdout);
+        fputs("argv", out);
     }
     for (int i = 1; i < recipe->argc; i++) {
-        fputc(' ', stdout);
-        profile_shell_quote(stdout, recipe->argv[i]);
+        fputc(' ', out);
+        profile_shell_quote(out, recipe->argv[i]);
     }
-    if (recipe->argc > 1) fputc('\n', stdout);
+    if (recipe->argc > 1) fputc('\n', out);
     for (int i = 0; i < recipe->envc; i++) {
         const char *eq = recipe->env[i] ? strchr(recipe->env[i], '=') : NULL;
         if (!eq || eq == recipe->env[i]) continue;
-        fputs("env ", stdout);
+        fputs("env ", out);
         char key[256];
         size_t key_len = (size_t)(eq - recipe->env[i]);
         if (key_len >= sizeof(key)) key_len = sizeof(key) - 1;
         memcpy(key, recipe->env[i], key_len);
         key[key_len] = '\0';
-        profile_shell_quote(stdout, key);
-        fputc(' ', stdout);
-        profile_shell_quote(stdout, eq + 1);
-        fputc('\n', stdout);
+        profile_shell_quote(out, key);
+        fputc(' ', out);
+        profile_shell_quote(out, eq + 1);
+        fputc('\n', out);
     }
-    if (recipe->mode_interactive) fputs("interactive\n", stdout);
-    if (recipe->mode_tty) fputs("tty\n", stdout);
-    if (recipe->mode_detach) fputs("detach\n", stdout);
-    if (recipe->allow_multi) fputs("multi\n", stdout);
+    if (recipe->mode_interactive) fputs("interactive\n", out);
+    if (recipe->mode_tty) fputs("tty\n", out);
+    if (recipe->mode_detach) fputs("detach\n", out);
+    if (recipe->allow_multi) fputs("multi\n", out);
     if (recipe->has_restart_policy && recipe->restart_policy[0]) {
-        fputs("restart ", stdout);
-        profile_shell_quote(stdout, recipe->restart_policy);
-        fputc('\n', stdout);
+        fputs("restart ", out);
+        profile_shell_quote(out, recipe->restart_policy);
+        fputc('\n', out);
     }
     if (recipe->has_restart_delay) {
-        fprintf(stdout, "restart-delay %d\n", recipe->restart_delay_seconds);
+        fprintf(out, "restart-delay %d\n", recipe->restart_delay_seconds);
     }
-    fputs("commit\nend\nwrite\n", stdout);
-    return ferror(stdout) ? 3 : 0;
+    fputs("commit\nend\nwrite\n", out);
+    return ferror(out) ? 3 : 0;
 }
 
-static int profile_export_json(const char *name, const struct hold_profile *recipe) {
-    fputs("{\n  \"version\": 1,\n  \"name\": \"", stdout);
-    hold_json_escape(stdout, name);
-    fputs("\",\n  \"bin\": \"", stdout);
-    hold_json_escape(stdout, recipe->binary_path);
-    fputs("\",\n  \"args\": ", stdout);
-    hold_write_json_argv(stdout, recipe->argc, recipe->argv);
+static int profile_export_json(FILE *out, const char *name, const struct hold_profile *recipe) {
+    fputs("{\n  \"version\": 1,\n  \"name\": \"", out);
+    hold_json_escape(out, name);
+    fputs("\",\n  \"bin\": \"", out);
+    hold_json_escape(out, recipe->binary_path);
+    fputs("\",\n  \"args\": ", out);
+    hold_write_json_argv(out, recipe->argc, recipe->argv);
     if (recipe->envc > 0 && recipe->env) {
-        fputs(",\n  \"env\": ", stdout);
-        hold_write_json_argv(stdout, recipe->envc, recipe->env);
+        fputs(",\n  \"env\": ", out);
+        hold_write_json_argv(out, recipe->envc, recipe->env);
     }
     if (recipe->portc > 0 && recipe->ports) {
-        fputs(",\n  \"ports\": ", stdout);
-        hold_write_json_argv(stdout, recipe->portc, recipe->ports);
+        fputs(",\n  \"ports\": ", out);
+        hold_write_json_argv(out, recipe->portc, recipe->ports);
     }
     if (recipe->volumec > 0 && recipe->volumes) {
-        fputs(",\n  \"volumes\": ", stdout);
-        hold_write_json_argv(stdout, recipe->volumec, recipe->volumes);
+        fputs(",\n  \"volumes\": ", out);
+        hold_write_json_argv(out, recipe->volumec, recipe->volumes);
     }
     if (recipe->mode_interactive || recipe->mode_tty || recipe->mode_detach || recipe->allow_multi) {
         bool wrote = false;
-        fputs(",\n  \"mode\": {", stdout);
+        fputs(",\n  \"mode\": {", out);
         if (recipe->mode_interactive) {
-            fputs("\"interactive\": true", stdout);
+            fputs("\"interactive\": true", out);
             wrote = true;
         }
         if (recipe->mode_tty) {
-            fprintf(stdout, "%s\"tty\": true", wrote ? ", " : "");
+            fprintf(out, "%s\"tty\": true", wrote ? ", " : "");
             wrote = true;
         }
         if (recipe->mode_detach) {
-            fprintf(stdout, "%s\"detach\": true", wrote ? ", " : "");
+            fprintf(out, "%s\"detach\": true", wrote ? ", " : "");
             wrote = true;
         }
         if (recipe->allow_multi) {
-            fprintf(stdout, "%s\"multi\": true", wrote ? ", " : "");
+            fprintf(out, "%s\"multi\": true", wrote ? ", " : "");
         }
-        fputs("}", stdout);
+        fputs("}", out);
     }
     if (recipe->has_restart_policy && recipe->restart_policy[0]) {
-        fputs(",\n  \"restart\": \"", stdout);
-        hold_json_escape(stdout, recipe->restart_policy);
-        fputs("\"", stdout);
+        fputs(",\n  \"restart\": \"", out);
+        hold_json_escape(out, recipe->restart_policy);
+        fputs("\"", out);
     }
     if (recipe->has_restart_delay) {
-        fprintf(stdout, ",\n  \"restart_delay_seconds\": %d", recipe->restart_delay_seconds);
+        fprintf(out, ",\n  \"restart_delay_seconds\": %d", recipe->restart_delay_seconds);
     }
-    fputs("\n}\n", stdout);
-    return ferror(stdout) ? 3 : 0;
+    fputs("\n}\n", out);
+    return ferror(out) ? 3 : 0;
 }
 
 static void profile_free_tokens(char **argv, int argc) {
@@ -473,7 +473,10 @@ static int profile_shell_split(const char *line, char ***argv_out, int *argc_out
     return 0;
 }
 
-static int profile_import_json(const struct hold_store *store, const char *j) {
+static int profile_import_json(const struct hold_store *store,
+                               const char *j,
+                               const char *override_name,
+                               bool dry_run) {
     char name[ALIAS_MAX_LEN + 1];
     char binary_path[HOLD_PATH_MAX];
     char **argv = NULL;
@@ -495,6 +498,13 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
         hold_json_get_args_alloc(j, &argv, &argc) != 0 || argc <= 0) {
         fprintf(stderr, "hold: error: invalid profile JSON\n");
         goto out;
+    }
+    if (override_name) {
+        if (!hold_valid_alias(override_name)) {
+            fprintf(stderr, "hold: error: invalid profile name '%s'\n", override_name);
+            goto out;
+        }
+        snprintf(name, sizeof(name), "%s", override_name);
     }
     if (hold_json_get_str(j, "bin", binary_path, sizeof(binary_path)) != 0 &&
         hold_json_get_str(j, "binary_path", binary_path, sizeof(binary_path)) != 0 &&
@@ -539,6 +549,11 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
             (void)hold_json_get_bool(copy, "multi", &allow_multi);
             free(copy);
         }
+    }
+    if (dry_run) {
+        printf("profile %s import dry-run ok\n", name);
+        rc = 0;
+        goto out;
     }
     if (hold_alias_upsert_recipe_full(store,
                                       name,
@@ -645,7 +660,10 @@ static int profile_write_full_recipe(const struct hold_store *store,
     return 0;
 }
 
-static int profile_import_transcript(const struct hold_store *store, const char *path) {
+static int profile_import_transcript(const struct hold_store *store,
+                                     const char *path,
+                                     const char *override_name,
+                                     bool dry_run) {
     char *text = NULL;
     if (hold_read_small_file(path, &text) != 0) {
         fprintf(stderr, "hold: error: failed to read profile transcript '%s'\n", path);
@@ -653,7 +671,7 @@ static int profile_import_transcript(const struct hold_store *store, const char 
     }
     const char *p = hold_skip_ws(text);
     if (*p == '{') {
-        int json_rc = profile_import_json(store, text);
+        int json_rc = profile_import_json(store, text, override_name, dry_run);
         free(text);
         return json_rc;
     }
@@ -807,12 +825,36 @@ static int profile_import_transcript(const struct hold_store *store, const char 
         profile_free_tokens(tokens, ntokens);
     }
 
+    if (override_name) {
+        if (!hold_valid_alias(override_name)) {
+            fprintf(stderr, "hold: error: invalid profile name '%s'\n", override_name);
+            goto out;
+        }
+        snprintf(name, sizeof(name), "%s", override_name);
+    }
     if (!saw_save || name[0] == '\0') {
         fprintf(stderr, "hold: error: incomplete profile transcript\n");
         goto out;
     }
     if (cmd_argv) {
-        rc = profile_write_command_recipe(store, name, cmd_argc, cmd_argv);
+        if (dry_run) {
+            if (!hold_valid_alias(name) || cmd_argc <= 0 || !cmd_argv || !cmd_argv[0] || !*cmd_argv[0]) {
+                fprintf(stderr, "hold: error: incomplete profile transcript\n");
+                goto out;
+            }
+            char binary_path[HOLD_PATH_MAX];
+            if (hold_resolve_binary_path(cmd_argv[0], binary_path, sizeof(binary_path)) != 0) {
+                fprintf(stderr, "hold: error: failed to resolve profile command '%s'\n", cmd_argv[0]);
+                goto out;
+            }
+            if (hold_normalize_existing_argv_paths_from_cwd(cmd_argv, cmd_argc, 1, NULL) != 0) {
+                hold_die_errno("hold: failed to normalize profile argv paths");
+            }
+            printf("profile %s import dry-run ok\n", name);
+            rc = 0;
+        } else {
+            rc = profile_write_command_recipe(store, name, cmd_argc, cmd_argv);
+        }
     } else {
         if (!binary[0]) {
             fprintf(stderr, "hold: error: incomplete profile transcript\n");
@@ -826,7 +868,26 @@ static int profile_import_transcript(const struct hold_store *store, const char 
         }
         argv[0] = binary;
         for (int i = 0; i < arg_count; i++) argv[i + 1] = args[i];
-        rc = profile_write_full_recipe(store, name, binary, argc, argv, envc, env, mode_interactive, mode_tty, mode_detach, allow_multi, restart_policy[0] ? restart_policy : NULL, restart_delay_seconds);
+        if (dry_run) {
+            if (!hold_valid_alias(name) || binary[0] != '/' || argc <= 0 || !argv[0]) {
+                fprintf(stderr, "hold: error: incomplete profile transcript\n");
+                free(argv);
+                goto out;
+            }
+            char binary_path[HOLD_PATH_MAX];
+            if (hold_resolve_binary_path(binary, binary_path, sizeof(binary_path)) != 0) {
+                fprintf(stderr, "hold: error: failed to resolve profile command '%s'\n", binary);
+                free(argv);
+                goto out;
+            }
+            if (hold_normalize_existing_argv_paths_from_cwd(argv, argc, 1, NULL) != 0) {
+                hold_die_errno("hold: failed to normalize profile argv paths");
+            }
+            printf("profile %s import dry-run ok\n", name);
+            rc = 0;
+        } else {
+            rc = profile_write_full_recipe(store, name, binary, argc, argv, envc, env, mode_interactive, mode_tty, mode_detach, allow_multi, restart_policy[0] ? restart_policy : NULL, restart_delay_seconds);
+        }
         free(argv);
     }
 
@@ -838,12 +899,36 @@ out:
     return rc;
 }
 
+static int profile_export_to_path(const char *path,
+                                  bool json,
+                                  const char *name,
+                                  const struct hold_profile *recipe) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "hold: error: failed to open export path '%s': %s\n", path, strerror(errno));
+        return 3;
+    }
+    FILE *out = fdopen(fd, "w");
+    if (!out) {
+        int saved_errno = errno;
+        close(fd);
+        fprintf(stderr, "hold: error: failed to open export stream '%s': %s\n", path, strerror(saved_errno));
+        return 3;
+    }
+    int rc = json ? profile_export_json(out, name, recipe) : profile_export_transcript(out, name, recipe);
+    if (fclose(out) != 0 && rc == 0) {
+        fprintf(stderr, "hold: error: failed to write export path '%s': %s\n", path, strerror(errno));
+        rc = 3;
+    }
+    return rc;
+}
+
 int hold_cmd_profile_action(const struct hold_invocation *inv,
                               const struct hold_store *user_store,
                               int argc,
                               char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "usage: hold profile export <name> [--json]\n       hold profile import <file>\n");
+        fprintf(stderr, "usage: hold export <profile> [as <file>] [--format cli|json]\n       hold import <file> [as <profile>] [--dry-run|--yes]\n");
         return 5;
     }
     if (inv->euid_root) {
@@ -852,13 +937,42 @@ int hold_cmd_profile_action(const struct hold_invocation *inv,
     }
     if (!strcmp(argv[0], "export")) {
         bool json = false;
-        if (argc == 3 && !strcmp(argv[2], "--json")) {
-            json = true;
-        } else if (argc != 2) {
-            fprintf(stderr, "usage: hold profile export <name> [--json]\n");
+        const char *path = NULL;
+        if (argc < 2) {
+            fprintf(stderr, "usage: hold export <profile> [as <file>] [--format cli|json]\n");
             return 5;
         }
         const char *name = argv[1];
+        for (int i = 2; i < argc; i++) {
+            if (!strcmp(argv[i], "--json") || !strcmp(argv[i], "--format=json")) {
+                json = true;
+            } else if (!strcmp(argv[i], "--format=cli")) {
+                json = false;
+            } else if (!strcmp(argv[i], "--format")) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold export <profile> [as <file>] [--format cli|json]\n");
+                    return 5;
+                }
+                if (!strcmp(argv[i + 1], "json")) {
+                    json = true;
+                } else if (!strcmp(argv[i + 1], "cli")) {
+                    json = false;
+                } else {
+                    fprintf(stderr, "usage: hold export <profile> [as <file>] [--format cli|json]\n");
+                    return 5;
+                }
+                i++;
+            } else if (!strcmp(argv[i], "as")) {
+                if (path || i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold export <profile> [as <file>] [--format cli|json]\n");
+                    return 5;
+                }
+                path = argv[++i];
+            } else {
+                fprintf(stderr, "usage: hold export <profile> [as <file>] [--format cli|json]\n");
+                return 5;
+            }
+        }
         if (!hold_valid_alias(name)) {
             fprintf(stderr, "hold: error: invalid profile name '%s'\n", name);
             return 5;
@@ -868,18 +982,39 @@ int hold_cmd_profile_action(const struct hold_invocation *inv,
             fprintf(stderr, "hold: error: profile '%s' not found\n", name);
             return 5;
         }
-        int rc = json ? profile_export_json(name, &recipe) : profile_export_transcript(name, &recipe);
+        int rc = path ? profile_export_to_path(path, json, name, &recipe)
+                      : (json ? profile_export_json(stdout, name, &recipe)
+                              : profile_export_transcript(stdout, name, &recipe));
         hold_free_profile(&recipe);
         return rc;
     }
     if (!strcmp(argv[0], "import")) {
-        if (argc != 2) {
-            fprintf(stderr, "usage: hold profile import <file>\n");
+        if (argc < 2) {
+            fprintf(stderr, "usage: hold import <file> [as <profile>] [--dry-run|--yes]\n");
             return 5;
         }
-        return profile_import_transcript(user_store, argv[1]);
+        const char *path = argv[1];
+        const char *override_name = NULL;
+        bool dry_run = false;
+        for (int i = 2; i < argc; i++) {
+            if (!strcmp(argv[i], "as")) {
+                if (override_name || i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold import <file> [as <profile>] [--dry-run|--yes]\n");
+                    return 5;
+                }
+                override_name = argv[++i];
+            } else if (!strcmp(argv[i], "--dry-run")) {
+                dry_run = true;
+            } else if (!strcmp(argv[i], "--yes")) {
+                /* Non-interactive CLI import applies immediately; --yes is accepted for scripts. */
+            } else {
+                fprintf(stderr, "usage: hold import <file> [as <profile>] [--dry-run|--yes]\n");
+                return 5;
+            }
+        }
+        return profile_import_transcript(user_store, path, override_name, dry_run);
     }
-    fprintf(stderr, "usage: hold profile export <name> [--json]\n       hold profile import <file>\n");
+    fprintf(stderr, "usage: hold export <profile> [as <file>] [--format cli|json]\n       hold import <file> [as <profile>] [--dry-run|--yes]\n");
     return 5;
 }
 
@@ -995,6 +1130,8 @@ void hold_usage(void) {
            "  hold                                   enter Cisco IOS-style captive CLI\n"
            "  hold shell                             capture/adopt from a real system shell\n"
            "  hold profile save <id> as <name>        save a run as a profile\n"
+           "  hold export <name> [as <file>]          export IOS-style profile transcript\n"
+           "  hold import <file> as <name>            import IOS-style profile transcript\n"
            "  hold profiles [-v]                      list visible profiles\n\n"
            "  target = run id, id prefix, or safely singular profile name\n\n"
            "MORE\n"

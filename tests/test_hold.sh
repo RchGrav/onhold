@@ -2340,6 +2340,19 @@ EOF
     grep -Fq '"cli-prof": {"bin": "/bin/echo"' "$store/aliases.json" || return 1
   grep -Fq '"args": ["/bin/echo", "hello import"]' "$store/aliases.json" || return 1
 
+  "$HOLD_BIN" import "$transcript" as top-prof --dry-run >"$TEST_ROOT/top-import-dry.out" 2>"$TEST_ROOT/top-import-dry.err" || return 1
+  grep -Fxq "profile top-prof import dry-run ok" "$TEST_ROOT/top-import-dry.out" || {
+    cat "$TEST_ROOT/top-import-dry.out" "$TEST_ROOT/top-import-dry.err" >&2
+    return 1
+  }
+  ! grep -Fq '"top-prof":' "$store/aliases.json" || return 1
+
+  "$HOLD_BIN" import "$transcript" as top-prof --yes >"$TEST_ROOT/top-import.out" 2>"$TEST_ROOT/top-import.err" || return 1
+  [ ! -s "$TEST_ROOT/top-import.out" ] || return 1
+  [ ! -s "$TEST_ROOT/top-import.err" ] || return 1
+  grep -Fq '"top-prof": {"bin": "/usr/bin/echo"' "$store/aliases.json" ||
+    grep -Fq '"top-prof": {"bin": "/bin/echo"' "$store/aliases.json" || return 1
+
   "$HOLD_BIN" profile export cli-prof >"$TEST_ROOT/export.profile" || return 1
   grep -Fxq "enable" "$TEST_ROOT/export.profile" || return 1
   grep -Fxq "configure terminal" "$TEST_ROOT/export.profile" || return 1
@@ -2349,6 +2362,14 @@ EOF
   grep -Fxq "commit" "$TEST_ROOT/export.profile" || return 1
   grep -Fxq "end" "$TEST_ROOT/export.profile" || return 1
   grep -Fxq "write" "$TEST_ROOT/export.profile" || return 1
+
+  "$HOLD_BIN" export top-prof as "$TEST_ROOT/top-export.profile" || return 1
+  grep -Fxq "profile top-prof" "$TEST_ROOT/top-export.profile" || return 1
+  grep -Fxq "argv 'hello import'" "$TEST_ROOT/top-export.profile" || return 1
+  "$HOLD_BIN" export top-prof >"$TEST_ROOT/top-export.stdout" || return 1
+  grep -Fxq "profile top-prof" "$TEST_ROOT/top-export.stdout" || return 1
+  "$HOLD_BIN" export top-prof --format json >"$TEST_ROOT/top-export.json" || return 1
+  grep -Fq '"name": "top-prof"' "$TEST_ROOT/top-export.json" || return 1
 
   out=$("$HOLD_BIN" start cli-prof 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
@@ -4388,6 +4409,8 @@ test_public_cli_contract_guards() {
   grep -q 'hold logs <target> --plain' "$TEST_ROOT/help-dash.out" || { cat "$TEST_ROOT/help-dash.out" >&2; return 1; }
   grep -q 'hold inspect <target>' "$TEST_ROOT/help-dash.out" || { cat "$TEST_ROOT/help-dash.out" >&2; return 1; }
   grep -q 'hold profile save <id> as <name>' "$TEST_ROOT/help-dash.out" || { cat "$TEST_ROOT/help-dash.out" >&2; return 1; }
+  grep -q 'hold export <name> \[as <file>\]' "$TEST_ROOT/help-dash.out" || { cat "$TEST_ROOT/help-dash.out" >&2; return 1; }
+  grep -q 'hold import <file> as <name>' "$TEST_ROOT/help-dash.out" || { cat "$TEST_ROOT/help-dash.out" >&2; return 1; }
   grep -q 'hold profiles' "$TEST_ROOT/help-dash.out" || { cat "$TEST_ROOT/help-dash.out" >&2; return 1; }
   ! grep -q 'hold dump' "$TEST_ROOT/help-dash.out" || { cat "$TEST_ROOT/help-dash.out" >&2; return 1; }
   ! grep -q 'hold --console' "$TEST_ROOT/help-dash.out" || { cat "$TEST_ROOT/help-dash.out" >&2; return 1; }
@@ -4398,6 +4421,8 @@ test_public_cli_contract_guards() {
   grep -q 'hold logs <target> --plain' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
   grep -q 'hold inspect <target>' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
   grep -q 'hold profile save <id> as <name>' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
+  grep -q 'hold export <name> \[as <file>\]' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
+  grep -q 'hold import <file> as <name>' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
   grep -q 'hold profiles' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
   ! grep -q 'hold dump' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
   ! grep -q 'hold --console' "$TEST_ROOT/help.out" || { cat "$TEST_ROOT/help.out" >&2; return 1; }
@@ -4405,6 +4430,8 @@ test_public_cli_contract_guards() {
 
   "$HOLD_BIN" help profiles >"$TEST_ROOT/help-profiles.out" || return 1
   grep -q 'hold profile save <id> as <name>' "$TEST_ROOT/help-profiles.out" || { cat "$TEST_ROOT/help-profiles.out" >&2; return 1; }
+  grep -q 'hold export <name>' "$TEST_ROOT/help-profiles.out" || { cat "$TEST_ROOT/help-profiles.out" >&2; return 1; }
+  grep -q 'hold import FILE as <name>' "$TEST_ROOT/help-profiles.out" || { cat "$TEST_ROOT/help-profiles.out" >&2; return 1; }
   grep -q 'hold profiles' "$TEST_ROOT/help-profiles.out" || { cat "$TEST_ROOT/help-profiles.out" >&2; return 1; }
   ! grep -Eq 'hold aliases?([[:space:]]|$)' "$TEST_ROOT/help-profiles.out" || { cat "$TEST_ROOT/help-profiles.out" >&2; return 1; }
 
