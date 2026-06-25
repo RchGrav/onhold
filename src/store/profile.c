@@ -18,6 +18,7 @@ static bool profile_equal_recipe(const struct hold_profile *p,
                                  bool mode_interactive,
                                  bool mode_tty,
                                  bool mode_detach,
+                                 bool allow_multi,
                                  const char *restart_policy,
                                  int restart_delay_seconds);
 static int parse_profile_object(const char *j, const char *hash, struct hold_profile *profile);
@@ -92,6 +93,7 @@ static bool profile_equal_recipe(const struct hold_profile *p,
                                  bool mode_interactive,
                                  bool mode_tty,
                                  bool mode_detach,
+                                 bool allow_multi,
                                  const char *restart_policy,
                                  int restart_delay_seconds) {
     if (strcmp(p->binary_path, binary_path) != 0 || !string_array_equal(p->argc, p->argv, argc, argv)) {
@@ -102,6 +104,7 @@ static bool profile_equal_recipe(const struct hold_profile *p,
     return p->mode_interactive == mode_interactive &&
            p->mode_tty == mode_tty &&
            p->mode_detach == mode_detach &&
+           p->allow_multi == allow_multi &&
            ((have_restart == NULL && want_restart == NULL) ||
             (have_restart && want_restart && strcmp(have_restart, want_restart) == 0)) &&
            ((want_restart == NULL && !p->has_restart_delay) ||
@@ -145,6 +148,7 @@ static int parse_profile_object(const char *j, const char *hash, struct hold_pro
     (void)hold_json_get_bool(j, "interactive", &profile->mode_interactive);
     (void)hold_json_get_bool(j, "tty", &profile->mode_tty);
     (void)hold_json_get_bool(j, "detach", &profile->mode_detach);
+    (void)hold_json_get_bool(j, "multi", &profile->allow_multi);
     if (hold_json_get_str(j, "restart", profile->restart_policy, sizeof(profile->restart_policy)) == 0 &&
         profile->restart_policy[0] && strcmp(profile->restart_policy, "no") != 0) {
         profile->has_restart_policy = true;
@@ -169,6 +173,7 @@ static int parse_profile_object(const char *j, const char *hash, struct hold_pro
             (void)hold_json_get_bool(copy, "interactive", &profile->mode_interactive);
             (void)hold_json_get_bool(copy, "tty", &profile->mode_tty);
             (void)hold_json_get_bool(copy, "detach", &profile->mode_detach);
+            (void)hold_json_get_bool(copy, "multi", &profile->allow_multi);
             free(copy);
         }
     }
@@ -312,7 +317,7 @@ static int write_profiles_atomic(const struct hold_store *store, const struct ho
             fprintf(f, ", \"volumes\": ");
             hold_write_json_argv(f, profiles[i].volumec, profiles[i].volumes);
         }
-        if (profiles[i].mode_interactive || profiles[i].mode_tty || profiles[i].mode_detach) {
+        if (profiles[i].mode_interactive || profiles[i].mode_tty || profiles[i].mode_detach || profiles[i].allow_multi) {
             fprintf(f, ", \"mode\": {");
             bool wrote_mode = false;
             if (profiles[i].mode_interactive) {
@@ -325,6 +330,10 @@ static int write_profiles_atomic(const struct hold_store *store, const struct ho
             }
             if (profiles[i].mode_detach) {
                 fprintf(f, "%s\"detach\": true", wrote_mode ? ", " : "");
+                wrote_mode = true;
+            }
+            if (profiles[i].allow_multi) {
+                fprintf(f, "%s\"multi\": true", wrote_mode ? ", " : "");
             }
             fprintf(f, "}");
         }
@@ -373,7 +382,7 @@ int hold_write_profile_atomic_env(const struct hold_store *store,
                                     char **argv,
                                     int envc,
                                     char **env) {
-    return hold_write_profile_atomic_full(store, hash, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false, NULL, 0);
+    return hold_write_profile_atomic_full(store, hash, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false, false, NULL, 0);
 }
 
 int hold_write_profile_atomic_full(const struct hold_store *store,
@@ -390,6 +399,7 @@ int hold_write_profile_atomic_full(const struct hold_store *store,
                                     bool mode_interactive,
                                     bool mode_tty,
                                     bool mode_detach,
+                                    bool allow_multi,
                                     const char *restart_policy,
                                     int restart_delay_seconds) {
     if (!hold_valid_profile_hash(hash) || !binary_path || binary_path[0] != '/' || argc <= 0 || !argv ||
@@ -414,7 +424,7 @@ int hold_write_profile_atomic_full(const struct hold_store *store,
     for (size_t i = 0; i < count; i++) {
         if (strcmp(profiles[i].hash, hash) == 0) {
             int rc = 0;
-            if (!profile_equal_recipe(&profiles[i], binary_path, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, restart_policy, restart_delay_seconds)) {
+            if (!profile_equal_recipe(&profiles[i], binary_path, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, allow_multi, restart_policy, restart_delay_seconds)) {
                 errno = EEXIST;
                 rc = -1;
             }
@@ -445,6 +455,7 @@ int hold_write_profile_atomic_full(const struct hold_store *store,
     profiles[count].mode_interactive = mode_interactive;
     profiles[count].mode_tty = mode_tty;
     profiles[count].mode_detach = mode_detach;
+    profiles[count].allow_multi = allow_multi;
     if (restart_policy && *restart_policy && strcmp(restart_policy, "no") != 0) {
         snprintf(profiles[count].restart_policy, sizeof(profiles[count].restart_policy), "%s", restart_policy);
         profiles[count].has_restart_policy = true;

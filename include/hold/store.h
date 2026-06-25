@@ -46,6 +46,7 @@ int hold_write_profile_atomic_full(const struct hold_store *store,
                                     bool mode_interactive,
                                     bool mode_tty,
                                     bool mode_detach,
+                                    bool allow_multi,
                                     const char *restart_policy,
                                     int restart_delay_seconds);
 int hold_load_profile_by_hash(const struct hold_store *store, const char *hash, struct hold_profile *profile);
@@ -80,6 +81,7 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
                                    bool mode_interactive,
                                    bool mode_tty,
                                    bool mode_detach,
+                                   bool allow_multi,
                                    const char *restart_policy,
                                    int restart_delay_seconds);
 int hold_alias_delete(const struct hold_store *store, const char *alias, bool *deleted);

@@ -27,6 +27,7 @@ struct captive_profile_stage {
     bool mode_interactive;
     bool mode_tty;
     bool mode_detach;
+    bool allow_multi;
     bool dirty;
 };
 
@@ -88,6 +89,7 @@ static int stage_load_recipe(struct captive_profile_stage *stage, const struct h
     stage->mode_interactive = recipe.mode_interactive;
     stage->mode_tty = recipe.mode_tty;
     stage->mode_detach = recipe.mode_detach;
+    stage->allow_multi = recipe.allow_multi;
     stage->dirty = false;
 done:
     hold_free_profile(&recipe);
@@ -210,7 +212,7 @@ static void help_profile(void) {
     printf("  env           Set an environment variable\n");
     printf("  alias         Define a profile-local alias (reserved)\n");
     printf("  param         Expose a validated optional parameter (reserved)\n");
-    printf("  multi         Allow multiple concurrent instances (reserved)\n");
+    printf("  multi         Allow multiple concurrent instances\n");
     printf("  interactive   Keep stdin open for profile runs\n");
     printf("  tty           Allocate a pseudo-TTY for profile runs\n");
     printf("  console       Alias for tty\n");
@@ -288,11 +290,12 @@ static void profile_info(const struct captive_profile_stage *stage) {
         for (size_t i = 0; i < stage->env_count; i++) printf(" %s", stage->env[i]);
     }
     printf("\n");
-    printf("  modes     :%s%s%s%s\n",
+    printf("  modes     :%s%s%s%s%s\n",
            stage->mode_interactive ? " interactive" : "",
            stage->mode_tty ? " tty" : "",
            stage->mode_detach ? " detach" : "",
-           (!stage->mode_interactive && !stage->mode_tty && !stage->mode_detach) ? " -" : "");
+           stage->allow_multi ? " multi" : "",
+           (!stage->mode_interactive && !stage->mode_tty && !stage->mode_detach && !stage->allow_multi) ? " -" : "");
     printf("  staged    : %s\n", stage->dirty ? "uncommitted changes present" : "clean");
 }
 
@@ -416,6 +419,8 @@ static int profile_set_mode(struct captive_profile_stage *stage, const char *nam
         slot = &stage->mode_tty;
     } else if (!strcmp(name, "detach")) {
         slot = &stage->mode_detach;
+    } else if (!strcmp(name, "multi")) {
+        slot = &stage->allow_multi;
     } else {
         return 1;
     }
@@ -456,6 +461,7 @@ static int profile_commit(struct captive_session *s) {
                                       stage->mode_interactive,
                                       stage->mode_tty,
                                       stage->mode_detach,
+                                      stage->allow_multi,
                                       NULL,
                                       0) != 0) {
         free(argv);
@@ -507,6 +513,7 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  tty         Disable pseudo-TTY profile mode\n");
             printf("  console     Alias for no tty\n");
             printf("  detach      Disable detached default profile mode\n");
+            printf("  multi       Disable multi-instance profile mode\n");
             return 0;
         }
         if (!strcmp(argv[0], "default")) {
@@ -516,7 +523,7 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  tty         Reset pseudo-TTY mode to default\n");
             printf("  console     Alias for default tty\n");
             printf("  detach      Reset detached mode to default\n");
-            printf("  multi       Reserved; reset when expanded schema lands\n");
+            printf("  multi       Reset multi-instance mode to default\n");
             return 0;
         }
     }
@@ -531,8 +538,7 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     }
     if (!strcmp(argv[0], "argv")) return profile_append_args(&s->profile, argc, argv);
     if (!strcmp(argv[0], "env")) return profile_set_env(&s->profile, argc, argv);
-    if (!strcmp(argv[0], "alias") || !strcmp(argv[0], "param") ||
-        !strcmp(argv[0], "multi") || !strcmp(argv[0], "pty-shim")) {
+    if (!strcmp(argv[0], "alias") || !strcmp(argv[0], "param") || !strcmp(argv[0], "pty-shim")) {
         return unsupported_reserved_profile_command(argv[0]);
     }
     if (argc == 1 && profile_set_mode(&s->profile, argv[0], true) == 0) return 0;
@@ -544,8 +550,7 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     if (!strcmp(argv[0], "no") && argc == 2) {
         int mode_rc = profile_set_mode(&s->profile, argv[1], false);
         if (mode_rc == 0) return 0;
-        if (!strcmp(argv[1], "alias") || !strcmp(argv[1], "param") ||
-            !strcmp(argv[1], "multi") || !strcmp(argv[1], "pty-shim")) {
+        if (!strcmp(argv[1], "alias") || !strcmp(argv[1], "param") || !strcmp(argv[1], "pty-shim")) {
             return unsupported_reserved_profile_command(argv[1]);
         }
     }
@@ -557,7 +562,6 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
         if (!strcmp(argv[1], "env")) return profile_no_env(&s->profile, 2, argv);
         int mode_rc = profile_set_mode(&s->profile, argv[1], false);
         if (mode_rc == 0) return 0;
-        if (!strcmp(argv[1], "multi")) return 0;
         if (!strcmp(argv[1], "alias") || !strcmp(argv[1], "param") || !strcmp(argv[1], "pty-shim")) {
             return unsupported_reserved_profile_command(argv[1]);
         }

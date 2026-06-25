@@ -34,6 +34,7 @@ static int run_recipe_matches_profile(const struct hold_store *store,
                                       bool mode_interactive,
                                       bool mode_tty,
                                       bool mode_detach,
+                                      bool allow_multi,
                                       const char *restart_policy,
                                       int restart_delay_seconds,
                                       bool *matched);
@@ -51,6 +52,7 @@ static int ensure_named_run_profile(const struct hold_invocation *inv,
                                     bool mode_interactive,
                                     bool mode_tty,
                                     bool mode_detach,
+                                    bool allow_multi,
                                     const char *restart_policy,
                                     int restart_delay_seconds);
 static bool token_names_existing_profile(const struct hold_store *user_store,
@@ -278,6 +280,7 @@ static int run_recipe_matches_profile(const struct hold_store *store,
                                       bool mode_interactive,
                                       bool mode_tty,
                                       bool mode_detach,
+                                      bool allow_multi,
                                       const char *restart_policy,
                                       int restart_delay_seconds,
                                       bool *matched) {
@@ -310,6 +313,7 @@ static int run_recipe_matches_profile(const struct hold_store *store,
                 recipe.mode_interactive == mode_interactive &&
                 recipe.mode_tty == mode_tty &&
                 recipe.mode_detach == mode_detach &&
+                recipe.allow_multi == allow_multi &&
                 ((have_restart == NULL && want_restart == NULL) ||
                  (have_restart && want_restart && !strcmp(have_restart, want_restart))) &&
                 ((want_restart == NULL && !recipe.has_restart_delay) ||
@@ -347,6 +351,7 @@ static int ensure_named_run_profile(const struct hold_invocation *inv,
                                     bool mode_interactive,
                                     bool mode_tty,
                                     bool mode_detach,
+                                    bool allow_multi,
                                     const char *restart_policy,
                                     int restart_delay_seconds) {
     if (!name) return 0;
@@ -364,7 +369,7 @@ static int ensure_named_run_profile(const struct hold_invocation *inv,
     }
     if (hold_alias_exists_in_store(store, name)) {
         bool matched = false;
-        int rc = run_recipe_matches_profile(store, name, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, restart_policy, restart_delay_seconds, &matched);
+        int rc = run_recipe_matches_profile(store, name, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, allow_multi, restart_policy, restart_delay_seconds, &matched);
         if (rc < 0) return 5;
         if (!matched) {
             fprintf(stderr,
@@ -390,7 +395,7 @@ static int ensure_named_run_profile(const struct hold_invocation *inv,
         hold_free_argv_alloc(profile_argv, argc);
         return 3;
     }
-    if (hold_alias_upsert_recipe_full(store, name, binary_path, argc, profile_argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, restart_policy, restart_delay_seconds) != 0) {
+    if (hold_alias_upsert_recipe_full(store, name, binary_path, argc, profile_argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, allow_multi, restart_policy, restart_delay_seconds) != 0) {
         hold_free_argv_alloc(profile_argv, argc);
         hold_die_errno("hold: failed to write profile");
     }
@@ -1186,6 +1191,7 @@ int main(int argc, char **argv) {
                                           docker_portc, docker_ports,
                                           docker_volumec, docker_volumes,
                                           docker_interactive, docker_tty, docker_detach,
+                                          false,
                                           docker_restart_policy[0] ? docker_restart_policy : NULL,
                                           docker_restart_delay_seconds);
             if (rc == 0) {
@@ -1256,6 +1262,7 @@ int main(int argc, char **argv) {
                                               docker_portc, docker_ports,
                                               docker_volumec, docker_volumes,
                                               docker_interactive, docker_tty, docker_detach,
+                                              false,
                                               docker_restart_policy[0] ? docker_restart_policy : NULL,
                                               docker_restart_delay_seconds);
             if (rc != 0) {

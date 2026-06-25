@@ -2055,6 +2055,44 @@ test_alias_multi_gate_and_all_stop() {
   pgid_terminated "$pgid2"
 }
 
+test_profile_multi_mode_allows_repeated_starts() {
+  local out1 out2 id1 id2 pgid1 pgid2
+  cat >"$TEST_ROOT/profile-multi.hold" <<'EOF'
+enable
+configure terminal
+profile web-allow-multi
+binary /usr/bin/sleep
+argv 60
+multi
+commit
+end
+write
+EOF
+  "$HOLD_BIN" profile import "$TEST_ROOT/profile-multi.hold" >/dev/null || return 1
+  "$HOLD_BIN" profile export web-allow-multi --json >"$TEST_ROOT/profile-multi.json" || return 1
+  python3 - "$TEST_ROOT/profile-multi.json" <<'PY' || { cat "$TEST_ROOT/profile-multi.json" >&2; return 1; }
+import json, sys
+mode = (json.load(open(sys.argv[1], encoding='utf-8')).get('mode') or {})
+if mode.get('multi') is not True:
+    raise SystemExit(f'multi mode was not persisted: {mode!r}')
+PY
+  out1=$("$HOLD_BIN" start web-allow-multi 2>&1) || return 1
+  id1=$(printf '%s\n' "$out1" | extract_id)
+  pgid1=$(record_pgid "$id1")
+  [ -n "$pgid1" ] || return 1
+  out2=$("$HOLD_BIN" start web-allow-multi 2>&1) || {
+    printf '%s\n' "$out2" >&2
+    return 1
+  }
+  id2=$(printf '%s\n' "$out2" | extract_id)
+  pgid2=$(record_pgid "$id2")
+  [ -n "$pgid2" ] || return 1
+  [ "$id1" != "$id2" ] || return 1
+  "$HOLD_BIN" stop web-allow-multi --all >/dev/null || return 1
+  pgid_terminated "$pgid1" || return 1
+  pgid_terminated "$pgid2"
+}
+
 test_profile_start_inherits_current_environment() {
   local out id out2 id2 got
   out=$(as_user env HOLD_PROFILE_ENV=seed "$HOLD_REAL_BIN" /bin/sh -c 'printf "%s\n" "$HOLD_PROFILE_ENV"' 2>&1) || return 1
@@ -3632,12 +3670,12 @@ test_captive_cli_profile_mode_flags_commit_and_clear() {
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local rc
   set +e
-  printf 'enable\nconfigure terminal\nprofile iosmode\nbinary /usr/bin/sleep\nargv 30\ninteractive\ntty\ndetach\ninfo\ncommit\nend\nexit\n' |
+  printf 'enable\nconfigure terminal\nprofile iosmode\nbinary /usr/bin/sleep\nargv 30\ninteractive\ntty\ndetach\nmulti\ninfo\ncommit\nend\nexit\n' |
     "$HOLD_BIN" >"$TEST_ROOT/captive-mode-set.out" 2>"$TEST_ROOT/captive-mode-set.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-mode-set.out" "$TEST_ROOT/captive-mode-set.err" >&2; return 1; }
-  grep -q 'modes     : interactive tty detach' "$TEST_ROOT/captive-mode-set.out" || {
+  grep -q 'modes     : interactive tty detach multi' "$TEST_ROOT/captive-mode-set.out" || {
     cat "$TEST_ROOT/captive-mode-set.out" >&2
     return 1
   }
@@ -3646,10 +3684,11 @@ test_captive_cli_profile_mode_flags_commit_and_clear() {
   grep -Fxq "interactive" "$TEST_ROOT/iosmode-set.profile" || { cat "$TEST_ROOT/iosmode-set.profile" >&2; return 1; }
   grep -Fxq "tty" "$TEST_ROOT/iosmode-set.profile" || { cat "$TEST_ROOT/iosmode-set.profile" >&2; return 1; }
   grep -Fxq "detach" "$TEST_ROOT/iosmode-set.profile" || { cat "$TEST_ROOT/iosmode-set.profile" >&2; return 1; }
+  grep -Fxq "multi" "$TEST_ROOT/iosmode-set.profile" || { cat "$TEST_ROOT/iosmode-set.profile" >&2; return 1; }
   python3 - "$TEST_ROOT/iosmode-set.json" <<'PY' || { cat "$TEST_ROOT/iosmode-set.json" >&2; return 1; }
 import json, sys
 mode = (json.load(open(sys.argv[1], encoding='utf-8')).get('mode') or {})
-for key in ('interactive', 'tty', 'detach'):
+for key in ('interactive', 'tty', 'detach', 'multi'):
     if mode.get(key) is not True:
         raise SystemExit(f'missing committed mode {key}: {mode!r}')
 PY
@@ -3659,13 +3698,13 @@ PY
   python3 - "$TEST_ROOT/iosmode-imported.json" <<'PY' || { cat "$TEST_ROOT/iosmode-imported.json" >&2; return 1; }
 import json, sys
 mode = (json.load(open(sys.argv[1], encoding='utf-8')).get('mode') or {})
-for key in ('interactive', 'tty', 'detach'):
+for key in ('interactive', 'tty', 'detach', 'multi'):
     if mode.get(key) is not True:
         raise SystemExit(f'imported transcript missing mode {key}: {mode!r}')
 PY
 
   set +e
-  printf 'enable\nconfigure terminal\nprofile iosmode\nno interactive\nno console\nno detach\ninfo\ncommit\nend\nexit\n' |
+  printf 'enable\nconfigure terminal\nprofile iosmode\nno interactive\nno console\nno detach\nno multi\ninfo\ncommit\nend\nexit\n' |
     "$HOLD_BIN" >"$TEST_ROOT/captive-mode-clear.out" 2>"$TEST_ROOT/captive-mode-clear.err"
   rc=$?
   set -e
@@ -3679,7 +3718,7 @@ PY
 import json, sys
 profile = json.load(open(sys.argv[1], encoding='utf-8'))
 if 'mode' in profile:
-    raise SystemExit(f'mode object should be omitted after no interactive/no console/no detach: {profile!r}')
+    raise SystemExit(f'mode object should be omitted after no interactive/no console/no detach/no multi: {profile!r}')
 PY
 }
 
@@ -3722,7 +3761,7 @@ exit
   grep -q 'pattern     Manage the pattern dictionary' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'alias         Define a profile-local alias (reserved)' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'param         Expose a validated optional parameter (reserved)' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
-  grep -q 'multi         Allow multiple concurrent instances (reserved)' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
+  grep -q 'multi         Allow multiple concurrent instances' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'pty-shim      Start under the PTY shim (reserved)' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'WORD       Absolute path to the executable' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'WORD       Long flag to expose' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
@@ -4559,6 +4598,7 @@ run_test "explicit user:<id> targets user-local run" test_explicit_user_target
 run_test "user alias stores a direct recipe and starts/stops by alias" test_alias_profile_map_start_and_stop
 run_test "alias from relative executable keeps absolute recorded argv0" test_alias_from_relative_executable_uses_recorded_absolute_argv0
 run_test "profile start requires --force when already running and --all stops all" test_alias_multi_gate_and_all_stop
+run_test "profile multi mode allows repeated starts without --force" test_profile_multi_mode_allows_repeated_starts
 run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
 run_test "Docker --env persists with a named profile" test_docker_env_persists_with_named_profile
 run_test "Docker --env-file persists with a named profile" test_docker_env_file_persists_with_named_profile

@@ -1155,7 +1155,8 @@ int hold_cmd_start_action_options(const struct hold_invocation *inv,
                     }
                 }
             } else {
-                if (target.has_alias && !multi) {
+                bool profile_allows_multi = target.has_recipe && target.recipe.allow_multi;
+                if (target.has_alias && !multi && !profile_allows_multi) {
                     size_t running = 0;
                     if (count_running_alias(&target.store, target.alias, &running) != 0) {
                         free_start_profile_target(&target);

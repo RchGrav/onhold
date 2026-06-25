@@ -48,6 +48,7 @@ static int parse_alias_recipe_object(const char *j, struct hold_alias *entry) {
     (void)hold_json_get_bool(j, "interactive", &entry->mode_interactive);
     (void)hold_json_get_bool(j, "tty", &entry->mode_tty);
     (void)hold_json_get_bool(j, "detach", &entry->mode_detach);
+    (void)hold_json_get_bool(j, "multi", &entry->allow_multi);
     if (hold_json_get_str(j, "restart", entry->restart_policy, sizeof(entry->restart_policy)) == 0 &&
         entry->restart_policy[0] && strcmp(entry->restart_policy, "no") != 0) {
         entry->has_restart_policy = true;
@@ -69,6 +70,7 @@ static int parse_alias_recipe_object(const char *j, struct hold_alias *entry) {
             (void)hold_json_get_bool(copy, "interactive", &entry->mode_interactive);
             (void)hold_json_get_bool(copy, "tty", &entry->mode_tty);
             (void)hold_json_get_bool(copy, "detach", &entry->mode_detach);
+            (void)hold_json_get_bool(copy, "multi", &entry->allow_multi);
             free(copy);
         }
     }
@@ -237,7 +239,7 @@ static int write_aliases_atomic(const struct hold_store *store, const struct hol
                 fprintf(f, ", \"volumes\": ");
                 hold_write_json_argv(f, entries[i].volumec, entries[i].volumes);
             }
-            if (entries[i].mode_interactive || entries[i].mode_tty || entries[i].mode_detach) {
+            if (entries[i].mode_interactive || entries[i].mode_tty || entries[i].mode_detach || entries[i].allow_multi) {
                 fprintf(f, ", \"mode\": {");
                 bool wrote_mode = false;
                 if (entries[i].mode_interactive) {
@@ -250,6 +252,10 @@ static int write_aliases_atomic(const struct hold_store *store, const struct hol
                 }
                 if (entries[i].mode_detach) {
                     fprintf(f, "%s\"detach\": true", wrote_mode ? ", " : "");
+                    wrote_mode = true;
+                }
+                if (entries[i].allow_multi) {
+                    fprintf(f, "%s\"multi\": true", wrote_mode ? ", " : "");
                 }
                 fprintf(f, "}");
             }
@@ -369,6 +375,7 @@ int hold_alias_lookup_recipe(const struct hold_store *store, const char *alias, 
                 recipe->mode_interactive = entries[i].mode_interactive;
                 recipe->mode_tty = entries[i].mode_tty;
                 recipe->mode_detach = entries[i].mode_detach;
+                recipe->allow_multi = entries[i].allow_multi;
                 if (entries[i].has_restart_policy) {
                     snprintf(recipe->restart_policy, sizeof(recipe->restart_policy), "%s", entries[i].restart_policy);
                     recipe->has_restart_policy = true;
@@ -403,7 +410,7 @@ int hold_alias_upsert_recipe_env(const struct hold_store *store,
                                    char **argv,
                                    int envc,
                                    char **env) {
-    return hold_alias_upsert_recipe_full(store, alias, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false, NULL, 0);
+    return hold_alias_upsert_recipe_full(store, alias, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false, false, NULL, 0);
 }
 
 int hold_alias_upsert_recipe_full(const struct hold_store *store,
@@ -420,6 +427,7 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
                                    bool mode_interactive,
                                    bool mode_tty,
                                    bool mode_detach,
+                                   bool allow_multi,
                                    const char *restart_policy,
                                    int restart_delay_seconds) {
     if (!hold_valid_alias(alias) || !binary_path || binary_path[0] != '/' || argc <= 0 || !argv ||
@@ -464,6 +472,7 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
             entries[i].mode_interactive = mode_interactive;
             entries[i].mode_tty = mode_tty;
             entries[i].mode_detach = mode_detach;
+            entries[i].allow_multi = allow_multi;
             entries[i].restart_policy[0] = '\0';
             entries[i].has_restart_policy = false;
             if (restart_policy && *restart_policy && strcmp(restart_policy, "no") != 0) {
@@ -503,6 +512,7 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
     entries[count].mode_interactive = mode_interactive;
     entries[count].mode_tty = mode_tty;
     entries[count].mode_detach = mode_detach;
+    entries[count].allow_multi = allow_multi;
     if (restart_policy && *restart_policy && strcmp(restart_policy, "no") != 0) {
         snprintf(entries[count].restart_policy, sizeof(entries[count].restart_policy), "%s", restart_policy);
         entries[count].has_restart_policy = true;

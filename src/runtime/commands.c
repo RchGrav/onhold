@@ -295,6 +295,7 @@ static int profile_export_transcript(const char *name, const struct hold_profile
     if (recipe->mode_interactive) fputs("interactive\n", stdout);
     if (recipe->mode_tty) fputs("tty\n", stdout);
     if (recipe->mode_detach) fputs("detach\n", stdout);
+    if (recipe->allow_multi) fputs("multi\n", stdout);
     if (recipe->has_restart_policy && recipe->restart_policy[0]) {
         fputs("restart ", stdout);
         profile_shell_quote(stdout, recipe->restart_policy);
@@ -326,7 +327,7 @@ static int profile_export_json(const char *name, const struct hold_profile *reci
         fputs(",\n  \"volumes\": ", stdout);
         hold_write_json_argv(stdout, recipe->volumec, recipe->volumes);
     }
-    if (recipe->mode_interactive || recipe->mode_tty || recipe->mode_detach) {
+    if (recipe->mode_interactive || recipe->mode_tty || recipe->mode_detach || recipe->allow_multi) {
         bool wrote = false;
         fputs(",\n  \"mode\": {", stdout);
         if (recipe->mode_interactive) {
@@ -339,6 +340,10 @@ static int profile_export_json(const char *name, const struct hold_profile *reci
         }
         if (recipe->mode_detach) {
             fprintf(stdout, "%s\"detach\": true", wrote ? ", " : "");
+            wrote = true;
+        }
+        if (recipe->allow_multi) {
+            fprintf(stdout, "%s\"multi\": true", wrote ? ", " : "");
         }
         fputs("}", stdout);
     }
@@ -482,6 +487,7 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
     bool mode_interactive = false;
     bool mode_tty = false;
     bool mode_detach = false;
+    bool allow_multi = false;
     char restart_policy[64] = {0};
     int restart_delay_seconds = 0;
     int rc = 5;
@@ -509,6 +515,7 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
     (void)hold_json_get_bool(j, "interactive", &mode_interactive);
     (void)hold_json_get_bool(j, "tty", &mode_tty);
     (void)hold_json_get_bool(j, "detach", &mode_detach);
+    (void)hold_json_get_bool(j, "multi", &allow_multi);
     (void)hold_json_get_str(j, "restart", restart_policy, sizeof(restart_policy));
     int64_t restart_delay_tmp = 0;
     if (hold_json_get_i64(j, "restart_delay_seconds", &restart_delay_tmp) == 0 && restart_delay_tmp >= 0 && restart_delay_tmp <= INT_MAX) {
@@ -529,6 +536,7 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
             (void)hold_json_get_bool(copy, "interactive", &mode_interactive);
             (void)hold_json_get_bool(copy, "tty", &mode_tty);
             (void)hold_json_get_bool(copy, "detach", &mode_detach);
+            (void)hold_json_get_bool(copy, "multi", &allow_multi);
             free(copy);
         }
     }
@@ -546,6 +554,7 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
                                       mode_interactive,
                                       mode_tty,
                                       mode_detach,
+                                      allow_multi,
                                       restart_policy[0] ? restart_policy : NULL,
                                       restart_delay_seconds) != 0) {
         hold_die_errno("hold: failed to import profile");
@@ -595,6 +604,7 @@ static int profile_write_full_recipe(const struct hold_store *store,
                                      bool mode_interactive,
                                      bool mode_tty,
                                      bool mode_detach,
+                                     bool allow_multi,
                                      const char *restart_policy,
                                      int restart_delay_seconds) {
     if (!hold_valid_alias(name)) {
@@ -627,6 +637,7 @@ static int profile_write_full_recipe(const struct hold_store *store,
                                       mode_interactive,
                                       mode_tty,
                                       mode_detach,
+                                      allow_multi,
                                       restart_policy,
                                       restart_delay_seconds) != 0) {
         hold_die_errno("hold: failed to update profile");
@@ -660,6 +671,7 @@ static int profile_import_transcript(const struct hold_store *store, const char 
     bool mode_interactive = false;
     bool mode_tty = false;
     bool mode_detach = false;
+    bool allow_multi = false;
     char restart_policy[64] = {0};
     int restart_delay_seconds = 0;
     bool saw_save = false;
@@ -741,6 +753,8 @@ static int profile_import_transcript(const struct hold_store *store, const char 
             mode_tty = true;
         } else if (!strcmp(tokens[0], "detach") && ntokens == 1) {
             mode_detach = true;
+        } else if (!strcmp(tokens[0], "multi") && ntokens == 1) {
+            allow_multi = true;
         } else if (!strcmp(tokens[0], "restart") && ntokens == 2) {
             snprintf(restart_policy, sizeof(restart_policy), "%s", tokens[1]);
         } else if ((!strcmp(tokens[0], "restart-delay") || !strcmp(tokens[0], "restart_delay_seconds")) && ntokens == 2) {
@@ -758,6 +772,10 @@ static int profile_import_transcript(const struct hold_store *store, const char 
             mode_tty = false;
         } else if (!strcmp(tokens[0], "no") && ntokens == 2 && !strcmp(tokens[1], "detach")) {
             mode_detach = false;
+        } else if (!strcmp(tokens[0], "no") && ntokens == 2 && !strcmp(tokens[1], "multi")) {
+            allow_multi = false;
+        } else if (!strcmp(tokens[0], "default") && ntokens == 2 && !strcmp(tokens[1], "multi")) {
+            allow_multi = false;
         } else if (!strcmp(tokens[0], "no") && ntokens == 2 && !strcmp(tokens[1], "restart")) {
             restart_policy[0] = '\0';
             restart_delay_seconds = 0;
@@ -808,7 +826,7 @@ static int profile_import_transcript(const struct hold_store *store, const char 
         }
         argv[0] = binary;
         for (int i = 0; i < arg_count; i++) argv[i + 1] = args[i];
-        rc = profile_write_full_recipe(store, name, binary, argc, argv, envc, env, mode_interactive, mode_tty, mode_detach, restart_policy[0] ? restart_policy : NULL, restart_delay_seconds);
+        rc = profile_write_full_recipe(store, name, binary, argc, argv, envc, env, mode_interactive, mode_tty, mode_detach, allow_multi, restart_policy[0] ? restart_policy : NULL, restart_delay_seconds);
         free(argv);
     }
 

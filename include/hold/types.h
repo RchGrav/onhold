@@ -124,6 +124,7 @@ struct hold_profile {
     bool mode_interactive;
     bool mode_tty;
     bool mode_detach;
+    bool allow_multi;
     char restart_policy[64];
     int restart_delay_seconds;
     bool has_restart_policy;
@@ -145,6 +146,7 @@ struct hold_alias {
     bool mode_interactive;
     bool mode_tty;
     bool mode_detach;
+    bool allow_multi;
     char restart_policy[64];
     int restart_delay_seconds;
     bool has_restart_policy;
