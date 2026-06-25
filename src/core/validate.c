@@ -7,7 +7,7 @@ bool hold_valid_id(const char *id) {
     if (len != ID_HEX_LEN) {
         return false;
     }
-    if (strcmp(id, "00000000") == 0 || strcmp(id, "ffffffff") == 0) {
+    if (strcmp(id, "000000000000") == 0 || strcmp(id, "ffffffffffff") == 0) {
         return false;
     }
     for (size_t i = 0; i < len; i++) {
@@ -107,7 +107,7 @@ int hold_parse_gid_env(const char *s, gid_t *out) {
 }
 
 bool hold_valid_runid_selector(const char *sel) {
-    return sel && (hold_valid_id(sel) || strcmp(sel, "00000000") == 0 || strcmp(sel, "ffffffff") == 0);
+    return sel && (hold_valid_id(sel) || strcmp(sel, "000000000000") == 0 || strcmp(sel, "ffffffffffff") == 0);
 }
 
 bool hold_valid_target_atom(const char *id) {

@@ -28,7 +28,7 @@ Recommended direction:
 - **Best possible first command**: `hold <command> [args...]` can run in Docker-like foreground mode, while `hold -d <command> [args...]` starts a background process without requiring config.
 - **Scriptability is protected**: detached starts print only the run ID to stdout; banners go to stderr.
 - **Safety story is excellent**: On Hold validates process identity before signaling, and refuses unsafe actions.
-- **Short run IDs are approachable**: 8 hex chars are easier than full UUIDs.
+- **Short run IDs are approachable**: 12 hex chars are easier than full UUIDs.
 - **Docs are unusually complete**: README, quickstart, technical loop, CLI contract, profiles, security, and TTY docs exist.
 - **Root delegation is differentiated**: scoped sudoers-managed profiles are a powerful capability few small launchers offer.
 
@@ -61,7 +61,7 @@ This starts a second `sleep 20` because the original run was not labeled `web`; 
 Suggested fix options:
 
 - Prefer: `hold profile save <id> as <name>` should label/adopt the source run as `<name>` by default.
-- Or: print a warning and next step: “Pinned recipe as web. The existing run is still 04a7dda8; use `hold adopt 04a7dda8 web` to manage it as web.”
+- Or: print a warning and next step: “Pinned recipe as web. The existing run is still 04a7dda8cafe; use `hold adopt 04a7dda8cafe web` to manage it as web.”
 - Or: split verbs: `profile save <id> as web` creates the recipe only; `profile adopt <id> as web` labels the current run.
 
 ### 4. `list` omits key human context
@@ -72,9 +72,9 @@ Suggested fix: default human list should include profile and affordances, e.g.:
 
 ```text
 NAME     ID        STATE    AGE  MODE     CMD
-web      04a7dda8  running  12s  log      /usr/bin/python -m http.server 9000
-api      fe21dfb8  running  2m   tty      node server.js
--        a1b2c3d4  exited   1h   log      sleep 1
+web      04a7dda8cafe  running  12s  log      /usr/bin/python -m http.server 9000
+api      fe21dfb8cafe  running  2m   tty      node server.js
+-        a1b2c3d4e5f6  exited   1h   log      sleep 1
 ```
 
 Keep current output available as `--plain`, `--columns`, or `--json` for scripts.
@@ -132,7 +132,7 @@ hold run web --force          # launch one more web instance
 hold run web --multi 3        # launch exactly 3 web instances
 hold stop web                 # stop web only if exactly one web run is running
 hold stop web --all           # stop all running executions launched from web
-hold stop 04a7dda8            # stop this exact execution
+hold stop 04a7dda8cafe            # stop this exact execution
 hold logs web --follow        # follow logs only if web resolves to one run
 ```
 
@@ -281,9 +281,9 @@ hold v0.4  daemonless process guardian
 
 Runs
   ALIAS     RUNID     STATE    AGE   MODE     COMMAND
-  web       04a7dda8  running  12s   log      python -m http.server 9000
-  api       fe21dfb8  running  2m    tty      node server.js
-  -         a1b2c3d4  exited   1h    log      sleep 1
+  web       04a7dda8cafe  running  12s   log      python -m http.server 9000
+  api       fe21dfb8cafe  running  2m    tty      node server.js
+  -         a1b2c3d4e5f6  exited   1h    log      sleep 1
 
 Type ? for help.
 hold>

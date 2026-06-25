@@ -146,8 +146,8 @@ Action:
 hold stop web
 hold stop user:web
 hold stop system:web
-hold dump user:7f3c2a9d
-hold tail system:7f3c2a9d
+hold dump user:7f3c2a9dcafe
+hold tail system:7f3c2a9dcafe
 ```
 
 Expect:

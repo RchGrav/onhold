@@ -123,7 +123,7 @@ static int help_access(void) {
            "The <user> field may be a username, %%group, or all. On Hold stores one\n"
            "managed sudoers file per profile/user pair. The file contains the current\n"
            "protected profile hash for that profile, an anchored action alternation, and\n"
-           "an 8-hex run selector slot. If root updates the profile and the hash\n"
+           "a 12-hex run selector slot. If root updates the profile and the hash\n"
            "changes, grant rewrites the same managed file via temp file, visudo check,\n"
            "and atomic rename.\n");
     return 0;
@@ -147,7 +147,7 @@ static int help_scripting(void) {
     printf("hold help scripting\n\n"
            "stdout is for machine data. Human banners, confirmations, warnings, and\n"
            "errors go to stderr; --quiet suppresses normal human status.\n\n"
-           "  id=$(hold -d <cmd...>)       capture the bare 8-hex run id\n"
+           "  id=$(hold -d <cmd...>)       capture the bare 12-hex run id\n"
            "  hold stop --print <id>       print kill -TERM -- -<pgid>\n"
            "  hold kill --print <id>       print kill -KILL -- -<pgid>\n\n"
            "Exit codes:\n"

@@ -162,8 +162,8 @@ help
 For On Hold-owned commands, invocation switches may appear before or after the command arguments:
 
 ```bash
-hold --system stop 7f3c2a9d
-hold stop 7f3c2a9d --system
+hold --system stop 7f3c2a9dcafe
+hold stop 7f3c2a9dcafe --system
 hold start "qemu-system-x86_64 -m 4096" --system
 ```
 
@@ -245,7 +245,7 @@ Example:
 
 ```json
 {
-  "id": "7f3c2a9d",
+  "id": "7f3c2a9dcafe",
   "root_managed": true,
   "requires_elevation": true,
   "alias": "web-test",
@@ -291,7 +291,7 @@ Public profile-map entries must not include argv, binary paths, log paths, conso
 
 ## 6. Run IDs and collision checks
 
-Run IDs are random opaque 8-character lowercase hex identifiers. `00000000` and `ffffffff` are reserved internal sentinels and must never be generated. Global uniqueness across all users is not required.
+Run IDs are random opaque 12-character lowercase hex identifiers. `000000000000` and `ffffffffffff` are reserved internal sentinels and must never be generated. Global uniqueness across all users is not required.
 
 ### 6.1 User-local start avoids
 
@@ -468,7 +468,7 @@ When a normal user targets a root-managed profile, On Hold resolves the public p
 <verb> <runid_sel> <profile> <hash>
 ```
 
-`runid_sel` is always present. It is a concrete 8-hex run ID, `00000000` for `start`, or `ffffffff` for an approved `--all` action. Root On Hold must verify that the internal alias field for that profile still points at the supplied hash and that selected concrete run records are recorded under that profile before acting.
+`runid_sel` is always present. It is a concrete 12-hex run ID, `000000000000` for `start`, or `ffffffffffff` for an approved `--all` action. Root On Hold must verify that the internal alias field for that profile still points at the supplied hash and that selected concrete run records are recorded under that profile before acting.
 
 ## 8. Self-elevation boundary
 
@@ -484,7 +484,7 @@ the target requires elevation.
 `hold --system start <profile>` may also self-elevate. Before the sudo boundary, a root-managed profile must be resolved to the internal start capability shape:
 
 ```text
-start 00000000 <profile> <hash>
+start 000000000000 <profile> <hash>
 ```
 
 The elevation boundary is argv-preserving `fork()` + `waitpid()`:
@@ -632,7 +632,7 @@ fsync containing directory when possible
 
 On Hold launches the child in a new session / process group. Child `stdin` is redirected from `/dev/null`; child `stdout` and `stderr` are redirected to the per-run log.
 
-Docker-shaped launches (`hold <cmd...>` and `hold run <cmd|profile>`) run in the foreground and stream logs by default. Detached launches (`hold -d <cmd...>` or `hold run -d ...`) print the bare 8-character run ID to stdout. Human banners and confirmations, including `profile`, `grant`, `revoke`, `stop`, `kill`, and `prune` status lines, go to stderr and are suppressed by `--quiet` where applicable. `hold -f <cmd...>` remains accepted as a compatibility spelling for explicit follow mode.
+Docker-shaped launches (`hold <cmd...>` and `hold run <cmd|profile>`) run in the foreground and stream logs by default. Detached launches (`hold -d <cmd...>` or `hold run -d ...`) print the bare 12-character run ID to stdout. Human banners and confirmations, including `profile`, `grant`, `revoke`, `stop`, `kill`, and `prune` status lines, go to stderr and are suppressed by `--quiet` where applicable. `hold -f <cmd...>` remains accepted as a compatibility spelling for explicit follow mode.
 
 An exec-success handshake distinguishes successful `execvp()` from immediate exec failure:
 
@@ -692,12 +692,12 @@ hold grant <profile> <user> [start,stop,kill,tail,dump,prune,console]
 hold revoke <profile> <user> [start,stop,kill,tail,dump,prune,console]
 ```
 
-The grant target must be an existing root-managed profile. The `<user>` argument may be a username, `%group`, or `all`. On Hold resolves the profile to its immutable profile hash before writing sudoers; the managed filename is keyed by profile and user, and the sudoers command carries a fixed profile/hash pair plus an 8-hex `runid_sel` slot so root can verify the profile/hash pair and selected run records before acting. If the action list is omitted, all supported On Hold actions for that profile are selected. This is a wildcard over On Hold's supported profile actions, not arbitrary sudo command access. `purge` is not a supported action; the command is `prune`.
+The grant target must be an existing root-managed profile. The `<user>` argument may be a username, `%group`, or `all`. On Hold resolves the profile to its immutable profile hash before writing sudoers; the managed filename is keyed by profile and user, and the sudoers command carries a fixed profile/hash pair plus an 12-hex `runid_sel` slot so root can verify the profile/hash pair and selected run records before acting. If the action list is omitted, all supported On Hold actions for that profile are selected. This is a wildcard over On Hold's supported profile actions, not arbitrary sudo command access. `purge` is not a supported action; the command is `prune`.
 
 Before writing sudoers, On Hold resolves its own executable path and refuses to proceed unless that file is root-owned, regular, and not writable by group or world. Managed sudoers lines grant NOPASSWD access only to tightly scoped canonical invocations with one anchored argument regex, such as:
 
 ```text
-alice ALL=(root) NOPASSWD: /usr/bin/hold ^--system --elevated (start|stop) [0-9a-f]{8} web-test <hash>$
+alice ALL=(root) NOPASSWD: /usr/bin/hold ^--system --elevated (start|stop) [0-9a-f]{12} web-test <hash>$
 ```
 
 The managed file path is `/etc/sudoers.d/hold_<profile>_<user>` in production. Test builds may use `HOLD_TEST_SUDOERS_DIR`. Writes go to a same-directory `.tmp` candidate, use mode `0440`, are validated with `visudo -cf <tmp>`, and then `rename()` into place.

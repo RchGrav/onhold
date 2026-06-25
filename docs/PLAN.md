@@ -92,7 +92,7 @@ Planned diagrams: flowchart from recorded run to profile; record diagram for use
 
 ### `docs/security.md`
 
-Documents the root/system and sudo self-elevation model. It should cover invocation provenance from `SUDO_UID`, `SUDO_GID`, and `SUDO_USER`; `--system`; internal `--elevated`; argv-preserving `fork` + `execvp("sudo")`; executable path resolution; profile/hash capability handoff; selector sentinels `00000000` and `ffffffff`; run-profile verification before privileged action; sudoers grant/revoke file generation; `visudo` validation; and root-owned executable checks. The "why" should focus on preserving the validate-before-signal model across privilege boundaries without adding a daemon or shell command string.
+Documents the root/system and sudo self-elevation model. It should cover invocation provenance from `SUDO_UID`, `SUDO_GID`, and `SUDO_USER`; `--system`; internal `--elevated`; argv-preserving `fork` + `execvp("sudo")`; executable path resolution; profile/hash capability handoff; selector sentinels `000000000000` and `ffffffffffff`; run-profile verification before privileged action; sudoers grant/revoke file generation; `visudo` validation; and root-owned executable checks. The "why" should focus on preserving the validate-before-signal model across privilege boundaries without adding a daemon or shell command string.
 
 Planned diagrams: sequence diagram for non-root action self-elevation; sequence diagram for `grant`/`revoke`; flowchart for capability verification.
 

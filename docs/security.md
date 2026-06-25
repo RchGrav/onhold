@@ -57,8 +57,8 @@ flowchart TD
     Sudo --> Verify["verify_system_alias_cap"]
     Verify -->|profile still maps to hash| Selector["Check run selector"]
     Verify -->|mismatch| Deny["deny"]
-    Selector -->|00000000 and start| Profile["Load profile and start"]
-    Selector -->|ffffffff and all action| Matches["Collect current profile matches"]
+    Selector -->|000000000000 and start| Profile["Load profile and start"]
+    Selector -->|ffffffffffff and all action| Matches["Collect current profile matches"]
     Selector -->|run ID| Label["ensure_run_recorded_under_alias"]
     Label --> Action["Validate then act"]
     Matches --> Action
@@ -79,7 +79,7 @@ Root-managed profile capabilities use three argv fields:
 <runid_sel> <profile> <hash>
 ```
 
-`00000000` is valid only for `start`. `ffffffff` is valid only for approved `--all` actions. Concrete run IDs must still be recorded under the supplied profile. `cmd_elevated_capability_action` verifies the profile/hash pair first, then checks the selector rules, then loads records or profiles from the private system store.
+`000000000000` is valid only for `start`. `ffffffffffff` is valid only for approved `--all` actions. Concrete run IDs must still be recorded under the supplied profile. `cmd_elevated_capability_action` verifies the profile/hash pair first, then checks the selector rules, then loads records or profiles from the private system store.
 
 This second verification is essential because public data was read before the sudo boundary. The profile mapping could have changed between non-root resolution and root execution.
 
@@ -112,7 +112,7 @@ sequenceDiagram
 
 `grant` and `revoke` require root authority. `validate_hold_self_for_sudoers` refuses to manage grants unless the resolved On Hold executable is a regular root-owned file with group/world writes disabled and no whitespace in the path.
 
-Managed files are written under `/etc/sudoers.d` in production, or `HOLD_TEST_SUDOERS_DIR` in test builds. `write_sudoers_template_file` writes a temp candidate with mode `0440`, validates it with `visudo -cf`, and renames it into place. The sudoers command grants only canonical root On Hold invocations with `--system --elevated`, selected verbs, one profile, one profile hash, and one 8-hex run selector slot.
+Managed files are written under `/etc/sudoers.d` in production, or `HOLD_TEST_SUDOERS_DIR` in test builds. `write_sudoers_template_file` writes a temp candidate with mode `0440`, validates it with `visudo -cf`, and renames it into place. The sudoers command grants only canonical root On Hold invocations with `--system --elevated`, selected verbs, one profile, one profile hash, and one 12-hex run selector slot.
 
 ## Why this design works
 

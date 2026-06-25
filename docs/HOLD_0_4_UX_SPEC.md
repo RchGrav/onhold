@@ -42,8 +42,8 @@ Concrete naming and size rules:
 - Profile names are human handles for launching tools. Maximum length is **64** characters/bytes in the 0.4 target unless a later audited protocol budget proves this must shrink further.
 - Profile names may be used as safe selectors only when the operation can resolve them unambiguously.
 - Sudoers/capability digests are full SHA-256 hex strings: **64 lowercase hex characters**. They are computed from decoded subject-private grant/profile material and are not source-profile fields.
-- Existing/current run IDs are 8 lowercase hex characters with reserved sentinels inherited from the 0.3.x model. The 0.4 target may extend displayed/generated run IDs to **12 lowercase hex characters** for Docker familiarity, but that is a deliberate storage/protocol migration decision, not an accidental rename.
-- If sentinel selectors remain in the privileged protocol, `00000000` means “start/no concrete run yet” and all-`f` means an explicitly approved all-runs selector. The all-`f` sentinel length must match the active run-selector length.
+- Existing/current run IDs are 12 lowercase hex characters with reserved sentinels inherited from the 0.3.x model. The 0.4 target may extend displayed/generated run IDs to **12 lowercase hex characters** for Docker familiarity, but that is a deliberate storage/protocol migration decision, not an accidental rename.
+- If sentinel selectors remain in the privileged protocol, `000000000000` means “start/no concrete run yet” and all-`f` means an explicitly approved all-runs selector. The all-`f` sentinel length must match the active run-selector length.
 
 Profile verbs should feel like service/template operations:
 
@@ -84,12 +84,12 @@ Run records have:
 Run-ID lifecycle verbs should act on concrete executions:
 
 ```sh
-hold stop 04a7dda8            # graceful stop for one concrete execution, Docker-style
-hold kill 04a7dda8            # force stop for one concrete execution
-hold logs 04a7dda8            # log viewer for one concrete execution
-hold inspect 04a7dda8         # detailed JSON/object view, Docker-style
-hold rm 04a7dda8              # remove only if inactive
-hold rm --force 04a7dda8      # stop, verify, then remove an active run ID
+hold stop 04a7dda8cafe            # graceful stop for one concrete execution, Docker-style
+hold kill 04a7dda8cafe            # force stop for one concrete execution
+hold logs 04a7dda8cafe            # log viewer for one concrete execution
+hold inspect 04a7dda8cafe         # detailed JSON/object view, Docker-style
+hold rm 04a7dda8cafe              # remove only if inactive
+hold rm --force 04a7dda8cafe      # stop, verify, then remove an active run ID
 ```
 
 Profile names may be accepted by run-oriented commands only as safe selectors:
@@ -837,9 +837,9 @@ It removes inactive past runs that are no longer active. It must not stop active
 `rm` is targeted deletion:
 
 ```sh
-hold rm 04a7dda8              # remove inactive run record/artifacts
+hold rm 04a7dda8cafe              # remove inactive run record/artifacts
 hold rm web                   # remove profile web, subject to safety checks
-hold rm --force 04a7dda8      # stop and remove one active run ID
+hold rm --force 04a7dda8cafe      # stop and remove one active run ID
 ```
 
 `rm --force` should be concrete-run focused. If given a profile name that resolves to multiple active run IDs, refuse and show candidates unless a future explicit all-instances policy is designed.
@@ -933,8 +933,8 @@ Example:
 ```text
 hold> show runs
 RUNID     PROFILE    STATE
-a3f7b2c1  web        running
-9d4e8f02  report     running
+a3f7b2c1cafe  web        running
+9d4e8f02cafe  report     running
 ```
 
 In the captive CLI, `alias` means an operator-facing command/name alias table. It must not revive the old “alias as launch definition” model; profiles remain launch definitions.
@@ -1115,7 +1115,7 @@ operator command where that wording fits the mode.
 
 ### 4.7 Rejected prompt/navigation prototype
 
-Earlier 0.4 branch work experimented with slash/path/object prompts such as `hold(profile)#`, `hold(profile:web)#`, and `hold(runid:04a7dda8)#`. That model is rejected for the 0.4 captive CLI. Do not implement or preserve it as product code.
+Earlier 0.4 branch work experimented with slash/path/object prompts such as `hold(profile)#`, `hold(profile:web)#`, and `hold(runid:04a7dda8cafe)#`. That model is rejected for the 0.4 captive CLI. Do not implement or preserve it as product code.
 
 The 0.4 captive CLI target is the Cisco IOS mode model above:
 

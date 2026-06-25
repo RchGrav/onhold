@@ -1097,21 +1097,21 @@ int hold_cmd_elevated_capability_action(const struct hold_invocation *inv,
     }
 
     if (!strcmp(command, "start")) {
-        if (strcmp(runid_sel, "00000000") != 0) {
-            fprintf(stderr, "hold: error: start capability requires selector 00000000\n");
+        if (strcmp(runid_sel, "000000000000") != 0) {
+            fprintf(stderr, "hold: error: start capability requires selector 000000000000\n");
             return 5;
         }
         return hold_perform_profile_start(inv, system_store, tail, console_mode, hash, alias);
     }
 
-    if (strcmp(runid_sel, "00000000") == 0) {
-        fprintf(stderr, "hold: error: selector 00000000 is only valid for start\n");
+    if (strcmp(runid_sel, "000000000000") == 0) {
+        fprintf(stderr, "hold: error: selector 000000000000 is only valid for start\n");
         return 5;
     }
 
-    if (strcmp(runid_sel, "ffffffff") == 0) {
+    if (strcmp(runid_sel, "ffffffffffff") == 0) {
         if (!hold_command_all_allowed(command)) {
-            fprintf(stderr, "hold: error: selector ffffffff is not valid for %s\n", command);
+            fprintf(stderr, "hold: error: selector ffffffffffff is not valid for %s\n", command);
             return 5;
         }
         struct alias_match_list matches;

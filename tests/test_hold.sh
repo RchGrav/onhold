@@ -458,7 +458,7 @@ setup_suite_actors
 require_tools
 
 extract_id() {
-  sed -n -e '/^[0-9a-f]\{8\}$/p' -e 's/^hold: id=\([0-9a-f][0-9a-f]*\).*/\1/p' | head -n1
+  sed -n -e '/^[0-9a-f]\{12\}$/p' -e 's/^hold: id=\([0-9a-f][0-9a-f]*\).*/\1/p' | head -n1
 }
 
 record_pgid() {
@@ -511,6 +511,7 @@ test_lifecycle() {
   out=$("$HOLD_BIN" -d sleep 300 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
+  printf '%s\n' "$id" | grep -Eq '^[0-9a-f]{12}$' || return 1
   printf '%s\n' "$out" | grep -Fqx "hold  started  $id   $sleep_bin 300"
   printf '%s\n' "$out" | grep -Eq '^         log      .+/.+\.log$'
   printf '%s\n' "$out" | grep -Eq "^         stop     hold stop $id$"
@@ -597,13 +598,13 @@ test_exec_replacement_remains_controllable() {
 
 test_corrupt_record_handling() {
   ensure_user_fixture_store || return 1
-  printf 'garbage\n' > "$HOME/.local/state/hold/badbad00.json" || return 1
+  printf 'garbage\n' > "$HOME/.local/state/hold/badbad00cafe.json" || return 1
   "$HOLD_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  ! grep -q '^badbad00' "$TEST_ROOT/list.out"
+  ! grep -q '^badbad00cafe' "$TEST_ROOT/list.out"
   ! grep -Eq '^0[[:space:]]' "$TEST_ROOT/list.out"
-  grep -q 'warning: skipping corrupt record badbad00.json' "$TEST_ROOT/list.err"
+  grep -q 'warning: skipping corrupt record badbad00cafe.json' "$TEST_ROOT/list.err"
   "$HOLD_BIN" prune >/dev/null || return 1
-  [ ! -e "$HOME/.local/state/hold/badbad00.json" ]
+  [ ! -e "$HOME/.local/state/hold/badbad00cafe.json" ]
 }
 
 test_deep_json_record_rejected_not_crashed() {
@@ -613,22 +614,22 @@ test_deep_json_record_rejected_not_crashed() {
   for i in $(seq 1 80); do json="${json}["; done
   json="${json}0"
   for i in $(seq 1 80); do json="${json}]"; done
-  json="${json},\"version\":1,\"id\":\"abc12445\",\"pid\":12345,\"pgid\":12345,\"sid\":12345,\"start_unix_ns\":0,\"argv\":[\"x\"],\"cmdline_display\":\"x\",\"uid\":0,\"gid\":0,\"proc_starttime_ticks\":0,\"exe_dev\":0,\"exe_ino\":0}"
-  printf '%s\n' "$json" > "$HOME/.local/state/hold/abc12445.json" || return 1
+  json="${json},\"version\":1,\"id\":\"abc12445cafe\",\"pid\":12345,\"pgid\":12345,\"sid\":12345,\"start_unix_ns\":0,\"argv\":[\"x\"],\"cmdline_display\":\"x\",\"uid\":0,\"gid\":0,\"proc_starttime_ticks\":0,\"exe_dev\":0,\"exe_ino\":0}"
+  printf '%s\n' "$json" > "$HOME/.local/state/hold/abc12445cafe.json" || return 1
   "$HOLD_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  ! grep -q '^abc12445' "$TEST_ROOT/list.out" || return 1
-  grep -q 'warning: skipping corrupt record abc12445.json' "$TEST_ROOT/list.err"
+  ! grep -q '^abc12445cafe' "$TEST_ROOT/list.out" || return 1
+  grep -q 'warning: skipping corrupt record abc12445cafe.json' "$TEST_ROOT/list.err"
 }
 
 test_symlinked_record_rejected() {
   ensure_user_fixture_store || return 1
   cat > "$TEST_ROOT/record-target.json" <<'JSON'
-{"version":1,"id":"abc12545","pid":12345,"pgid":12345,"sid":12345,"start_unix_ns":0,"argv":["x"],"cmdline_display":"x","uid":0,"gid":0,"proc_starttime_ticks":0,"exe_dev":0,"exe_ino":0}
+{"version":1,"id":"abc12545cafe","pid":12345,"pgid":12345,"sid":12345,"start_unix_ns":0,"argv":["x"],"cmdline_display":"x","uid":0,"gid":0,"proc_starttime_ticks":0,"exe_dev":0,"exe_ino":0}
 JSON
-  ln -s "$TEST_ROOT/record-target.json" "$HOME/.local/state/hold/abc12545.json" || return 1
+  ln -s "$TEST_ROOT/record-target.json" "$HOME/.local/state/hold/abc12545cafe.json" || return 1
   "$HOLD_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  ! grep -q '^abc12545' "$TEST_ROOT/list.out" || return 1
-  grep -q 'warning: skipping corrupt record abc12545.json' "$TEST_ROOT/list.err"
+  ! grep -q '^abc12545cafe' "$TEST_ROOT/list.out" || return 1
+  grep -q 'warning: skipping corrupt record abc12545cafe.json' "$TEST_ROOT/list.err"
 }
 
 test_symlinked_log_rejected() {
@@ -653,19 +654,19 @@ test_symlinked_log_rejected() {
 
 test_invalid_pgid_record() {
   ensure_user_fixture_store || return 1
-  cat > "$HOME/.local/state/hold/abc12345.json" <<'JSON'
-{"version":1,"id":"abc12345","pid":12345,"pgid":0,"sid":12345,"start_unix_ns":0,"argv":["x"],"cmdline_display":"x","uid":0,"gid":0,"proc_starttime_ticks":0,"exe_dev":0,"exe_ino":0}
+  cat > "$HOME/.local/state/hold/abc12345cafe.json" <<'JSON'
+{"version":1,"id":"abc12345cafe","pid":12345,"pgid":0,"sid":12345,"start_unix_ns":0,"argv":["x"],"cmdline_display":"x","uid":0,"gid":0,"proc_starttime_ticks":0,"exe_dev":0,"exe_ino":0}
 JSON
   "$HOLD_BIN" list >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  ! grep -q '^abc12345' "$TEST_ROOT/list.out"
+  ! grep -q '^abc12345cafe' "$TEST_ROOT/list.out"
 }
 
 test_orphan_log_cleanup() {
   ensure_user_fixture_store || return 1
-  : > "$HOME/.local/state/hold/a1b2c3d4.log" || return 1
-  : > "$HOME/.local/state/hold/deadbeef.log" || return 1
+  : > "$HOME/.local/state/hold/a1b2c3d4e5f6.log" || return 1
+  : > "$HOME/.local/state/hold/deadbeefcafe.log" || return 1
   "$HOLD_BIN" prune >/dev/null || return 1
-  [ ! -e "$HOME/.local/state/hold/a1b2c3d4.log" ] && [ ! -e "$HOME/.local/state/hold/deadbeef.log" ]
+  [ ! -e "$HOME/.local/state/hold/a1b2c3d4e5f6.log" ] && [ ! -e "$HOME/.local/state/hold/deadbeefcafe.log" ]
 }
 
 test_id_sanitization() {
@@ -2510,7 +2511,7 @@ test_system_alias_action_self_elevates_alias() {
   local hash rc
   hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   write_public_alias_fixture web-test "$hash" || return 1
-  write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z web-test || return 1
+  write_public_index_fixture abc12345cafe running 2026-06-15T18:42:11Z web-test || return 1
   make_fake_sudo || return 1
   set +e
   "$HOLD_BIN" stop web-test >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
@@ -2520,7 +2521,7 @@ test_system_alias_action_self_elevates_alias() {
   args=()
   while IFS= read -r line; do args+=("$line"); done < "$HOLD_FAKE_SUDO_ARGV"
   [ "${args[4]}" = "stop" ] || return 1
-  [ "${args[5]}" = "abc12345" ] || return 1
+  [ "${args[5]}" = "abc12345cafe" ] || return 1
   [ "${args[6]}" = "web-test" ] || return 1
   [ "${args[7]}" = "$hash" ] || return 1
 }
@@ -2538,7 +2539,7 @@ test_system_alias_start_self_elevates_alias() {
   args=()
   while IFS= read -r line; do args+=("$line"); done < "$HOLD_FAKE_SUDO_ARGV"
   [ "${args[4]}" = "start" ] || return 1
-  [ "${args[5]}" = "00000000" ] || return 1
+  [ "${args[5]}" = "000000000000" ] || return 1
   [ "${args[6]}" = "web-test" ] || return 1
   [ "${args[7]}" = "$hash" ] || return 1
 }
@@ -2779,7 +2780,7 @@ test_elevated_capability_start_and_stop_validate_alias_hash() {
   as_root "$safe" stop "$id" >/dev/null || return 1
   as_root "$safe" prune "$id" >/dev/null || return 1
 
-  start_out=$(as_root "$safe" --system --elevated start 00000000 web-cap "$hash" 2>&1) || return 1
+  start_out=$(as_root "$safe" --system --elevated start 000000000000 web-cap "$hash" 2>&1) || return 1
   cap_id=$(printf '%s\n' "$start_out" | extract_id)
   [ -n "$cap_id" ] || return 1
   root_grep '"alias": "web-cap"' "$HOLD_TEST_SYSTEM_STATE_DIR/runs/$cap_id.json" || return 1
@@ -2806,9 +2807,9 @@ test_raw_start_does_not_steal_trailing_system() {
 }
 
 test_public_root_index_list_is_redacted() {
-  write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z || return 1
+  write_public_index_fixture abc12345cafe running 2026-06-15T18:42:11Z || return 1
   "$HOLD_BIN" list --iso >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  grep -Eq '^abc12345[[:space:]]+unknown[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+-[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || return 1
+  grep -Eq '^abc12345cafe[[:space:]]+unknown[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+-[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || return 1
   ! grep -q 'secret' "$TEST_ROOT/list.out"
 }
 
@@ -2840,10 +2841,10 @@ test_explicit_user_target() {
 
 test_action_self_elevation_uses_argv_fork_wait() {
   local rc
-  write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z || return 1
+  write_public_index_fixture abc12345cafe running 2026-06-15T18:42:11Z || return 1
   make_fake_sudo || return 1
   set +e
-  "$HOLD_BIN" stop abc12345 >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
+  "$HOLD_BIN" stop abc12345cafe >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
   rc=$?
   set -e
   [ "$rc" -eq 77 ] || return 1
@@ -2855,17 +2856,17 @@ test_action_self_elevation_uses_argv_fork_wait() {
   [ "${args[2]}" = "--system" ] || return 1
   [ "${args[3]}" = "--elevated" ] || return 1
   [ "${args[4]}" = "stop" ] || return 1
-  [ "${args[5]}" = "system:abc12345" ] || return 1
+  [ "${args[5]}" = "system:abc12345cafe" ] || return 1
   ! grep -qx -- 'sh\|-c' "$HOLD_FAKE_SUDO_ARGV"
 }
 
 test_elevated_action_returns_child_status() {
   local rc
-  write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z || return 1
+  write_public_index_fixture abc12345cafe running 2026-06-15T18:42:11Z || return 1
   make_fake_sudo || return 1
   export HOLD_FAKE_SUDO_RC=42
   set +e
-  "$HOLD_BIN" kill abc12345 >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
+  "$HOLD_BIN" kill abc12345cafe >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
   rc=$?
   set -e
   [ "$rc" -eq 42 ]
@@ -2873,10 +2874,10 @@ test_elevated_action_returns_child_status() {
 
 test_sudo_exec_failure_returns_clean_error() {
   local rc
-  write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z || return 1
+  write_public_index_fixture abc12345cafe running 2026-06-15T18:42:11Z || return 1
   export HOLD_TEST_SUDO_PROG="$TEST_ROOT/missing-sudo"
   set +e
-  "$HOLD_BIN" stop abc12345 >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
+  "$HOLD_BIN" stop abc12345cafe >"$TEST_ROOT/stdout" 2>"$TEST_ROOT/stderr"
   rc=$?
   set -e
   [ "$rc" -eq 127 ] || return 1
@@ -2908,20 +2909,20 @@ test_system_switch_canonicalizes_owned_command() {
   local rc
   make_fake_sudo || return 1
   set +e
-  "$HOLD_BIN" --system stop abc12345 >/dev/null 2>"$TEST_ROOT/one.err"
+  "$HOLD_BIN" --system stop abc12345cafe >/dev/null 2>"$TEST_ROOT/one.err"
   rc=$?
   set -e
   [ "$rc" -eq 77 ] || return 1
   cp "$HOLD_FAKE_SUDO_ARGV" "$TEST_ROOT/one.argv" || return 1
   set +e
-  "$HOLD_BIN" stop abc12345 --system >/dev/null 2>"$TEST_ROOT/two.err"
+  "$HOLD_BIN" stop abc12345cafe --system >/dev/null 2>"$TEST_ROOT/two.err"
   rc=$?
   set -e
   [ "$rc" -eq 77 ] || return 1
   cmp -s "$TEST_ROOT/one.argv" "$HOLD_FAKE_SUDO_ARGV" || return 1
   grep -qx -- '--system' "$TEST_ROOT/one.argv" || return 1
   grep -qx -- '--elevated' "$TEST_ROOT/one.argv" || return 1
-  tail -n 2 "$TEST_ROOT/one.argv" | grep -qx 'abc12345'
+  tail -n 2 "$TEST_ROOT/one.argv" | grep -qx 'abc12345cafe'
 
   set +e
   "$HOLD_BIN" --system run -d -- /bin/true --child-flag >/dev/null 2>"$TEST_ROOT/run-system.err"
@@ -3000,7 +3001,7 @@ test_system_raw_self_elevation_preserves_child_switches_and_delimiter() {
 test_elevated_requires_root() {
   local rc
   set +e
-  "$HOLD_BIN" --elevated stop abc12345 >/dev/null 2>"$TEST_ROOT/elevated.err"
+  "$HOLD_BIN" --elevated stop abc12345cafe >/dev/null 2>"$TEST_ROOT/elevated.err"
   rc=$?
   set -e
   [ "$rc" -eq 3 ] || return 1
@@ -4255,13 +4256,13 @@ test_signal_refuses_tampered_pgid() {
 
 test_elevated_child_signal_maps_to_128_plus_sig() {
   local rc fakesudo
-  write_public_index_fixture abc12345 running 2026-06-15T18:42:11Z || return 1
+  write_public_index_fixture abc12345cafe running 2026-06-15T18:42:11Z || return 1
   fakesudo="$TEST_ROOT/fakebin-sig/sudo"
   mkdir -p "$TEST_ROOT/fakebin-sig" || return 1
   printf '#!/usr/bin/env bash\nkill -TERM $$\nsleep 5\n' >"$fakesudo" || return 1
   chmod 755 "$TEST_ROOT/fakebin-sig" "$fakesudo" || return 1
   export HOLD_TEST_SUDO_PROG="$fakesudo"
-  set +e; "$HOLD_BIN" kill abc12345 >/dev/null 2>&1; rc=$?; set -e
+  set +e; "$HOLD_BIN" kill abc12345cafe >/dev/null 2>&1; rc=$?; set -e
   [ "$rc" -eq 143 ] || { echo "signal-killed sudo child: rc=$rc (want 143 = 128+SIGTERM)" >&2; return 1; }
 }
 
@@ -4519,7 +4520,7 @@ test_multi_n_exact_count_and_invalid() {
   id=$("$HOLD_BIN" -d sleep 60 2>&1 | extract_id) || return 1
   "$HOLD_BIN" profile save "$id" as web-n >/dev/null || return 1
   "$HOLD_BIN" stop "$id" >/dev/null; "$HOLD_BIN" prune "$id" >/dev/null
-  ids=$("$HOLD_BIN" start web-n --multi 3 2>/dev/null | sed -n '/^[0-9a-f]\{8\}$/p')
+  ids=$("$HOLD_BIN" start web-n --multi 3 2>/dev/null | sed -n '/^[0-9a-f]\{12\}$/p')
   [ "$(printf '%s\n' "$ids" | grep -c .)" -eq 3 ] || { echo "--multi 3 did not print 3 ids" >&2; return 1; }
   running=$("$HOLD_BIN" list 2>/dev/null | grep -c running || true)
   [ "$running" -ge 3 ] || { echo "expected >=3 running, got $running" >&2; return 1; }
@@ -4531,7 +4532,7 @@ test_multi_n_exact_count_and_invalid() {
   id2=$("$HOLD_BIN" run -d --force web-n 2>&1 | extract_id); [ -n "$id2" ] || return 1
   [ "$id2" != "$id" ] || { echo "run --force reused the original id" >&2; return 1; }
   "$HOLD_BIN" stop web-n --all >/dev/null 2>&1 || true
-  ids=$("$HOLD_BIN" run -d --multi 2 web-n 2>/dev/null | sed -n '/^[0-9a-f]\{8\}$/p')
+  ids=$("$HOLD_BIN" run -d --multi 2 web-n 2>/dev/null | sed -n '/^[0-9a-f]\{12\}$/p')
   [ "$(printf '%s\n' "$ids" | grep -c .)" -eq 2 ] || { echo "run --multi 2 did not print 2 ids" >&2; return 1; }
   "$HOLD_BIN" stop web-n --all >/dev/null 2>&1 || true
   set +e; "$HOLD_BIN" start web-n --multi >/dev/null 2>"$TEST_ROOT/mm.err"; rc=$?; set -e

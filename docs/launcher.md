@@ -6,7 +6,7 @@ Outer loop bridge: deep dive for quickstart Step 1, Start One Thing.
 
 When you run `hold <cmd...>`, the launcher creates a durable run ID and streams the log in the foreground by default. Add `-d`/`--detach` when the run should survive after the CI step or shell that started it exits.
 
-The end result of a successful detached start is a bare 8-hex run ID on stdout, a private JSON record, a log file, and optionally a console socket. Foreground Docker-shaped starts still create the same run ID and records, then stream the log to the terminal. Human status goes through `sig_note`, which writes to stderr unless `--quiet` is set.
+The end result of a successful detached start is a bare 12-hex run ID on stdout, a private JSON record, a log file, and optionally a console socket. Foreground Docker-shaped starts still create the same run ID and records, then stream the log to the terminal. Human status goes through `sig_note`, which writes to stderr unless `--quiet` is set.
 
 ## Start forms
 

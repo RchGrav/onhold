@@ -168,8 +168,8 @@ material, not normal action targets.
   hostnames, and other context so aliases, profiles, and grants remain stable.
 - Profile starts inherit On Hold's current environment unchanged; privilege
   crossing continues to rely on sudo's standard `env_reset` behavior.
-- Run IDs are now generated as 8 lowercase hex characters, with `00000000` and
-  `ffffffff` reserved for internal capability selectors.
+- Run IDs are now generated as 8 lowercase hex characters, with `000000000000` and
+  `ffffffffffff` reserved for internal capability selectors.
 - Alias-started runs record their alias label in private run records and, for
   root-managed runs, in the redacted public index.
 - Root-managed alias self-elevation now carries the internal capability argv

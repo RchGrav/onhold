@@ -41,7 +41,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define ID_HEX_LEN 8
+#define ID_HEX_LEN 12
 #define PROFILE_HASH_HEX_LEN 64
 #define PROFILE_HASH_STR_LEN (PROFILE_HASH_HEX_LEN + 1)
 #define ALIAS_MAX_LEN 64

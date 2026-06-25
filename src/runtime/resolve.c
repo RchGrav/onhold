@@ -480,7 +480,7 @@ static int append_public_alias_elevation_target(struct hold_resolved_target **ta
             hold_free_alias_match_list(&matches);
             return -2;
         }
-        int rc = append_capability_target(targets, count, system_store, "ffffffff", alias, hash) == 0 ? 1 : -1;
+        int rc = append_capability_target(targets, count, system_store, "ffffffffffff", alias, hash) == 0 ? 1 : -1;
         hold_free_alias_match_list(&matches);
         return rc;
     }
@@ -848,7 +848,7 @@ int hold_maybe_elevate_requested_system_targets(const char *program,
                         free(canon);
                         return 1;
                     }
-                    selector = "ffffffff";
+                    selector = "ffffffffffff";
                 } else {
                     snprintf(selector_buf, sizeof(selector_buf), "%s", matches.items[0].id);
                     selector = selector_buf;

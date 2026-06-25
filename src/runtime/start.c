@@ -1077,7 +1077,7 @@ int hold_elevate_start_token(const char *program,
         }
     }
     if (hash && hold_valid_alias(token_atom) && hold_valid_profile_hash(hash)) {
-        canon[n++] = "00000000";
+        canon[n++] = "000000000000";
         canon[n++] = (char *)token_atom;
         canon[n++] = (char *)hash;
         return hold_elevate_with_sudo_canonical(program, n, canon);

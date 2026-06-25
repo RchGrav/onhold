@@ -12,7 +12,7 @@ The resolver is split because On Hold has several addressing forms and two autho
 
 Targets for actions may be:
 
-- A full 8-character run ID.
+- A full 12-character run ID.
 - A leading run ID prefix.
 - A profile name.
 - `user:<target>` to force user-local lookup.
@@ -91,7 +91,7 @@ Profiles are filtered by command because the same profile label can be attached 
 A normal user cannot read root-private records, so root-managed profile actions begin with public data. `append_public_alias_elevation_target` uses public profile metadata and public index files to build either:
 
 - a concrete run selector plus profile/hash capability, or
-- the `ffffffff` selector for approved multi-target `--all` actions.
+- the `ffffffffffff` selector for approved multi-target `--all` actions.
 
 Root On Hold later verifies that the profile still maps to the supplied hash and that concrete run selectors are recorded under that profile. The public side selects intent; the root side rechecks authority.
 
