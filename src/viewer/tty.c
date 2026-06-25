@@ -67,6 +67,7 @@ struct viewer_state {
     off_t next_offset;
     off_t tail_anchor;
     off_t newer_scan_offset;
+    off_t newer_floor_offset;
     bool local_scan_limit_active;
     off_t local_scan_limit_end;
     size_t cache_bytes_read;
@@ -88,7 +89,9 @@ struct viewer_state {
  * request a new bounded scan.
  *
  * In follow mode, `at_live_edge` means the next refill is anchored at EOF.
- * `tail_anchor` is the newest file size the viewer has observed, while
+ * `tail_anchor` is the newest file size the viewer has observed.
+ * `newer_floor_offset` is the file size at the moment the user left the live
+ * edge; only matches at or beyond that floor count as "newer below".
  * `newer_scan_offset` is the newest appended byte offset examined for the
  * browsed-away notification. When the user browses away, each follow tick scans
  * a bounded appended slice and advances `newer_scan_offset`; sparse matches in
@@ -306,6 +309,7 @@ static void reset_filter_navigation(struct viewer_state *state) {
             if (browsed_anchor < 0) browsed_anchor = 0;
             state->start_offset = browsed_anchor;
             state->newer_scan_offset = state->tail_anchor;
+            state->newer_floor_offset = state->tail_anchor;
             state->scan_mode = VIEWER_SCAN_FORWARD;
             state->at_live_edge = false;
             if (state->next_offset > browsed_anchor) {
@@ -315,6 +319,7 @@ static void reset_filter_navigation(struct viewer_state *state) {
         } else {
             if (end >= 0) state->start_offset = end;
             state->newer_scan_offset = state->tail_anchor;
+            state->newer_floor_offset = state->tail_anchor;
             state->scan_mode = VIEWER_SCAN_BACKWARD;
             state->at_live_edge = true;
             state->local_scan_limit_active = false;
@@ -325,6 +330,7 @@ static void reset_filter_navigation(struct viewer_state *state) {
         state->start_offset = 0;
         state->tail_anchor = 0;
         state->newer_scan_offset = 0;
+        state->newer_floor_offset = 0;
         state->scan_mode = VIEWER_SCAN_FORWARD;
         state->at_live_edge = false;
         state->newer_available = false;
@@ -350,6 +356,7 @@ static int appended_range_has_match(struct viewer_state *state, off_t start, off
 
     size_t visible_rows = state->rows > 2 ? state->rows - 2 : 1;
     opts.scan_byte_budget = visible_rows * VIEWER_SCAN_BYTES_PER_ROW;
+    if (opts.scan_byte_budget < 1024u * 1024u) opts.scan_byte_budget = 1024u * 1024u;
     off_t appended_bytes = end - start;
     if (appended_bytes > 0 && (uintmax_t)appended_bytes < (uintmax_t)opts.scan_byte_budget) {
         opts.scan_byte_budget = (size_t)appended_bytes;
@@ -372,6 +379,7 @@ static int handle_follow_tick(struct viewer_state *state) {
         if (state->at_live_edge) {
             state->start_offset = end;
             state->newer_scan_offset = end;
+            state->newer_floor_offset = end;
             state->newer_available = false;
             cache_invalidate(state);
             changed = true;
@@ -396,6 +404,38 @@ static int handle_follow_tick(struct viewer_state *state) {
         changed = true;
     }
     return changed ? 1 : 0;
+}
+
+static int mark_newer_before_quit(struct viewer_state *state) {
+    if (!state->follow || state->at_live_edge || state->newer_available) return 0;
+    off_t end = lseek(state->fd, 0, SEEK_END);
+    if (end < 0) return -1;
+    if (end > state->tail_anchor) state->tail_anchor = end;
+    if (state->newer_scan_offset >= state->tail_anchor) {
+        struct hold_log_filter_options opts;
+        configure_filter_opts(state, &opts);
+        opts.visible_capacity = 1;
+        opts.max_results = 1;
+        opts.match_ring_capacity = 1;
+        struct hold_log_filter_result tail_result;
+        if (hold_log_filter_backward_fd(state->fd, &opts, state->tail_anchor, 1024u * 1024u, &tail_result) != 0) return -1;
+        bool has_tail_match = tail_result.line_count > 0 && tail_result.line_offsets[0] >= state->newer_floor_offset;
+        hold_log_filter_result_free(&tail_result);
+        if (has_tail_match) {
+            state->newer_available = true;
+            return 1;
+        }
+        return 0;
+    }
+    off_t scanned_to = state->newer_scan_offset;
+    bool has_match = false;
+    if (appended_range_has_match(state, state->newer_scan_offset, state->tail_anchor, &has_match, &scanned_to) != 0) return -1;
+    if (scanned_to > state->newer_scan_offset) state->newer_scan_offset = scanned_to;
+    if (has_match) {
+        state->newer_available = true;
+        return 1;
+    }
+    return 0;
 }
 
 static bool same_line(const char *a, const char *b) {
@@ -457,6 +497,7 @@ static int refill_cache(struct viewer_state *state) {
                 state->start_offset = end;
                 state->tail_anchor = end;
                 state->newer_scan_offset = end;
+                state->newer_floor_offset = end;
             }
         }
         if (hold_log_filter_backward_fd(state->fd, &opts, state->start_offset, scan_budget, &result) != 0) return -1;
@@ -707,6 +748,7 @@ static void page_down(struct viewer_state *state) {
                     state->start_offset = end;
                     state->tail_anchor = end;
                     state->newer_scan_offset = end;
+                    state->newer_floor_offset = end;
                 }
                 state->at_live_edge = true;
                 state->newer_available = false;
@@ -740,6 +782,7 @@ static void enter_browsing_mode(struct viewer_state *state, bool stabilize_visib
     if (!state->follow || !state->at_live_edge) return;
     state->at_live_edge = false;
     state->newer_scan_offset = state->tail_anchor;
+    state->newer_floor_offset = state->tail_anchor;
     if (stabilize_visible_page && state->cache_valid && state->visible_count > 0) {
         state->start_offset = state->visible[0].offset;
         state->scan_mode = VIEWER_SCAN_FORWARD;
@@ -811,6 +854,7 @@ int hold_log_viewer_tty_fd(int fd,
             state.start_offset = end;
             state.tail_anchor = end;
             state.newer_scan_offset = end;
+            state.newer_floor_offset = end;
         }
         state.scan_mode = VIEWER_SCAN_BACKWARD;
     }
@@ -848,6 +892,14 @@ int hold_log_viewer_tty_fd(int fd,
             continue;
         }
         if (key == VIEWER_KEY_QUIT) {
+            int quit_tick = mark_newer_before_quit(&state);
+            if (quit_tick < 0) {
+                rc = -1;
+                break;
+            }
+            if (quit_tick > 0 && render(&state) != 0) {
+                rc = -1;
+            }
             break;
         }
         if (key == VIEWER_KEY_DOWN) {
@@ -906,6 +958,14 @@ int hold_log_viewer_tty_fd(int fd,
             }
         }
         if (rc != 0) break;
+    }
+    if (rc == 0) {
+        int final_tick = mark_newer_before_quit(&state);
+        if (final_tick < 0) {
+            rc = -1;
+        } else if (final_tick > 0 && render(&state) != 0) {
+            rc = -1;
+        }
     }
     raw_terminal_leave(&raw);
     free_examples(&state);

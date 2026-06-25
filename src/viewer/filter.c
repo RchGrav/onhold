@@ -282,6 +282,7 @@ int hold_log_filter_fd(int fd,
         }
         if (opts.scan_byte_budget > 0 && result->bytes_read >= opts.scan_byte_budget && !done) {
             result->scan_limited = true;
+            if (next_offset > result->next_offset) result->next_offset = next_offset;
             break;
         }
     }
