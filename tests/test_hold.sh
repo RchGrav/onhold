@@ -3026,13 +3026,19 @@ test_docker_unsupported_options_fail_loudly() {
   [ "$rc" -eq 5 ] || { echo "bare --restart: rc=$rc (want 5)" >&2; return 1; }
   grep -q "not supported by Hold yet" "$TEST_ROOT/docker-restart.err" || { cat "$TEST_ROOT/docker-restart.err" >&2; return 1; }
 
+  "$HOLD_BIN" start /bin/true --detach-keys ctrl-p,ctrl-q >/dev/null 2>"$TEST_ROOT/docker-detach-keys-default.err" || {
+    cat "$TEST_ROOT/docker-detach-keys-default.err" >&2
+    return 1
+  }
+
   set +e
-  "$HOLD_BIN" start /bin/true --detach-keys ctrl-p,ctrl-q >/dev/null 2>"$TEST_ROOT/docker-detach-keys.err"
+  "$HOLD_BIN" start /bin/true --detach-keys ctrl-a >/dev/null 2>"$TEST_ROOT/docker-detach-keys-custom.err"
   rc=$?
   set -e
-  [ "$rc" -eq 5 ] || { echo "start --detach-keys: rc=$rc (want 5)" >&2; return 1; }
-  grep -q "not supported by Hold yet" "$TEST_ROOT/docker-detach-keys.err" || { cat "$TEST_ROOT/docker-detach-keys.err" >&2; return 1; }
+  [ "$rc" -eq 5 ] || { echo "custom --detach-keys: rc=$rc (want 5)" >&2; return 1; }
+  grep -q "custom --detach-keys is not supported yet" "$TEST_ROOT/docker-detach-keys-custom.err" || { cat "$TEST_ROOT/docker-detach-keys-custom.err" >&2; return 1; }
 
+  "$HOLD_BIN" prune all >/dev/null 2>&1 || true
   "$HOLD_BIN" ps -a >"$TEST_ROOT/docker-unsupported-ps.out" || return 1
   ! grep -q '/bin/true' "$TEST_ROOT/docker-unsupported-ps.out" || { cat "$TEST_ROOT/docker-unsupported-ps.out" >&2; return 1; }
 }

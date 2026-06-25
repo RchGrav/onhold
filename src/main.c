@@ -113,6 +113,21 @@ static int reject_unsupported_docker_option(const char *arg) {
     return 5;
 }
 
+static bool docker_detach_keys_are_default(const char *value) {
+    if (!value) return false;
+    return !strcmp(value, "ctrl-p,ctrl-q") ||
+           !strcmp(value, "ctrl-p ctrl-q") ||
+           !strcmp(value, "^P,^Q") ||
+           !strcmp(value, "^P ^Q");
+}
+
+static int validate_detach_keys_option(const char *value) {
+    if (docker_detach_keys_are_default(value)) return 0;
+    fprintf(stderr,
+            "hold: error: custom --detach-keys is not supported yet; the current TTY detach sequence is ctrl-p,ctrl-q\n");
+    return 5;
+}
+
 static int append_env_assignment(const char *arg, char ***env_out, int *envc_out) {
     const char *eq = arg ? strchr(arg, '=') : NULL;
     if (!arg || !*arg || !eq || eq == arg) {
@@ -479,9 +494,25 @@ int main(int argc, char **argv) {
             argi++;
             continue;
         }
-        if (!strcmp(argv[argi], "--detach-keys") || !strcmp(argv[argi], "--restart") ||
+        if (!strcmp(argv[argi], "--detach-keys")) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                return 5;
+            }
+            int detach_rc = validate_detach_keys_option(argv[argi + 1]);
+            if (detach_rc != 0) { hold_free_argv_alloc(docker_env, docker_envc); hold_free_argv_alloc(docker_ports, docker_portc); hold_free_argv_alloc(docker_volumes, docker_volumec); return detach_rc; }
+            argi += 2;
+            continue;
+        }
+        if (!strncmp(argv[argi], "--detach-keys=", 14)) {
+            int detach_rc = validate_detach_keys_option(argv[argi] + 14);
+            if (detach_rc != 0) { hold_free_argv_alloc(docker_env, docker_envc); hold_free_argv_alloc(docker_ports, docker_portc); hold_free_argv_alloc(docker_volumes, docker_volumec); return detach_rc; }
+            argi++;
+            continue;
+        }
+        if (!strcmp(argv[argi], "--restart") ||
             !strcmp(argv[argi], "--restart-delay") ||
-            !strncmp(argv[argi], "--detach-keys=", 14) || !strncmp(argv[argi], "--restart=", 10) ||
+            !strncmp(argv[argi], "--restart=", 10) ||
             !strncmp(argv[argi], "--restart-delay=", 16)) {
             int unsupported_rc = reject_unsupported_docker_option(argv[argi]);
             hold_free_argv_alloc(docker_env, docker_envc);
@@ -723,9 +754,38 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
-                (!strcmp(argv[i], "--detach-keys") || !strcmp(argv[i], "--restart") ||
+                !strcmp(argv[i], "--detach-keys")) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int detach_rc = validate_detach_keys_option(argv[++i]);
+                if (detach_rc != 0) {
+                    free(cmd_argv);
+                    hold_free_argv_alloc(docker_env, docker_envc);
+                    hold_free_argv_alloc(docker_ports, docker_portc);
+                    hold_free_argv_alloc(docker_volumes, docker_volumec);
+                    return detach_rc;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                !strncmp(argv[i], "--detach-keys=", 14)) {
+                int detach_rc = validate_detach_keys_option(argv[i] + 14);
+                if (detach_rc != 0) {
+                    free(cmd_argv);
+                    hold_free_argv_alloc(docker_env, docker_envc);
+                    hold_free_argv_alloc(docker_ports, docker_portc);
+                    hold_free_argv_alloc(docker_volumes, docker_volumec);
+                    return detach_rc;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                (!strcmp(argv[i], "--restart") ||
                  !strcmp(argv[i], "--restart-delay") ||
-                 !strncmp(argv[i], "--detach-keys=", 14) || !strncmp(argv[i], "--restart=", 10) ||
+                 !strncmp(argv[i], "--restart=", 10) ||
                  !strncmp(argv[i], "--restart-delay=", 16))) {
                 int unsupported_rc = reject_unsupported_docker_option(argv[i]);
                 free(cmd_argv);
