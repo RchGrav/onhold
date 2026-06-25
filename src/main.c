@@ -17,7 +17,9 @@ static bool parse_docker_run_flag(const char *arg,
                                   bool *privileged);
 static int append_env_assignment(const char *arg, char ***env_out, int *envc_out);
 static int append_metadata_value(const char *kind, const char *arg, char ***values_out, int *count_out);
-static int reject_unsupported_docker_option(const char *arg);
+static int parse_restart_policy_arg(const char *arg, char out[64]);
+static int parse_restart_delay_arg(const char *arg, int *out);
+static bool restart_policy_arg_enabled(const char *arg);
 static int append_env_file(const char *path, char ***env_out, int *envc_out);
 static int run_recipe_matches_profile(const struct hold_store *store,
                                       const char *name,
@@ -32,6 +34,8 @@ static int run_recipe_matches_profile(const struct hold_store *store,
                                       bool mode_interactive,
                                       bool mode_tty,
                                       bool mode_detach,
+                                      const char *restart_policy,
+                                      int restart_delay_seconds,
                                       bool *matched);
 static int ensure_named_run_profile(const struct hold_invocation *inv,
                                     const struct hold_store *store,
@@ -46,7 +50,9 @@ static int ensure_named_run_profile(const struct hold_invocation *inv,
                                     char **volumes,
                                     bool mode_interactive,
                                     bool mode_tty,
-                                    bool mode_detach);
+                                    bool mode_detach,
+                                    const char *restart_policy,
+                                    int restart_delay_seconds);
 static bool token_names_existing_profile(const struct hold_store *user_store,
                                          const struct hold_store *system_store,
                                          const char *token);
@@ -108,9 +114,48 @@ static bool parse_docker_run_flag(const char *arg,
     return false;
 }
 
-static int reject_unsupported_docker_option(const char *arg) {
-    fprintf(stderr, "hold: error: Docker option '%s' is not supported by Hold yet\n", arg && *arg ? arg : "<unknown>");
+static int parse_restart_policy_arg(const char *arg, char out[64]) {
+    if (!arg || !*arg) {
+        fprintf(stderr, "hold: error: --restart requires a policy\n");
+        return 5;
+    }
+    if (!strcmp(arg, "no") || !strcmp(arg, "always") || !strcmp(arg, "unless-stopped")) {
+        snprintf(out, 64, "%s", arg);
+        return 0;
+    }
+    if (!strncmp(arg, "on-failure", 10) && (arg[10] == '\0' || arg[10] == ':')) {
+        if (arg[10] == ':') {
+            char *end = NULL;
+            long n = strtol(arg + 11, &end, 10);
+            if (!end || *end || n < 0 || n > INT_MAX) {
+                fprintf(stderr, "hold: error: invalid --restart on-failure retry count '%s'\n", arg + 11);
+                return 5;
+            }
+        }
+        snprintf(out, 64, "%s", arg);
+        return 0;
+    }
+    fprintf(stderr, "hold: error: invalid --restart policy '%s'\n", arg);
     return 5;
+}
+
+static bool restart_policy_arg_enabled(const char *arg) {
+    return arg && *arg && strcmp(arg, "no") != 0;
+}
+
+static int parse_restart_delay_arg(const char *arg, int *out) {
+    if (!arg || !*arg) {
+        fprintf(stderr, "hold: error: --restart-delay requires seconds\n");
+        return 5;
+    }
+    char *end = NULL;
+    long n = strtol(arg, &end, 10);
+    if (!end || *end || n < 0 || n > INT_MAX) {
+        fprintf(stderr, "hold: error: invalid --restart-delay '%s'\n", arg);
+        return 5;
+    }
+    *out = (int)n;
+    return 0;
 }
 
 static bool docker_detach_keys_are_default(const char *value) {
@@ -233,6 +278,8 @@ static int run_recipe_matches_profile(const struct hold_store *store,
                                       bool mode_interactive,
                                       bool mode_tty,
                                       bool mode_detach,
+                                      const char *restart_policy,
+                                      int restart_delay_seconds,
                                       bool *matched) {
     *matched = false;
     struct hold_profile recipe;
@@ -254,6 +301,8 @@ static int run_recipe_matches_profile(const struct hold_store *store,
         hold_free_profile(&recipe);
         return -1;
     }
+    const char *want_restart = restart_policy_arg_enabled(restart_policy) ? restart_policy : NULL;
+    const char *have_restart = recipe.has_restart_policy && restart_policy_arg_enabled(recipe.restart_policy) ? recipe.restart_policy : NULL;
     bool same = recipe.argc == argc &&
                 recipe.envc == envc &&
                 recipe.portc == portc &&
@@ -261,6 +310,10 @@ static int run_recipe_matches_profile(const struct hold_store *store,
                 recipe.mode_interactive == mode_interactive &&
                 recipe.mode_tty == mode_tty &&
                 recipe.mode_detach == mode_detach &&
+                ((have_restart == NULL && want_restart == NULL) ||
+                 (have_restart && want_restart && !strcmp(have_restart, want_restart))) &&
+                ((want_restart == NULL && !recipe.has_restart_delay) ||
+                 (want_restart != NULL && recipe.restart_delay_seconds == restart_delay_seconds)) &&
                 !strcmp(recipe.binary_path, binary_path);
     for (int i = 0; same && i < argc; i++) {
         same = !strcmp(recipe.argv[i], normalized_argv[i]);
@@ -293,7 +346,9 @@ static int ensure_named_run_profile(const struct hold_invocation *inv,
                                     char **volumes,
                                     bool mode_interactive,
                                     bool mode_tty,
-                                    bool mode_detach) {
+                                    bool mode_detach,
+                                    const char *restart_policy,
+                                    int restart_delay_seconds) {
     if (!name) return 0;
     if (!hold_valid_alias(name)) {
         fprintf(stderr, "hold: error: invalid profile name '%s'\n", name);
@@ -309,7 +364,7 @@ static int ensure_named_run_profile(const struct hold_invocation *inv,
     }
     if (hold_alias_exists_in_store(store, name)) {
         bool matched = false;
-        int rc = run_recipe_matches_profile(store, name, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, &matched);
+        int rc = run_recipe_matches_profile(store, name, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, restart_policy, restart_delay_seconds, &matched);
         if (rc < 0) return 5;
         if (!matched) {
             fprintf(stderr,
@@ -335,7 +390,7 @@ static int ensure_named_run_profile(const struct hold_invocation *inv,
         hold_free_argv_alloc(profile_argv, argc);
         return 3;
     }
-    if (hold_alias_upsert_recipe_full(store, name, binary_path, argc, profile_argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach) != 0) {
+    if (hold_alias_upsert_recipe_full(store, name, binary_path, argc, profile_argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, restart_policy, restart_delay_seconds) != 0) {
         hold_free_argv_alloc(profile_argv, argc);
         hold_die_errno("hold: failed to write profile");
     }
@@ -408,6 +463,9 @@ int main(int argc, char **argv) {
     int docker_portc = 0;
     char **docker_volumes = NULL;
     int docker_volumec = 0;
+    char docker_restart_policy[64] = {0};
+    int docker_restart_delay_seconds = 0;
+    bool docker_restart_delay_seen = false;
     int multi_count = 1;
 
     while (argi < argc) {
@@ -510,15 +568,39 @@ int main(int argc, char **argv) {
             argi++;
             continue;
         }
-        if (!strcmp(argv[argi], "--restart") ||
-            !strcmp(argv[argi], "--restart-delay") ||
-            !strncmp(argv[argi], "--restart=", 10) ||
-            !strncmp(argv[argi], "--restart-delay=", 16)) {
-            int unsupported_rc = reject_unsupported_docker_option(argv[argi]);
-            hold_free_argv_alloc(docker_env, docker_envc);
-            hold_free_argv_alloc(docker_ports, docker_portc);
-            hold_free_argv_alloc(docker_volumes, docker_volumec);
-            return unsupported_rc;
+        if (!strcmp(argv[argi], "--restart")) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                return 5;
+            }
+            int restart_rc = parse_restart_policy_arg(argv[argi + 1], docker_restart_policy);
+            if (restart_rc != 0) { hold_free_argv_alloc(docker_env, docker_envc); hold_free_argv_alloc(docker_ports, docker_portc); hold_free_argv_alloc(docker_volumes, docker_volumec); return restart_rc; }
+            argi += 2;
+            continue;
+        }
+        if (!strncmp(argv[argi], "--restart=", 10)) {
+            int restart_rc = parse_restart_policy_arg(argv[argi] + 10, docker_restart_policy);
+            if (restart_rc != 0) { hold_free_argv_alloc(docker_env, docker_envc); hold_free_argv_alloc(docker_ports, docker_portc); hold_free_argv_alloc(docker_volumes, docker_volumec); return restart_rc; }
+            argi++;
+            continue;
+        }
+        if (!strcmp(argv[argi], "--restart-delay")) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                return 5;
+            }
+            int restart_rc = parse_restart_delay_arg(argv[argi + 1], &docker_restart_delay_seconds);
+            if (restart_rc != 0) { hold_free_argv_alloc(docker_env, docker_envc); hold_free_argv_alloc(docker_ports, docker_portc); hold_free_argv_alloc(docker_volumes, docker_volumec); return restart_rc; }
+            docker_restart_delay_seen = true;
+            argi += 2;
+            continue;
+        }
+        if (!strncmp(argv[argi], "--restart-delay=", 16)) {
+            int restart_rc = parse_restart_delay_arg(argv[argi] + 16, &docker_restart_delay_seconds);
+            if (restart_rc != 0) { hold_free_argv_alloc(docker_env, docker_envc); hold_free_argv_alloc(docker_ports, docker_portc); hold_free_argv_alloc(docker_volumes, docker_volumec); return restart_rc; }
+            docker_restart_delay_seen = true;
+            argi++;
+            continue;
         }
         if (!strcmp(argv[argi], "--rm")) {
             docker_rm = true;
@@ -783,16 +865,64 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
-                (!strcmp(argv[i], "--restart") ||
-                 !strcmp(argv[i], "--restart-delay") ||
-                 !strncmp(argv[i], "--restart=", 10) ||
-                 !strncmp(argv[i], "--restart-delay=", 16))) {
-                int unsupported_rc = reject_unsupported_docker_option(argv[i]);
-                free(cmd_argv);
-                hold_free_argv_alloc(docker_env, docker_envc);
-                hold_free_argv_alloc(docker_ports, docker_portc);
-                hold_free_argv_alloc(docker_volumes, docker_volumec);
-                return unsupported_rc;
+                !strcmp(argv[i], "--restart")) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int restart_rc = parse_restart_policy_arg(argv[++i], docker_restart_policy);
+                if (restart_rc != 0) {
+                    free(cmd_argv);
+                    hold_free_argv_alloc(docker_env, docker_envc);
+                    hold_free_argv_alloc(docker_ports, docker_portc);
+                    hold_free_argv_alloc(docker_volumes, docker_volumec);
+                    return restart_rc;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                !strncmp(argv[i], "--restart=", 10)) {
+                int restart_rc = parse_restart_policy_arg(argv[i] + 10, docker_restart_policy);
+                if (restart_rc != 0) {
+                    free(cmd_argv);
+                    hold_free_argv_alloc(docker_env, docker_envc);
+                    hold_free_argv_alloc(docker_ports, docker_portc);
+                    hold_free_argv_alloc(docker_volumes, docker_volumec);
+                    return restart_rc;
+                }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                !strcmp(argv[i], "--restart-delay")) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "usage: hold run [run-options] <cmd|profile> [args...]\n");
+                    free(cmd_argv);
+                    return 5;
+                }
+                int restart_rc = parse_restart_delay_arg(argv[++i], &docker_restart_delay_seconds);
+                if (restart_rc != 0) {
+                    free(cmd_argv);
+                    hold_free_argv_alloc(docker_env, docker_envc);
+                    hold_free_argv_alloc(docker_ports, docker_portc);
+                    hold_free_argv_alloc(docker_volumes, docker_volumec);
+                    return restart_rc;
+                }
+                docker_restart_delay_seen = true;
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
+                !strncmp(argv[i], "--restart-delay=", 16)) {
+                int restart_rc = parse_restart_delay_arg(argv[i] + 16, &docker_restart_delay_seconds);
+                if (restart_rc != 0) {
+                    free(cmd_argv);
+                    hold_free_argv_alloc(docker_env, docker_envc);
+                    hold_free_argv_alloc(docker_ports, docker_portc);
+                    hold_free_argv_alloc(docker_volumes, docker_volumec);
+                    return restart_rc;
+                }
+                docker_restart_delay_seen = true;
+                continue;
             }
             if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strcmp(argv[i], "--rm")) {
                 docker_rm = true;
@@ -901,6 +1031,14 @@ int main(int argc, char **argv) {
             free(cmd_argv);
             return arity_rc;
         }
+    }
+    if (docker_restart_delay_seen && !restart_policy_arg_enabled(docker_restart_policy)) {
+        fprintf(stderr, "hold: error: --restart-delay requires --restart with an active policy\n");
+        if (owned) free(cmd_argv);
+        hold_free_argv_alloc(docker_env, docker_envc);
+        hold_free_argv_alloc(docker_ports, docker_portc);
+        hold_free_argv_alloc(docker_volumes, docker_volumec);
+        return 5;
     }
 
     struct hold_invocation inv;
@@ -1047,13 +1185,17 @@ int main(int argc, char **argv) {
                                           docker_envc, docker_env,
                                           docker_portc, docker_ports,
                                           docker_volumec, docker_volumes,
-                                          docker_interactive, docker_tty, docker_detach);
+                                          docker_interactive, docker_tty, docker_detach,
+                                          docker_restart_policy[0] ? docker_restart_policy : NULL,
+                                          docker_restart_delay_seconds);
             if (rc == 0) {
                 rc = hold_perform_start_with_metadata_options(&inv, &start_store, tail, console_mode, docker_rm, interactive_stdin,
                                                               cmd_argc, cmd_argv, NULL, docker_name,
                                                               docker_envc, docker_env,
                                                               docker_portc, docker_ports,
-                                                              docker_volumec, docker_volumes);
+                                                              docker_volumec, docker_volumes,
+                                                              docker_restart_policy[0] ? docker_restart_policy : NULL,
+                                                              docker_restart_delay_seconds);
             }
         } else if (saw_owned_delimiter || docker_envc > 0 || docker_portc > 0 || docker_volumec > 0) {
             if (!saw_owned_delimiter && cmd_argc == 1 && token_names_existing_profile(&user_store, &system_store, cmd_argv[0])) {
@@ -1079,10 +1221,12 @@ int main(int argc, char **argv) {
                                                               start_argc, start_argv, NULL, NULL,
                                                               docker_envc, docker_env,
                                                               docker_portc, docker_ports,
-                                                              docker_volumec, docker_volumes);
+                                                              docker_volumec, docker_volumes,
+                                                              docker_restart_policy[0] ? docker_restart_policy : NULL,
+                                                              docker_restart_delay_seconds);
             }
         } else {
-            rc = hold_cmd_start_action_options(&inv, &user_store, &system_store, argv[0], &start_store, tail, console_mode, docker_rm, interactive_stdin, multi, multi_count, cmd_argc, cmd_argv);
+            rc = hold_cmd_start_action_options(&inv, &user_store, &system_store, argv[0], &start_store, tail, console_mode, docker_rm, interactive_stdin, multi, multi_count, docker_restart_policy[0] ? docker_restart_policy : NULL, docker_restart_delay_seconds, cmd_argc, cmd_argv);
         }
         free(cmd_argv);
         hold_free_argv_alloc(docker_env, docker_envc);
@@ -1111,7 +1255,9 @@ int main(int argc, char **argv) {
                                               docker_envc, docker_env,
                                               docker_portc, docker_ports,
                                               docker_volumec, docker_volumes,
-                                              docker_interactive, docker_tty, docker_detach);
+                                              docker_interactive, docker_tty, docker_detach,
+                                              docker_restart_policy[0] ? docker_restart_policy : NULL,
+                                              docker_restart_delay_seconds);
             if (rc != 0) {
                 hold_free_argv_alloc(docker_env, docker_envc);
                 hold_free_argv_alloc(docker_ports, docker_portc);
@@ -1122,7 +1268,9 @@ int main(int argc, char **argv) {
                                                           cmd_argc, cmd_argv, NULL, docker_name,
                                                           docker_envc, docker_env,
                                                           docker_portc, docker_ports,
-                                                          docker_volumec, docker_volumes);
+                                                          docker_volumec, docker_volumes,
+                                                          docker_restart_policy[0] ? docker_restart_policy : NULL,
+                                                          docker_restart_delay_seconds);
             hold_free_argv_alloc(docker_env, docker_envc);
             hold_free_argv_alloc(docker_ports, docker_portc);
             hold_free_argv_alloc(docker_volumes, docker_volumec);
@@ -1132,7 +1280,9 @@ int main(int argc, char **argv) {
                                                           cmd_argc, cmd_argv, NULL, NULL,
                                                           docker_envc, docker_env,
                                                           docker_portc, docker_ports,
-                                                          docker_volumec, docker_volumes);
+                                                          docker_volumec, docker_volumes,
+                                                          docker_restart_policy[0] ? docker_restart_policy : NULL,
+                                                          docker_restart_delay_seconds);
         hold_free_argv_alloc(docker_env, docker_envc);
         hold_free_argv_alloc(docker_ports, docker_portc);
         hold_free_argv_alloc(docker_volumes, docker_volumec);
@@ -1356,7 +1506,7 @@ int main(int argc, char **argv) {
             if (hold_ensure_start_store_for_command(&inv, requested_system, true, "start", 1, start_argv, &start_store) != 0) {
                 hold_die_errno("hold: failed to init start storage");
             }
-            int rc = hold_cmd_start_action_options(&inv, &user_store, &system_store, argv[0], &start_store, p_tail, p_console, docker_rm, interactive_stdin, p_multi, p_multi_count, 1, start_argv);
+            int rc = hold_cmd_start_action_options(&inv, &user_store, &system_store, argv[0], &start_store, p_tail, p_console, docker_rm, interactive_stdin, p_multi, p_multi_count, docker_restart_policy[0] ? docker_restart_policy : NULL, docker_restart_delay_seconds, 1, start_argv);
             free(cmd_argv);
             return rc;
         }
@@ -1389,7 +1539,7 @@ int main(int argc, char **argv) {
             }
             hold_die_errno("hold: failed to init start storage");
         }
-        int rc = hold_cmd_start_action_options(&inv, &user_store, &system_store, argv[0], &start_store, tail, console_mode, docker_rm, interactive_stdin, multi, multi_count, cmd_argc, cmd_argv);
+        int rc = hold_cmd_start_action_options(&inv, &user_store, &system_store, argv[0], &start_store, tail, console_mode, docker_rm, interactive_stdin, multi, multi_count, docker_restart_policy[0] ? docker_restart_policy : NULL, docker_restart_delay_seconds, cmd_argc, cmd_argv);
         free(cmd_argv);
         return rc;
     }

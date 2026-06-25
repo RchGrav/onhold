@@ -17,7 +17,9 @@ static bool profile_equal_recipe(const struct hold_profile *p,
                                  char **volumes,
                                  bool mode_interactive,
                                  bool mode_tty,
-                                 bool mode_detach);
+                                 bool mode_detach,
+                                 const char *restart_policy,
+                                 int restart_delay_seconds);
 static int parse_profile_object(const char *j, const char *hash, struct hold_profile *profile);
 static int load_profiles(const struct hold_store *store, struct hold_profile **profiles_out, size_t *count_out);
 static int write_profiles_atomic(const struct hold_store *store, const struct hold_profile *profiles, size_t count);
@@ -89,13 +91,21 @@ static bool profile_equal_recipe(const struct hold_profile *p,
                                  char **volumes,
                                  bool mode_interactive,
                                  bool mode_tty,
-                                 bool mode_detach) {
+                                 bool mode_detach,
+                                 const char *restart_policy,
+                                 int restart_delay_seconds) {
     if (strcmp(p->binary_path, binary_path) != 0 || !string_array_equal(p->argc, p->argv, argc, argv)) {
         return false;
     }
+    const char *want_restart = restart_policy && *restart_policy && strcmp(restart_policy, "no") != 0 ? restart_policy : NULL;
+    const char *have_restart = p->has_restart_policy ? p->restart_policy : NULL;
     return p->mode_interactive == mode_interactive &&
            p->mode_tty == mode_tty &&
            p->mode_detach == mode_detach &&
+           ((have_restart == NULL && want_restart == NULL) ||
+            (have_restart && want_restart && strcmp(have_restart, want_restart) == 0)) &&
+           ((want_restart == NULL && !p->has_restart_delay) ||
+            (want_restart != NULL && p->restart_delay_seconds == restart_delay_seconds)) &&
            string_array_equal(p->envc, p->env, envc, env) &&
            string_array_equal(p->portc, p->ports, portc, ports) &&
            string_array_equal(p->volumec, p->volumes, volumec, volumes);
@@ -135,6 +145,15 @@ static int parse_profile_object(const char *j, const char *hash, struct hold_pro
     (void)hold_json_get_bool(j, "interactive", &profile->mode_interactive);
     (void)hold_json_get_bool(j, "tty", &profile->mode_tty);
     (void)hold_json_get_bool(j, "detach", &profile->mode_detach);
+    if (hold_json_get_str(j, "restart", profile->restart_policy, sizeof(profile->restart_policy)) == 0 &&
+        profile->restart_policy[0] && strcmp(profile->restart_policy, "no") != 0) {
+        profile->has_restart_policy = true;
+    }
+    int64_t restart_delay_tmp = 0;
+    if (hold_json_get_i64(j, "restart_delay_seconds", &restart_delay_tmp) == 0 && restart_delay_tmp >= 0 && restart_delay_tmp <= INT_MAX) {
+        profile->restart_delay_seconds = (int)restart_delay_tmp;
+        profile->has_restart_delay = profile->has_restart_policy;
+    }
     const char *mode = NULL;
     if (hold_json_find_key(j, "mode", &mode) == 0 && *mode == '{') {
         const char *end = mode;
@@ -309,6 +328,14 @@ static int write_profiles_atomic(const struct hold_store *store, const struct ho
             }
             fprintf(f, "}");
         }
+        if (profiles[i].has_restart_policy && profiles[i].restart_policy[0]) {
+            fprintf(f, ", \"restart\": \"");
+            hold_json_escape(f, profiles[i].restart_policy);
+            fprintf(f, "\"");
+        }
+        if (profiles[i].has_restart_delay) {
+            fprintf(f, ", \"restart_delay_seconds\": %d", profiles[i].restart_delay_seconds);
+        }
         fprintf(f, "}%s\n", i + 1 == count ? "" : ",");
     }
     fprintf(f, "}\n");
@@ -346,7 +373,7 @@ int hold_write_profile_atomic_env(const struct hold_store *store,
                                     char **argv,
                                     int envc,
                                     char **env) {
-    return hold_write_profile_atomic_full(store, hash, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false);
+    return hold_write_profile_atomic_full(store, hash, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false, NULL, 0);
 }
 
 int hold_write_profile_atomic_full(const struct hold_store *store,
@@ -362,11 +389,14 @@ int hold_write_profile_atomic_full(const struct hold_store *store,
                                     char **volumes,
                                     bool mode_interactive,
                                     bool mode_tty,
-                                    bool mode_detach) {
+                                    bool mode_detach,
+                                    const char *restart_policy,
+                                    int restart_delay_seconds) {
     if (!hold_valid_profile_hash(hash) || !binary_path || binary_path[0] != '/' || argc <= 0 || !argv ||
         envc < 0 || (envc > 0 && !env) ||
         portc < 0 || (portc > 0 && !ports) ||
-        volumec < 0 || (volumec > 0 && !volumes)) {
+        volumec < 0 || (volumec > 0 && !volumes) ||
+        restart_delay_seconds < 0) {
         errno = EINVAL;
         return -1;
     }
@@ -384,7 +414,7 @@ int hold_write_profile_atomic_full(const struct hold_store *store,
     for (size_t i = 0; i < count; i++) {
         if (strcmp(profiles[i].hash, hash) == 0) {
             int rc = 0;
-            if (!profile_equal_recipe(&profiles[i], binary_path, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach)) {
+            if (!profile_equal_recipe(&profiles[i], binary_path, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, restart_policy, restart_delay_seconds)) {
                 errno = EEXIST;
                 rc = -1;
             }
@@ -415,6 +445,12 @@ int hold_write_profile_atomic_full(const struct hold_store *store,
     profiles[count].mode_interactive = mode_interactive;
     profiles[count].mode_tty = mode_tty;
     profiles[count].mode_detach = mode_detach;
+    if (restart_policy && *restart_policy && strcmp(restart_policy, "no") != 0) {
+        snprintf(profiles[count].restart_policy, sizeof(profiles[count].restart_policy), "%s", restart_policy);
+        profiles[count].has_restart_policy = true;
+    }
+    profiles[count].restart_delay_seconds = profiles[count].has_restart_policy ? restart_delay_seconds : 0;
+    profiles[count].has_restart_delay = profiles[count].has_restart_policy && restart_delay_seconds > 0;
     count++;
     int rc = write_profiles_atomic(store, profiles, count);
     free_profiles(profiles, count);

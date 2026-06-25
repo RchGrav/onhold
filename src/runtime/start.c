@@ -19,7 +19,10 @@ struct start_profile_target {
     bool needs_elevation;
 };
 
+static volatile sig_atomic_t g_restart_stop = 0;
+
 static const char *explicit_start_argv0(bool owned, const char *command, int argc, char **argv);
+static int apply_child_env(int envc, char **env);
 static int private_start_hash_for_token(const struct hold_store *store,
                                         const char *token,
                                         char hash[PROFILE_HASH_STR_LEN],
@@ -50,9 +53,132 @@ static int perform_explicit_start_options(const struct hold_invocation *inv,
                                             bool console_mode,
                                             bool auto_remove,
                                             bool interactive_stdin,
+                                            const char *restart_policy,
+                                            int restart_delay_seconds,
                                             int argc,
                                             char **argv);
 static void spawn_auto_remove_watcher(const struct hold_store *store, const struct hold_run_record *record);
+
+static void handle_restart_signal(int signo) {
+    (void)signo;
+    g_restart_stop = 1;
+}
+
+static bool restart_policy_is_enabled(const char *policy) {
+    return policy && *policy && strcmp(policy, "no") != 0;
+}
+
+static bool restart_status_failed(int status) {
+    if (WIFEXITED(status)) return WEXITSTATUS(status) != 0;
+    return WIFSIGNALED(status);
+}
+
+static int restart_policy_max_retries(const char *policy) {
+    const char *colon = policy ? strchr(policy, ':') : NULL;
+    if (!colon || !colon[1]) return -1;
+    char *end = NULL;
+    long n = strtol(colon + 1, &end, 10);
+    if (!end || *end || n < 0 || n > INT_MAX) return -2;
+    return (int)n;
+}
+
+static bool restart_should_run_again(const char *policy, int status, int failures) {
+    if (!policy || !*policy || strcmp(policy, "no") == 0) return false;
+    if (strcmp(policy, "always") == 0 || strcmp(policy, "unless-stopped") == 0) return true;
+    if (!strncmp(policy, "on-failure", 10) && (policy[10] == '\0' || policy[10] == ':')) {
+        if (!restart_status_failed(status)) return false;
+        int max_retries = restart_policy_max_retries(policy);
+        if (max_retries >= 0 && failures > max_retries) return false;
+        return true;
+    }
+    return false;
+}
+
+static void sleep_restart_delay(int seconds) {
+    if (seconds <= 0) return;
+    struct timespec sl = {.tv_sec = seconds, .tv_nsec = 0};
+    while (!g_restart_stop && nanosleep(&sl, &sl) != 0 && errno == EINTR) {
+        continue;
+    }
+}
+
+static void run_restart_supervisor(int handshake_fd,
+                                   const char *log_path,
+                                   bool interactive_stdin,
+                                   int envc,
+                                   char **env,
+                                   const char *resolved_exec_path,
+                                   char **launch_argv,
+                                   const char *restart_policy,
+                                   int restart_delay_seconds) {
+    if (setsid() < 0) {
+        int e = errno;
+        hold_write_all(handshake_fd, &e, sizeof(e));
+        _exit(127);
+    }
+    if (apply_child_env(envc, env) != 0) {
+        int e = errno;
+        hold_write_all(handshake_fd, &e, sizeof(e));
+        _exit(127);
+    }
+    if (!interactive_stdin) {
+        int nullfd = open("/dev/null", O_RDONLY);
+        if (nullfd < 0 || dup2(nullfd, STDIN_FILENO) < 0) {
+            int e = errno;
+            hold_write_all(handshake_fd, &e, sizeof(e));
+            _exit(127);
+        }
+        if (nullfd > 2) close(nullfd);
+    }
+    int lfd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (lfd < 0 || dup2(lfd, STDOUT_FILENO) < 0 || dup2(lfd, STDERR_FILENO) < 0) {
+        int e = errno;
+        hold_write_all(handshake_fd, &e, sizeof(e));
+        _exit(127);
+    }
+    if (lfd > 2) close(lfd);
+
+    struct sigaction sa = {0};
+    sa.sa_handler = handle_restart_signal;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+
+    close(handshake_fd);
+    int failures = 0;
+    while (!g_restart_stop) {
+        pid_t worker = fork();
+        if (worker < 0) {
+            fprintf(stderr, "hold: restart supervisor failed to fork: %s\n", strerror(errno));
+            _exit(127);
+        }
+        if (worker == 0) {
+            signal(SIGTERM, SIG_DFL);
+            signal(SIGINT, SIG_DFL);
+            signal(SIGHUP, SIG_DFL);
+            execv(resolved_exec_path, launch_argv);
+            fprintf(stderr, "hold: cannot restart '%s': %s\n", resolved_exec_path, strerror(errno));
+            _exit(127);
+        }
+        int status = 0;
+        while (waitpid(worker, &status, 0) < 0) {
+            if (errno == EINTR) {
+                if (g_restart_stop) kill(worker, SIGTERM);
+                continue;
+            }
+            status = 127 << 8;
+            break;
+        }
+        if (g_restart_stop) break;
+        if (restart_status_failed(status)) failures++;
+        else failures = 0;
+        if (!restart_should_run_again(restart_policy, status, failures)) break;
+        fprintf(stderr, "hold: restarting %s after exit status %d\n", resolved_exec_path, status);
+        sleep_restart_delay(restart_delay_seconds);
+    }
+    _exit(0);
+}
 
 static const char *explicit_start_argv0(bool owned, const char *command, int argc, char **argv) {
     if (argc <= 0 || !argv || !argv[0]) {
@@ -193,7 +319,7 @@ int hold_perform_start_with_env_options(const struct hold_invocation *inv,
                                           int envc,
                                           char **env) {
     return hold_perform_start_with_metadata_options(inv, store, tail, console_mode, auto_remove, interactive_stdin,
-                                                    argc, argv, exec_path, run_alias, envc, env, 0, NULL, 0, NULL);
+                                                    argc, argv, exec_path, run_alias, envc, env, 0, NULL, 0, NULL, NULL, 0);
 }
 
 int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
@@ -211,12 +337,20 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
                                                int portc,
                                                char **ports,
                                                int volumec,
-                                               char **volumes) {
+                                               char **volumes,
+                                               const char *restart_policy,
+                                               int restart_delay_seconds) {
     if (argc <= 0 || !argv || !argv[0] ||
         envc < 0 || (envc > 0 && !env) ||
         portc < 0 || (portc > 0 && !ports) ||
-        volumec < 0 || (volumec > 0 && !volumes)) {
+        volumec < 0 || (volumec > 0 && !volumes) ||
+        restart_delay_seconds < 0) {
         hold_usage();
+        return 5;
+    }
+    bool restart_enabled = restart_policy_is_enabled(restart_policy);
+    if (restart_enabled && console_mode) {
+        fprintf(stderr, "hold: error: --restart with --tty/-t is not supported yet\n");
         return 5;
     }
 
@@ -317,6 +451,17 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
     }
     if (pid == 0) {
         close(pipefd[0]);
+        if (restart_enabled) {
+            run_restart_supervisor(pipefd[1],
+                                   log_path,
+                                   interactive_stdin,
+                                   envc,
+                                   env,
+                                   resolved_exec_path,
+                                   launch_argv,
+                                   restart_policy,
+                                   restart_delay_seconds);
+        }
         if (setsid() < 0) {
             int e = errno;
             hold_write_all(pipefd[1], &e, sizeof(e));
@@ -471,6 +616,14 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         hold_die_errno("hold: failed to copy volume metadata");
     }
     r.volumec = volumec;
+    if (restart_enabled) {
+        if (hold_checked_snprintf(r.restart_policy, sizeof(r.restart_policy), "%s", restart_policy) != 0) {
+            hold_die_errno("hold: restart policy too long");
+        }
+        r.has_restart_policy = true;
+    }
+    r.restart_delay_seconds = restart_delay_seconds;
+    r.has_restart_delay = restart_delay_seconds > 0;
     r.has_log = true;
     if (hold_checked_snprintf(r.log_path, sizeof(r.log_path), "%s", log_path) != 0) {
         hold_die_errno("hold: log path too long");
@@ -882,7 +1035,9 @@ static int hold_perform_profile_start_options(const struct hold_invocation *inv,
                                                 bool auto_remove,
                                                 bool interactive_stdin,
                                                 const char *hash,
-                                                const char *alias) {
+                                                const char *alias,
+                                                const char *restart_policy,
+                                                int restart_delay_seconds) {
     struct hold_profile p;
     if (hold_load_profile_by_hash(store, hash, &p) != 0) {
         fprintf(stderr, "hold: error: profile %s is unavailable\n", hash);
@@ -898,7 +1053,9 @@ static int hold_perform_profile_start_options(const struct hold_invocation *inv,
                                                       p.argc, p.argv, p.binary_path, alias,
                                                       p.envc, p.env,
                                                       p.portc, p.ports,
-                                                      p.volumec, p.volumes);
+                                                      p.volumec, p.volumes,
+                                                      restart_policy ? restart_policy : (p.has_restart_policy ? p.restart_policy : NULL),
+                                                      restart_policy ? restart_delay_seconds : p.restart_delay_seconds);
     hold_free_profile(&p);
     return rc;
 }
@@ -910,7 +1067,7 @@ int hold_perform_profile_start(const struct hold_invocation *inv,
                                  bool console_mode,
                                  const char *hash,
                                  const char *alias) {
-    return hold_perform_profile_start_options(inv, store, tail, console_mode, false, false, hash, alias);
+    return hold_perform_profile_start_options(inv, store, tail, console_mode, false, false, hash, alias, NULL, 0);
 }
 
 int hold_cmd_start_action(const struct hold_invocation *inv,
@@ -924,7 +1081,7 @@ int hold_cmd_start_action(const struct hold_invocation *inv,
                             int multi_count,
                             int argc,
                             char **argv) {
-    return hold_cmd_start_action_options(inv, user_store, system_store, program, fallback_store, tail, console_mode, false, false, multi, multi_count, argc, argv);
+    return hold_cmd_start_action_options(inv, user_store, system_store, program, fallback_store, tail, console_mode, false, false, multi, multi_count, NULL, 0, argc, argv);
 }
 
 int hold_cmd_start_action_options(const struct hold_invocation *inv,
@@ -938,6 +1095,8 @@ int hold_cmd_start_action_options(const struct hold_invocation *inv,
                                     bool interactive_stdin,
                                     bool multi,
                                     int multi_count,
+                                    const char *restart_policy,
+                                    int restart_delay_seconds,
                                     int argc,
                                     char **argv) {
     if (argc == 1) {
@@ -1008,7 +1167,9 @@ int hold_cmd_start_action_options(const struct hold_invocation *inv,
                                                  target.recipe.portc,
                                                  target.recipe.ports,
                                                  target.recipe.volumec,
-                                                 target.recipe.volumes);
+                                                 target.recipe.volumes,
+                                                 restart_policy ? restart_policy : (target.recipe.has_restart_policy ? target.recipe.restart_policy : NULL),
+                                                 restart_policy ? restart_delay_seconds : target.recipe.restart_delay_seconds);
                     } else {
                         start_rc = hold_perform_profile_start_options(inv,
                                                          &target.store,
@@ -1017,7 +1178,9 @@ int hold_cmd_start_action_options(const struct hold_invocation *inv,
                                                          auto_remove,
                                                          interactive_stdin,
                                                          target.hash,
-                                                         target.has_alias ? target.alias : NULL);
+                                                         target.has_alias ? target.alias : NULL,
+                                                         restart_policy,
+                                                         restart_delay_seconds);
                     }
                     if (start_rc != 0) {
                         break;
@@ -1033,7 +1196,7 @@ int hold_cmd_start_action_options(const struct hold_invocation *inv,
         fprintf(stderr, "hold: error: --multi applies only to profile starts\n");
         return 5;
     }
-    return perform_explicit_start_options(inv, fallback_store, tail, console_mode, auto_remove, interactive_stdin, argc, argv);
+    return perform_explicit_start_options(inv, fallback_store, tail, console_mode, auto_remove, interactive_stdin, restart_policy, restart_delay_seconds, argc, argv);
 }
 
 int hold_ensure_start_store_for_command(const struct hold_invocation *inv,
@@ -1065,6 +1228,8 @@ static int perform_explicit_start_options(const struct hold_invocation *inv,
                                             bool console_mode,
                                             bool auto_remove,
                                             bool interactive_stdin,
+                                            const char *restart_policy,
+                                            int restart_delay_seconds,
                                             int argc,
                                             char **argv) {
     if (argc <= 0) {
@@ -1077,7 +1242,7 @@ static int perform_explicit_start_options(const struct hold_invocation *inv,
         shell_argv[1] = "-c";
         shell_argv[2] = argv[0];
         shell_argv[3] = NULL;
-        return hold_perform_start_with_env_options(inv, store, tail, console_mode, auto_remove, interactive_stdin, 3, shell_argv, NULL, NULL, 0, NULL);
+        return hold_perform_start_with_metadata_options(inv, store, tail, console_mode, auto_remove, interactive_stdin, 3, shell_argv, NULL, NULL, 0, NULL, 0, NULL, 0, NULL, restart_policy, restart_delay_seconds);
     }
-    return hold_perform_start_with_env_options(inv, store, tail, console_mode, auto_remove, interactive_stdin, argc, argv, NULL, NULL, 0, NULL);
+    return hold_perform_start_with_metadata_options(inv, store, tail, console_mode, auto_remove, interactive_stdin, argc, argv, NULL, NULL, 0, NULL, 0, NULL, 0, NULL, restart_policy, restart_delay_seconds);
 }

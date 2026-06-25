@@ -417,7 +417,9 @@ static int profile_commit(struct captive_session *s) {
                                       NULL,
                                       stage->mode_interactive,
                                       stage->mode_tty,
-                                      stage->mode_detach) != 0) {
+                                      stage->mode_detach,
+                                      NULL,
+                                      0) != 0) {
         free(argv);
         hold_die_errno("hold: failed to commit profile");
     }

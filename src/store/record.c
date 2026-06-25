@@ -94,6 +94,14 @@ int hold_write_record_atomic(const char *dir, const struct hold_run_record *r, i
         hold_write_json_argv(f, r->volumec, r->volumes);
         fprintf(f, ",\n");
     }
+    if (r->has_restart_policy && r->restart_policy[0]) {
+        fprintf(f, "  \"restart\": \"");
+        hold_json_escape(f, r->restart_policy);
+        fprintf(f, "\",\n");
+    }
+    if (r->has_restart_delay) {
+        fprintf(f, "  \"restart_delay_seconds\": %d,\n", r->restart_delay_seconds);
+    }
     fprintf(f, "  \"uid\": %u,\n", r->uid);
     fprintf(f, "  \"gid\": %u,\n", r->gid);
     if (r->has_invocation) {
@@ -331,6 +339,14 @@ int hold_load_record(const char *path, struct hold_run_record *r) {
     if (hold_json_get_str(j, "console_sock", r->console_sock, sizeof(r->console_sock)) == 0 &&
         r->console_sock[0] == '/') {
         r->has_console = true;
+    }
+    if (hold_json_get_str(j, "restart", r->restart_policy, sizeof(r->restart_policy)) == 0 &&
+        r->restart_policy[0]) {
+        r->has_restart_policy = true;
+    }
+    if (hold_json_get_i64(j, "restart_delay_seconds", &tmp) == 0 && tmp >= 0 && tmp <= INT_MAX) {
+        r->restart_delay_seconds = (int)tmp;
+        r->has_restart_delay = true;
     }
     if (hold_json_get_u64(j, "proc_starttime_ticks", &r->proc_starttime_ticks) != 0 ||
         hold_json_get_u64(j, "exe_dev", &r->exe_dev) != 0 ||

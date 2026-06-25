@@ -48,6 +48,15 @@ static int parse_alias_recipe_object(const char *j, struct hold_alias *entry) {
     (void)hold_json_get_bool(j, "interactive", &entry->mode_interactive);
     (void)hold_json_get_bool(j, "tty", &entry->mode_tty);
     (void)hold_json_get_bool(j, "detach", &entry->mode_detach);
+    if (hold_json_get_str(j, "restart", entry->restart_policy, sizeof(entry->restart_policy)) == 0 &&
+        entry->restart_policy[0] && strcmp(entry->restart_policy, "no") != 0) {
+        entry->has_restart_policy = true;
+    }
+    int64_t restart_delay_tmp = 0;
+    if (hold_json_get_i64(j, "restart_delay_seconds", &restart_delay_tmp) == 0 && restart_delay_tmp >= 0 && restart_delay_tmp <= INT_MAX) {
+        entry->restart_delay_seconds = (int)restart_delay_tmp;
+        entry->has_restart_delay = entry->has_restart_policy;
+    }
     const char *mode = NULL;
     if (hold_json_find_key(j, "mode", &mode) == 0 && *mode == '{') {
         const char *end = mode;
@@ -244,6 +253,14 @@ static int write_aliases_atomic(const struct hold_store *store, const struct hol
                 }
                 fprintf(f, "}");
             }
+            if (entries[i].has_restart_policy && entries[i].restart_policy[0]) {
+                fprintf(f, ", \"restart\": \"");
+                hold_json_escape(f, entries[i].restart_policy);
+                fprintf(f, "\"");
+            }
+            if (entries[i].has_restart_delay) {
+                fprintf(f, ", \"restart_delay_seconds\": %d", entries[i].restart_delay_seconds);
+            }
             fprintf(f, "}%s\n", i + 1 == count ? "" : ",");
         }
     }
@@ -352,6 +369,12 @@ int hold_alias_lookup_recipe(const struct hold_store *store, const char *alias, 
                 recipe->mode_interactive = entries[i].mode_interactive;
                 recipe->mode_tty = entries[i].mode_tty;
                 recipe->mode_detach = entries[i].mode_detach;
+                if (entries[i].has_restart_policy) {
+                    snprintf(recipe->restart_policy, sizeof(recipe->restart_policy), "%s", entries[i].restart_policy);
+                    recipe->has_restart_policy = true;
+                }
+                recipe->restart_delay_seconds = entries[i].restart_delay_seconds;
+                recipe->has_restart_delay = entries[i].has_restart_delay;
                 rc = 0;
             }
             break;
@@ -380,7 +403,7 @@ int hold_alias_upsert_recipe_env(const struct hold_store *store,
                                    char **argv,
                                    int envc,
                                    char **env) {
-    return hold_alias_upsert_recipe_full(store, alias, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false);
+    return hold_alias_upsert_recipe_full(store, alias, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false, NULL, 0);
 }
 
 int hold_alias_upsert_recipe_full(const struct hold_store *store,
@@ -396,11 +419,14 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
                                    char **volumes,
                                    bool mode_interactive,
                                    bool mode_tty,
-                                   bool mode_detach) {
+                                   bool mode_detach,
+                                   const char *restart_policy,
+                                   int restart_delay_seconds) {
     if (!hold_valid_alias(alias) || !binary_path || binary_path[0] != '/' || argc <= 0 || !argv ||
         envc < 0 || (envc > 0 && !env) ||
         portc < 0 || (portc > 0 && !ports) ||
-        volumec < 0 || (volumec > 0 && !volumes)) {
+        volumec < 0 || (volumec > 0 && !volumes) ||
+        restart_delay_seconds < 0) {
         errno = EINVAL;
         return -1;
     }
@@ -438,6 +464,14 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
             entries[i].mode_interactive = mode_interactive;
             entries[i].mode_tty = mode_tty;
             entries[i].mode_detach = mode_detach;
+            entries[i].restart_policy[0] = '\0';
+            entries[i].has_restart_policy = false;
+            if (restart_policy && *restart_policy && strcmp(restart_policy, "no") != 0) {
+                snprintf(entries[i].restart_policy, sizeof(entries[i].restart_policy), "%s", restart_policy);
+                entries[i].has_restart_policy = true;
+            }
+            entries[i].restart_delay_seconds = entries[i].has_restart_policy ? restart_delay_seconds : 0;
+            entries[i].has_restart_delay = entries[i].has_restart_policy && restart_delay_seconds > 0;
             entries[i].has_recipe = true;
             entries[i].has_hash = false;
             entries[i].hash[0] = '\0';
@@ -469,6 +503,12 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
     entries[count].mode_interactive = mode_interactive;
     entries[count].mode_tty = mode_tty;
     entries[count].mode_detach = mode_detach;
+    if (restart_policy && *restart_policy && strcmp(restart_policy, "no") != 0) {
+        snprintf(entries[count].restart_policy, sizeof(entries[count].restart_policy), "%s", restart_policy);
+        entries[count].has_restart_policy = true;
+    }
+    entries[count].restart_delay_seconds = entries[count].has_restart_policy ? restart_delay_seconds : 0;
+    entries[count].has_restart_delay = entries[count].has_restart_policy && restart_delay_seconds > 0;
     entries[count].has_recipe = true;
     count++;
     int rc = write_aliases_atomic(store, entries, count);

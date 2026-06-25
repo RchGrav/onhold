@@ -3089,13 +3089,6 @@ test_docker_run_foreground_follows_output_by_default() {
 
 test_docker_unsupported_options_fail_loudly() {
   local rc
-  set +e
-  "$HOLD_BIN" --restart=always /bin/true >/dev/null 2>"$TEST_ROOT/docker-restart.err"
-  rc=$?
-  set -e
-  [ "$rc" -eq 5 ] || { echo "bare --restart: rc=$rc (want 5)" >&2; return 1; }
-  grep -q "not supported by Hold yet" "$TEST_ROOT/docker-restart.err" || { cat "$TEST_ROOT/docker-restart.err" >&2; return 1; }
-
   "$HOLD_BIN" start /bin/true --detach-keys ctrl-p,ctrl-q >/dev/null 2>"$TEST_ROOT/docker-detach-keys-default.err" || {
     cat "$TEST_ROOT/docker-detach-keys-default.err" >&2
     return 1
@@ -3111,6 +3104,92 @@ test_docker_unsupported_options_fail_loudly() {
   "$HOLD_BIN" prune all >/dev/null 2>&1 || true
   "$HOLD_BIN" ps -a >"$TEST_ROOT/docker-unsupported-ps.out" || return 1
   ! grep -q '/bin/true' "$TEST_ROOT/docker-unsupported-ps.out" || { cat "$TEST_ROOT/docker-unsupported-ps.out" >&2; return 1; }
+}
+
+
+test_docker_restart_policy_restarts_failures() {
+  local out id count got
+  out=$("$HOLD_BIN" run -d --restart on-failure:2 --restart-delay 0 -- /bin/sh -c 'mkdir -p "$HOME"; echo attempt >> "$HOME/restart-count"; c=$(wc -l < "$HOME/restart-count"); echo restart-attempt-$c; [ "$c" -lt 3 ] && exit 7 || sleep 1' 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  for _ in $(seq 1 30); do
+    count=$(wc -l <"$HOME/restart-count" 2>/dev/null || echo 0)
+    [ "$count" -ge 3 ] && break
+    sleep 0.1
+  done
+  count=$(wc -l <"$HOME/restart-count" 2>/dev/null || echo 0)
+  [ "$count" -eq 3 ] || { echo "restart attempts: $count" >&2; "$HOLD_BIN" logs "$id" --plain -n 50 >&2 || true; return 1; }
+  got=$("$HOLD_BIN" logs "$id" --plain -n 50) || return 1
+  printf '%s\n' "$got" | grep -q 'restart-attempt-1' || { printf '%s\n' "$got" >&2; return 1; }
+  printf '%s\n' "$got" | grep -q 'restart-attempt-2' || { printf '%s\n' "$got" >&2; return 1; }
+  printf '%s\n' "$got" | grep -q 'restart-attempt-3' || { printf '%s\n' "$got" >&2; return 1; }
+  "$HOLD_BIN" inspect "$id" >"$TEST_ROOT/restart-run.json" || return 1
+  grep -q '"restart": "on-failure:2"' "$TEST_ROOT/restart-run.json" || { cat "$TEST_ROOT/restart-run.json" >&2; return 1; }
+  "$HOLD_BIN" stop "$id" >/dev/null 2>&1 || true
+}
+
+
+test_docker_restart_validation_and_tty_gate() {
+  local rc
+  set +e
+  "$HOLD_BIN" run --restart nonsense /bin/true >/dev/null 2>"$TEST_ROOT/restart-invalid.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { echo "invalid restart rc=$rc" >&2; return 1; }
+  grep -q 'invalid --restart policy' "$TEST_ROOT/restart-invalid.err" || { cat "$TEST_ROOT/restart-invalid.err" >&2; return 1; }
+
+  set +e
+  "$HOLD_BIN" run --restart-delay 1 /bin/true >/dev/null 2>"$TEST_ROOT/restart-delay-alone.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { echo "restart-delay without restart rc=$rc" >&2; return 1; }
+  grep -q -- '--restart-delay requires --restart' "$TEST_ROOT/restart-delay-alone.err" || { cat "$TEST_ROOT/restart-delay-alone.err" >&2; return 1; }
+
+  set +e
+  "$HOLD_BIN" run -t --restart always /bin/true >/dev/null 2>"$TEST_ROOT/restart-tty.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { echo "restart tty rc=$rc" >&2; return 1; }
+  grep -q -- '--restart with --tty/-t is not supported yet' "$TEST_ROOT/restart-tty.err" || { cat "$TEST_ROOT/restart-tty.err" >&2; return 1; }
+}
+
+
+test_docker_restart_persists_with_named_profile() {
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id replay_id
+  out=$("$HOLD_BIN" run -d --name restartprof --restart on-failure:1 --restart-delay 1 -- /bin/sh -c 'echo restart-profile; sleep 0.1' 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.2
+  "$HOLD_BIN" profile export restartprof --json >"$TEST_ROOT/restartprof.json" || return 1
+  "$HOLD_BIN" profile export restartprof >"$TEST_ROOT/restartprof.txt" || return 1
+  out=$("$HOLD_BIN" run -d restartprof 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  replay_id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$replay_id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.2
+  "$HOLD_BIN" inspect "$replay_id" >"$TEST_ROOT/restartprof-run.json" || return 1
+  "$HOLD_BIN" stop "$id" "$replay_id" >/dev/null 2>&1 || true
+  grep -q '^restart on-failure:1$' "$TEST_ROOT/restartprof.txt" || { cat "$TEST_ROOT/restartprof.txt" >&2; return 1; }
+  grep -q '^restart-delay 1$' "$TEST_ROOT/restartprof.txt" || { cat "$TEST_ROOT/restartprof.txt" >&2; return 1; }
+  python3 - "$TEST_ROOT/restartprof.json" "$TEST_ROOT/restartprof-run.json" <<'PY'
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+run = json.load(open(sys.argv[2], encoding='utf-8'))[0]
+for label, obj in (("profile", profile), ("run", run)):
+    if obj.get("restart") != "on-failure:1":
+        raise SystemExit(f"{label} restart mismatch: {obj.get('restart')!r}")
+    if obj.get("restart_delay_seconds") != 1:
+        raise SystemExit(f"{label} restart delay mismatch: {obj.get('restart_delay_seconds')!r}")
+PY
 }
 
 test_docker_publish_and_volume_record_metadata() {
@@ -4210,6 +4289,9 @@ run_test "Docker-shaped run/logs/ps/rm surface" test_docker_shaped_cli_flags_and
 run_test "Docker bare launch foreground follows output by default" test_docker_bare_launch_foreground_follows_output_by_default
 run_test "Docker run foreground follows output by default" test_docker_run_foreground_follows_output_by_default
 run_test "unsupported Docker-shaped options fail loudly" test_docker_unsupported_options_fail_loudly
+run_test "Docker restart policy restarts failed processes" test_docker_restart_policy_restarts_failures
+run_test "Docker restart validates policies and tty gate" test_docker_restart_validation_and_tty_gate
+run_test "Docker restart persists with named profiles" test_docker_restart_persists_with_named_profile
 run_test "Docker publish and volume flags record metadata" test_docker_publish_and_volume_record_metadata
 run_test "Docker named profiles persist -d -i -t mode flags" test_docker_named_profile_persists_mode_flags
 run_test "Docker -i keeps non-PTY stdin open" test_docker_interactive_stdin_pipes_to_child

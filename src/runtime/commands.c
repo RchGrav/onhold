@@ -295,6 +295,14 @@ static int profile_export_transcript(const char *name, const struct hold_profile
     if (recipe->mode_interactive) fputs("interactive\n", stdout);
     if (recipe->mode_tty) fputs("tty\n", stdout);
     if (recipe->mode_detach) fputs("detach\n", stdout);
+    if (recipe->has_restart_policy && recipe->restart_policy[0]) {
+        fputs("restart ", stdout);
+        profile_shell_quote(stdout, recipe->restart_policy);
+        fputc('\n', stdout);
+    }
+    if (recipe->has_restart_delay) {
+        fprintf(stdout, "restart-delay %d\n", recipe->restart_delay_seconds);
+    }
     fputs("commit\nend\nwrite\n", stdout);
     return ferror(stdout) ? 3 : 0;
 }
@@ -333,6 +341,14 @@ static int profile_export_json(const char *name, const struct hold_profile *reci
             fprintf(stdout, "%s\"detach\": true", wrote ? ", " : "");
         }
         fputs("}", stdout);
+    }
+    if (recipe->has_restart_policy && recipe->restart_policy[0]) {
+        fputs(",\n  \"restart\": \"", stdout);
+        hold_json_escape(stdout, recipe->restart_policy);
+        fputs("\"", stdout);
+    }
+    if (recipe->has_restart_delay) {
+        fprintf(stdout, ",\n  \"restart_delay_seconds\": %d", recipe->restart_delay_seconds);
     }
     fputs("\n}\n", stdout);
     return ferror(stdout) ? 3 : 0;
@@ -466,6 +482,8 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
     bool mode_interactive = false;
     bool mode_tty = false;
     bool mode_detach = false;
+    char restart_policy[64] = {0};
+    int restart_delay_seconds = 0;
     int rc = 5;
     if (hold_json_get_str(j, "name", name, sizeof(name)) != 0 || !hold_valid_alias(name) ||
         hold_json_get_args_alloc(j, &argv, &argc) != 0 || argc <= 0) {
@@ -491,6 +509,11 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
     (void)hold_json_get_bool(j, "interactive", &mode_interactive);
     (void)hold_json_get_bool(j, "tty", &mode_tty);
     (void)hold_json_get_bool(j, "detach", &mode_detach);
+    (void)hold_json_get_str(j, "restart", restart_policy, sizeof(restart_policy));
+    int64_t restart_delay_tmp = 0;
+    if (hold_json_get_i64(j, "restart_delay_seconds", &restart_delay_tmp) == 0 && restart_delay_tmp >= 0 && restart_delay_tmp <= INT_MAX) {
+        restart_delay_seconds = (int)restart_delay_tmp;
+    }
     const char *mode = NULL;
     if (hold_json_find_key(j, "mode", &mode) == 0 && *mode == '{') {
         const char *end = mode;
@@ -522,7 +545,9 @@ static int profile_import_json(const struct hold_store *store, const char *j) {
                                       volumes,
                                       mode_interactive,
                                       mode_tty,
-                                      mode_detach) != 0) {
+                                      mode_detach,
+                                      restart_policy[0] ? restart_policy : NULL,
+                                      restart_delay_seconds) != 0) {
         hold_die_errno("hold: failed to import profile");
     }
     rc = 0;
@@ -569,7 +594,9 @@ static int profile_write_full_recipe(const struct hold_store *store,
                                      char **env,
                                      bool mode_interactive,
                                      bool mode_tty,
-                                     bool mode_detach) {
+                                     bool mode_detach,
+                                     const char *restart_policy,
+                                     int restart_delay_seconds) {
     if (!hold_valid_alias(name)) {
         fprintf(stderr, "hold: error: invalid profile name '%s'\n", name ? name : "");
         return 5;
@@ -599,7 +626,9 @@ static int profile_write_full_recipe(const struct hold_store *store,
                                       NULL,
                                       mode_interactive,
                                       mode_tty,
-                                      mode_detach) != 0) {
+                                      mode_detach,
+                                      restart_policy,
+                                      restart_delay_seconds) != 0) {
         hold_die_errno("hold: failed to update profile");
     }
     return 0;
@@ -631,6 +660,8 @@ static int profile_import_transcript(const struct hold_store *store, const char 
     bool mode_interactive = false;
     bool mode_tty = false;
     bool mode_detach = false;
+    char restart_policy[64] = {0};
+    int restart_delay_seconds = 0;
     bool saw_save = false;
     int rc = 5;
 
@@ -710,12 +741,26 @@ static int profile_import_transcript(const struct hold_store *store, const char 
             mode_tty = true;
         } else if (!strcmp(tokens[0], "detach") && ntokens == 1) {
             mode_detach = true;
+        } else if (!strcmp(tokens[0], "restart") && ntokens == 2) {
+            snprintf(restart_policy, sizeof(restart_policy), "%s", tokens[1]);
+        } else if ((!strcmp(tokens[0], "restart-delay") || !strcmp(tokens[0], "restart_delay_seconds")) && ntokens == 2) {
+            char *endptr = NULL;
+            long delay = strtol(tokens[1], &endptr, 10);
+            if (!endptr || *endptr || delay < 0 || delay > INT_MAX) {
+                fprintf(stderr, "hold: error: invalid restart-delay in profile transcript\n");
+                profile_free_tokens(tokens, ntokens);
+                goto out;
+            }
+            restart_delay_seconds = (int)delay;
         } else if (!strcmp(tokens[0], "no") && ntokens == 2 && !strcmp(tokens[1], "interactive")) {
             mode_interactive = false;
         } else if (!strcmp(tokens[0], "no") && ntokens == 2 && (!strcmp(tokens[1], "tty") || !strcmp(tokens[1], "console"))) {
             mode_tty = false;
         } else if (!strcmp(tokens[0], "no") && ntokens == 2 && !strcmp(tokens[1], "detach")) {
             mode_detach = false;
+        } else if (!strcmp(tokens[0], "no") && ntokens == 2 && !strcmp(tokens[1], "restart")) {
+            restart_policy[0] = '\0';
+            restart_delay_seconds = 0;
         } else if (!strcmp(tokens[0], "set") && ntokens >= 4 &&
                    !strcmp(tokens[1], "command") && !strcmp(tokens[2], "--")) {
             profile_free_tokens(cmd_argv, cmd_argc);
@@ -763,7 +808,7 @@ static int profile_import_transcript(const struct hold_store *store, const char 
         }
         argv[0] = binary;
         for (int i = 0; i < arg_count; i++) argv[i + 1] = args[i];
-        rc = profile_write_full_recipe(store, name, binary, argc, argv, envc, env, mode_interactive, mode_tty, mode_detach);
+        rc = profile_write_full_recipe(store, name, binary, argc, argv, envc, env, mode_interactive, mode_tty, mode_detach, restart_policy[0] ? restart_policy : NULL, restart_delay_seconds);
         free(argv);
     }
 

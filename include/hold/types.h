@@ -50,6 +50,10 @@ struct hold_run_record {
     char **ports;
     int volumec;
     char **volumes;
+    char restart_policy[64];
+    int restart_delay_seconds;
+    bool has_restart_policy;
+    bool has_restart_delay;
 };
 
 enum run_state { STATE_RUNNING, STATE_EXITED, STATE_STALE, STATE_FAILED, STATE_UNKNOWN };
@@ -115,6 +119,10 @@ struct hold_profile {
     bool mode_interactive;
     bool mode_tty;
     bool mode_detach;
+    char restart_policy[64];
+    int restart_delay_seconds;
+    bool has_restart_policy;
+    bool has_restart_delay;
 };
 
 struct hold_alias {
@@ -132,6 +140,10 @@ struct hold_alias {
     bool mode_interactive;
     bool mode_tty;
     bool mode_detach;
+    char restart_policy[64];
+    int restart_delay_seconds;
+    bool has_restart_policy;
+    bool has_restart_delay;
     bool has_hash;
     bool has_recipe;
 };
