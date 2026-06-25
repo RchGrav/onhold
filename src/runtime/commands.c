@@ -683,7 +683,7 @@ void hold_usage(void) {
            "  hold start <profile>             start a saved profile\n\n"
            "MANAGE\n"
            "  hold status [profile]             show tracked runs (optionally one profile)\n"
-           "  hold logs   <target>              follow a run's live output\n"
+           "  hold logs   <target>              open a run's log viewer\n"
            "  hold profile save <id> as <name>  save a recorded run as a profile\n"
            "  hold profiles [-v]                list visible profiles\n"
            "  hold profile export <name>        print a typed-shell profile config\n"

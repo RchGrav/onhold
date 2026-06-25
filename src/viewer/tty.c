@@ -420,7 +420,7 @@ static int render(struct viewer_state *state) {
     char header[512];
     snprintf(header,
              sizeof(header),
-             "\033[H\033[2Jhold view %s%s | filter: %s%s%s | similar: %zu | q quit\033[K\r\n",
+             "\033[H\033[2Jhold logs %s%s | filter: %s%s%s | similar: %zu | q quit\033[K\r\n",
              state->title ? state->title : "",
              state->follow ? " [follow]" : (state->follow_exited ? " [exited]" : ""),
              state->filter[0] ? state->filter : "(type to filter)",

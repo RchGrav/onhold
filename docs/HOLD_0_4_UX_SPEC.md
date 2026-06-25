@@ -572,7 +572,7 @@ Launch:
 Listing and inspection:
   hold ps                                      # active run IDs, Docker-shaped
   hold ps -a                                   # active + inactive retained run IDs
-  hold logs <target> [--follow|-f] [--tail|-n N] [--filter TEXT] [--similar TEXT] [--plain|--interactive]
+  hold logs <target> [--follow|-f] [--tail|-n N] [--plain|--interactive]
   hold inspect <target>                        # detailed JSON/object view, Docker-style
 
 Lifecycle:
@@ -1236,7 +1236,7 @@ q                quit viewer
 
 Backspace to an empty query restores the full view immediately. A dedicated clear key is optional, not required.
 
-Current branch v1 evidence: `hold view <target>` keeps plain output for scripts and opens an interactive TTY viewer by default when stdin/stdout are TTYs. `--plain` forces script-style output and `--interactive` fails closed when no TTY is available. The intended live-log UX is dynamic: `hold logs <target> --follow` / `hold view <target> --follow` opens the live viewer, printable keys update the top filter field per keystroke, Backspace relaxes the filter, and matching live output appears without restarting the command. `--filter TEXT` remains a scripting/seed option, not the primary human flow. Non-TTY follow streams matching lines until the recorded run exits; TTY follow refreshes while running and marks the view exited when the run ends. The v1 keys are printable type-to-filter, Backspace, Space to toggle the highlighted line as a similarity example, arrows/`j`/`k`, PgUp/PgDn, and `q`.
+Current branch v1 evidence: `hold logs <target>` routes to the viewer engine; `--plain` forces script-style output and `--interactive` fails closed when no TTY is available. The intended live-log UX is dynamic and full-screen: `hold logs <target>` / `hold logs <target> --follow` opens the viewer, printable keys update the top filter field per keystroke, Backspace relaxes the filter, and matching live output appears without restarting the command. CLI prefilter flags are not part of the product UX; seeded filters may exist only as internal regression/debug hooks. Non-TTY follow streams until the recorded run exits; TTY follow refreshes while running and marks the view exited when the run ends. The v1 keys are printable type-to-filter, Backspace, Space to toggle the highlighted line as a similarity example, arrows/`j`/`k`, PgUp/PgDn, and `q`.
 
 ### 6.1 Search vs filter
 
@@ -1481,7 +1481,7 @@ Default behavior is local and immediate.
 
 For growing logs:
 
-- v1 implementation: `hold logs <target> --follow` routes through `hold view --follow` for a dynamic TTY filter field. `--filter TEXT` can seed/script the same engine, but the human design is type-to-filter after the viewer is open. Plain `hold logs <target>` remains tail-compatible.
+- v1 implementation: `hold logs <target>` and `hold logs <target> --follow` route through the viewer engine for a dynamic TTY filter field. The human design is type-to-filter after the full-screen viewer is open; CLI prefiltering is not a public workflow. Non-TTY `hold logs <target>` remains script-friendly.
 - active live filters are anchored at the tail by default; PgUp moves to older matching windows, and PgDn walks back toward the live edge;
 - when the user is browsing older matches, new log data does not yank the viewport to EOF; follow ticks filter bounded appended slices and keep a separate scan-progress cursor, so sparse matches in large bursts are deferred across ticks rather than skipped; the header reports `newer below` only after a new matching row is found;
 - `--debug-stats` includes `scan_gen`, which increments only when the filter engine refills the visible cache;

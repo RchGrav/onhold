@@ -798,22 +798,22 @@ test_log_capture() {
 
 
 
-test_log_view_filter_cli() {
+test_log_view_internal_seed_filters() {
   local out id viewed stats similar plain
   out=$("$HOLD_BIN" bash -c 'echo alpha; echo "needle one"; echo "warn database connection timeout retrying"; echo omega; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.4
-  viewed=$("$HOLD_BIN" view "$id" --filter needle --limit 1) || return 1
+  viewed=$("$HOLD_BIN" __view "$id" --filter needle --limit 1) || return 1
   [ "$viewed" = "needle one" ] || return 1
-  plain=$("$HOLD_BIN" view "$id" --plain --filter needle --limit 1) || return 1
+  plain=$("$HOLD_BIN" __view "$id" --plain --filter needle --limit 1) || return 1
   [ "$plain" = "needle one" ] || return 1
-  similar=$("$HOLD_BIN" view "$id" --similar "error database connection timeout" --limit 1) || return 1
+  similar=$("$HOLD_BIN" __view "$id" --similar "error database connection timeout" --limit 1) || return 1
   printf '%s\n' "$similar" | grep -q 'database connection timeout' || return 1
-  stats=$("$HOLD_BIN" view "$id" --filter needle --limit 1 --debug-stats 2>&1 >/dev/null) || return 1
+  stats=$("$HOLD_BIN" __view "$id" --filter needle --limit 1 --debug-stats 2>&1 >/dev/null) || return 1
   printf '%s\n' "$stats" | grep -Eq 'bytes_read=[0-9]+ .*visible=1'
   set +e
-  "$HOLD_BIN" view "$id" --interactive >"$TEST_ROOT/view-interactive.out" 2>"$TEST_ROOT/view-interactive.err"
+  "$HOLD_BIN" __view "$id" --interactive >"$TEST_ROOT/view-interactive.out" 2>"$TEST_ROOT/view-interactive.err"
   [ "$?" -eq 5 ] || { set -e; cat "$TEST_ROOT/view-interactive.out" "$TEST_ROOT/view-interactive.err" >&2; return 1; }
   set -e
   grep -q -- '--interactive requires a TTY' "$TEST_ROOT/view-interactive.err"
@@ -825,7 +825,7 @@ test_log_view_follow_filters_live_output() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
-  "$HOLD_BIN" view "$id" --follow --filter live-needle >"$TEST_ROOT/view-follow.out" 2>"$TEST_ROOT/view-follow.err"
+  "$HOLD_BIN" __view "$id" --follow --filter live-needle >"$TEST_ROOT/view-follow.out" 2>"$TEST_ROOT/view-follow.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow.err" >&2; return 1; }
@@ -835,17 +835,21 @@ test_log_view_follow_filters_live_output() {
   ! grep -q 'ignore-after' "$TEST_ROOT/view-follow.out" || { cat "$TEST_ROOT/view-follow.out" >&2; return 1; }
 }
 
-test_hold_logs_follow_routes_through_view_filter() {
+test_hold_logs_follow_opens_dynamic_tty_filter() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -- /bin/sh -c 'sleep 0.2; echo logs-ignore; sleep 0.2; echo "logs-live-needle"; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" run -- /bin/sh -c 'sleep 0.3; echo logs-ignore; sleep 0.3; echo "logs-live-hit"; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
-  "$HOLD_BIN" logs "$id" --follow --filter logs-live >"$TEST_ROOT/logs-follow.out" 2>"$TEST_ROOT/logs-follow.err"
+  python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("logs-live"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("q"); sys.stdout.flush()' |
+    script -qfec "$HOLD_BIN logs $id --follow --interactive --debug-stats" /dev/null >"$TEST_ROOT/logs-follow.out" 2>"$TEST_ROOT/logs-follow.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/logs-follow.err" >&2; return 1; }
-  grep -q 'logs-live-needle' "$TEST_ROOT/logs-follow.out" || { cat "$TEST_ROOT/logs-follow.out" >&2; return 1; }
+  grep -q 'filter: logs-live' "$TEST_ROOT/logs-follow.out" || { cat "$TEST_ROOT/logs-follow.out" >&2; return 1; }
+  grep -q 'logs-live-hit' "$TEST_ROOT/logs-follow.out" || { cat "$TEST_ROOT/logs-follow.out" >&2; return 1; }
   ! grep -q 'logs-ignore' "$TEST_ROOT/logs-follow.out" || { cat "$TEST_ROOT/logs-follow.out" >&2; return 1; }
 }
 
@@ -858,7 +862,7 @@ test_log_view_follow_dynamic_tty_filter() {
   [ -n "$id" ] || return 1
   set +e
   python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("needle"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("q"); sys.stdout.flush()' |
-    script -qfec "$HOLD_BIN view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-dynamic.out" 2>"$TEST_ROOT/view-follow-dynamic.err"
+    script -qfec "$HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-dynamic.out" 2>"$TEST_ROOT/view-follow-dynamic.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-dynamic.err" >&2; return 1; }
@@ -877,7 +881,7 @@ test_log_view_selection_uses_cached_rows() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; sys.stdout.write("needlejjkkq"); sys.stdout.flush(); time.sleep(0.1)' |
-    script -qfec "$HOLD_BIN view $id --interactive --debug-stats" /dev/null >"$TEST_ROOT/view-cache-selection.out" 2>"$TEST_ROOT/view-cache-selection.err"
+    script -qfec "$HOLD_BIN __view $id --interactive --debug-stats" /dev/null >"$TEST_ROOT/view-cache-selection.out" 2>"$TEST_ROOT/view-cache-selection.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-cache-selection.err" >&2; return 1; }
@@ -897,7 +901,7 @@ test_log_view_follow_pages_filtered_windows() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"page-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 7 cols 100; $HOLD_BIN view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-pages.out" 2>"$TEST_ROOT/view-follow-pages.err"
+    script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-pages.out" 2>"$TEST_ROOT/view-follow-pages.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-pages.err" >&2; return 1; }
@@ -917,7 +921,7 @@ test_log_view_follow_browsed_away_marks_newer_without_yank() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"away-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(1.1); out.write(b"q"); out.flush()' |
-    script -qfec "stty rows 7 cols 100; $HOLD_BIN view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-away.out" 2>"$TEST_ROOT/view-follow-away.err"
+    script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-away.out" 2>"$TEST_ROOT/view-follow-away.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-away.err" >&2; return 1; }
@@ -936,7 +940,7 @@ test_log_view_follow_ignores_nonmatching_newer_data() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"nomatch-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(1.1); out.write(b"q"); out.flush()' |
-    script -qfec "stty rows 7 cols 100; $HOLD_BIN view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-nonmatching-away.out" 2>"$TEST_ROOT/view-follow-nonmatching-away.err"
+    script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-nonmatching-away.out" 2>"$TEST_ROOT/view-follow-nonmatching-away.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-nonmatching-away.err" >&2; return 1; }
@@ -955,7 +959,7 @@ test_log_view_follow_finds_sparse_newer_match_after_large_burst() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"burst-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(2.0); out.write(b"q"); out.flush()' |
-    script -qfec "stty rows 7 cols 100; $HOLD_BIN view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-large-burst.out" 2>"$TEST_ROOT/view-follow-large-burst.err"
+    script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-large-burst.out" 2>"$TEST_ROOT/view-follow-large-burst.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-large-burst.err" >&2; return 1; }
@@ -3141,15 +3145,15 @@ run_test "hold unified CLI surface" test_hold_unified_cli_surface
 run_test "hold shell is reserved for system-shell capture mode" test_hold_shell_reserved_for_capture_mode
 run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture
-run_test "view filters run logs literally and by similarity" test_log_view_filter_cli
-run_test "view follows live logs through filter engine" test_log_view_follow_filters_live_output
-run_test "logs follow routes through view filter engine" test_hold_logs_follow_routes_through_view_filter
-run_test "view follow filters dynamically from typed TTY input" test_log_view_follow_dynamic_tty_filter
-run_test "view selection movement uses cached filter rows" test_log_view_selection_uses_cached_rows
-run_test "view follow pages older and newer filtered windows" test_log_view_follow_pages_filtered_windows
-run_test "view follow marks newer data while browsed away" test_log_view_follow_browsed_away_marks_newer_without_yank
-run_test "view follow ignores nonmatching newer data while browsed away" test_log_view_follow_ignores_nonmatching_newer_data
-run_test "view follow finds sparse newer match after large burst" test_log_view_follow_finds_sparse_newer_match_after_large_burst
+run_test "internal viewer harness seeds literal and similarity filters" test_log_view_internal_seed_filters
+run_test "internal viewer follows live logs through filter engine" test_log_view_follow_filters_live_output
+run_test "logs follow opens dynamic TTY filter" test_hold_logs_follow_opens_dynamic_tty_filter
+run_test "internal viewer follow filters dynamically from typed TTY input" test_log_view_follow_dynamic_tty_filter
+run_test "internal viewer selection movement uses cached filter rows" test_log_view_selection_uses_cached_rows
+run_test "internal viewer follow pages older and newer filtered windows" test_log_view_follow_pages_filtered_windows
+run_test "internal viewer follow marks newer data while browsed away" test_log_view_follow_browsed_away_marks_newer_without_yank
+run_test "internal viewer follow ignores nonmatching newer data while browsed away" test_log_view_follow_ignores_nonmatching_newer_data
+run_test "internal viewer follow finds sparse newer match after large burst" test_log_view_follow_finds_sparse_newer_match_after_large_burst
 run_test "-f starts and follows output" test_start_follow_short_form
 run_test "tail <id> tails an existing run log" test_tail_verb_existing_id
 run_test "persistent stale records remain visible and dumpable" test_persistent_stale_records

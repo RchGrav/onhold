@@ -78,8 +78,8 @@ Start a helper, inspect it, then clean it up:
 run_id="$(hold python3 -m http.server 8765)"
 hold list
 hold dump "$run_id"
-hold view "$run_id"          # TTY: interactive filter viewer; scripts: plain first-screen output
-hold logs "$run_id" --follow # TTY: live view; type to dynamically filter, Backspace to relax
+hold logs "$run_id"          # TTY: full-screen viewer; type to dynamically filter
+hold logs "$run_id" --follow # live viewer; Backspace relaxes the filter
 hold stop "$run_id"
 hold prune "$run_id"
 ```

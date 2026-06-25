@@ -153,8 +153,8 @@ Replace legacy primary verbs with memorable `hold` equivalents:
 hold ps                     -> list active run IDs
 hold ps -a                  -> list active + inactive retained run IDs
 hold show <view|object>     -> friendly read-only alias/view command
-hold logs <target>          -> follow/plain log viewer
-hold logs <target> --plain  -> plain tail-style output
+hold logs <target>          -> full-screen log viewer on TTY, script-friendly output off TTY
+hold logs <target> --plain  -> force plain output
 hold inspect <target>       -> Docker-style detailed JSON/object output
 hold prune                  -> bulk inactive-history cleanup
 hold rm <target>            -> remove inactive run ID or profile
@@ -596,8 +596,7 @@ filter similar
 In non-interactive CLI, expose a deterministic version later if useful:
 
 ```sh
-hold logs web --similar-line 120
-hold logs web --similar 'missing config'
+# Similarity is selected inside the full-screen viewer, e.g. press Space on a highlighted line.
 ```
 
 ## Safety and automation compatibility

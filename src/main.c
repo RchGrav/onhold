@@ -253,7 +253,7 @@ int main(int argc, char **argv) {
     }
 
     if (owned && !strcmp(command, "logs")) {
-        command = cmd_argc == 1 ? "tail" : "view";
+        command = "__view";
     }
     if (owned && !strcmp(command, "inspect")) command = "dump";
     if (owned && !strcmp(command, "status")) command = "list";
@@ -330,7 +330,7 @@ int main(int argc, char **argv) {
 
     if (!inv.euid_root || is_list || (owned && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
                                                !strcmp(command, "tail") || !strcmp(command, "dump") ||
-                                               !strcmp(command, "view") || !strcmp(command, "prune") ||
+                                               !strcmp(command, "__view") || !strcmp(command, "prune") ||
                                                !strcmp(command, "console") || !strcmp(command, "profile") ||
                                                !strcmp(command, "show")))) {
         if (!inv.euid_root) {
@@ -687,7 +687,7 @@ int main(int argc, char **argv) {
         free(cmd_argv);
         return rc;
     }
-    if (!strcmp(command, "view")) {
+    if (!strcmp(command, "__view")) {
         int rc = hold_cmd_view_action(&inv, &user_store, &system_store, argv[0], cmd_argc, cmd_argv);
         free(cmd_argv);
         return rc;

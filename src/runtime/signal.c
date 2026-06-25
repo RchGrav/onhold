@@ -428,7 +428,7 @@ static int print_view_result(const struct hold_log_filter_result *result, bool d
     }
     if (debug_stats) {
         fprintf(stderr,
-                "hold view: bytes_read=%zu lines_scanned=%zu matches=%zu visible=%zu eof=%s\n",
+                "hold logs viewer: bytes_read=%zu lines_scanned=%zu matches=%zu visible=%zu eof=%s\n",
                 result->bytes_read,
                 result->lines_scanned,
                 result->match_count,
@@ -506,7 +506,7 @@ static int stream_view_follow_until_exit(int fd,
                     if (final_result.line_count > 0) rc = stream_view_result(&final_result);
                     if (debug_stats) {
                         fprintf(stderr,
-                                "hold view follow: bytes_read=%zu lines_scanned=%zu matches=%zu visible=%zu eof=%s\n",
+                                "hold logs follow viewer: bytes_read=%zu lines_scanned=%zu matches=%zu visible=%zu eof=%s\n",
                                 final_result.bytes_read,
                                 final_result.lines_scanned,
                                 final_result.match_count,
@@ -520,7 +520,7 @@ static int stream_view_follow_until_exit(int fd,
         }
     }
     sigaction(SIGINT, &old_sa, NULL);
-    if (rc != 0) hold_die_errno("hold: failed writing followed view output");
+    if (rc != 0) hold_die_errno("hold: failed writing followed log output");
     return 0;
 }
 
@@ -542,7 +542,7 @@ static int elevate_view_target(const char *program,
     if (!canon) return 3;
 
     int n = 0;
-    canon[n++] = "view";
+    canon[n++] = "__view";
     canon[n++] = token;
     if (opts->literal) {
         canon[n++] = "--filter";
@@ -578,7 +578,7 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
                            int argc,
                            char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "usage: hold view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--follow|-f] [--plain|--interactive] [--debug-stats]\n");
+        fprintf(stderr, "usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n");
         return 5;
     }
 
@@ -592,13 +592,13 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--filter")) {
             if (++i >= argc) {
-                fprintf(stderr, "usage: hold view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--follow|-f] [--plain|--interactive] [--debug-stats]\n");
+                fprintf(stderr, "usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n");
                 return 5;
             }
             opts.literal = argv[i];
         } else if (!strcmp(argv[i], "--similar")) {
             if (++i >= argc || opts.similar_example_count >= HOLD_LOG_VIEWER_MAX_EXAMPLES) {
-                fprintf(stderr, "usage: hold view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--follow|-f] [--plain|--interactive] [--debug-stats]\n");
+                fprintf(stderr, "usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n");
                 return 5;
             }
             opts.similar_examples[opts.similar_example_count++] = argv[i];
@@ -617,12 +617,12 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
         } else if (!strcmp(argv[i], "--follow") || !strcmp(argv[i], "-f")) {
             follow = true;
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
-            printf("usage: hold view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--follow|-f] [--plain|--interactive] [--debug-stats]\n");
+            printf("usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n");
             return 0;
         } else if (!target_token) {
             target_token = argv[i];
         } else {
-            fprintf(stderr, "usage: hold view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--follow|-f] [--plain|--interactive] [--debug-stats]\n");
+            fprintf(stderr, "usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n");
             return 5;
         }
     }
@@ -631,7 +631,7 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
         return 5;
     }
     if (!target_token) {
-        fprintf(stderr, "usage: hold view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--follow|-f] [--plain|--interactive] [--debug-stats]\n");
+        fprintf(stderr, "usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n");
         return 5;
     }
 
@@ -644,7 +644,7 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
     }
     if (ntargets == 0) {
         free(targets);
-        hold_sig_note(inv, "hold: nothing to view\n");
+        hold_sig_note(inv, "hold: nothing to log\n");
         return 0;
     }
     struct hold_resolved_target target = targets[0];
@@ -673,7 +673,7 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
     int fd = open(r.log_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) {
         free(targets);
-        hold_die_errno("hold: failed to open log for view");
+        hold_die_errno("hold: failed to open log");
     }
     if (interactive) {
         struct hold_log_viewer_follow follow_opts = {0};

@@ -32,11 +32,11 @@ static const struct hold_cli_command_spec command_specs[] = {
     {"stop", 1, -1, HOLD_CLI_ALLOW_ALL, "usage: hold stop [--print] [--all] <target>...", "stop"},
     {"kill", 1, -1, HOLD_CLI_ALLOW_ALL, "usage: hold kill [--print] [--all] <target>...", "kill"},
     {"tail", 1, 1, 0, "usage: hold tail <target>", "tail"},
-    {"logs", 1, -1, 0, "usage: hold logs <target> [--follow|-f] [--filter TEXT] [--similar TEXT] [--plain|--interactive]", "logs"},
+    {"logs", 1, -1, 0, "usage: hold logs <target> [--follow|-f] [--plain|--interactive]", "logs"},
     {"status", 0, 1, 0, "usage: hold status [profile|target]", "status"},
     {"inspect", 1, 1, 0, "usage: hold inspect <target>", "inspect"},
     {"dump", 1, 1, 0, "usage: hold dump <target>", "dump"},
-    {"view", 1, -1, 0, "usage: hold view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--follow|-f] [--plain|--interactive]", "view"},
+    {"__view", 1, -1, 0, "usage: hold __view <target> [internal viewer test options]", "__view"},
     {"console", 1, 1, 0, "usage: hold console <target>", "console"},
     {"prune", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold prune [target|all] [--all]", "prune"},
     {"profiles", 0, 1, 0, "usage: hold profiles [-v]", "profiles"},
@@ -188,7 +188,7 @@ static int help_action(const char *action) {
         printf("usage: hold run [--tail|-f] [--console] -- <cmd> [args...]\n\nStart an ad-hoc command explicitly. The -- delimiter keeps command args unambiguous.\n");
     } else if (!strcmp(action, "tail") || !strcmp(action, "logs")) {
         if (!strcmp(action, "logs")) {
-            printf("usage: hold logs <target> [--follow|-f] [--filter TEXT] [--similar TEXT] [--plain|--interactive]\n\nRead a run log. With filtering or --follow, this routes through the unified hold view engine; plain hold logs <target> remains tail-compatible.\n");
+            printf("usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n\nOpen the log viewer for a run. In a TTY, type directly in the full-screen viewer to filter dynamically; Backspace relaxes the filter and Space marks the highlighted line as a similarity example. Non-TTY output stays script-friendly.\n");
         } else {
             printf("usage: hold tail <target>\n\nFollow live output for a profile match, or follow an id's log directly.\n");
         }
@@ -196,8 +196,8 @@ static int help_action(const char *action) {
         printf("usage: hold console <target>\n\nAttach to a running console-enabled run.\n");
     } else if (!strcmp(action, "dump")) {
         printf("usage: hold dump <target>\n\nPrint a run log and exit.\n");
-    } else if (!strcmp(action, "view")) {
-        printf("usage: hold view <target> [--filter TEXT] [--similar TEXT] [--limit N] [--follow|-f] [--plain|--interactive] [--debug-stats]\n\nOpen an interactive TTY log viewer, stream filtered live logs with --follow, or print the first lazily discovered matching lines when stdout/stdin are not TTYs. Type to filter, Backspace edits, and Space toggles the highlighted line as a similarity example.\n");
+    } else if (!strcmp(action, "__view")) {
+        printf("usage: hold __view <target> [internal viewer test options]\n\nInternal regression/debug entrypoint for the log viewer engine. The product UX is hold logs <target>, then type inside the full-screen viewer to filter dynamically.\n");
     } else if (!strcmp(action, "prune")) {
         printf("usage: hold prune [target|all] [--all]\n\nClear removable past run data. Running valid runs are never pruned.\n");
     } else if (!strcmp(action, "profiles")) {
