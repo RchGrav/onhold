@@ -2526,16 +2526,20 @@ test_docker_shaped_cli_flags_and_rm() {
   ! grep -q 'docker-direct' "$TEST_ROOT/docker-profiles-after-rm.out" || { cat "$TEST_ROOT/docker-profiles-after-rm.out" >&2; return 1; }
 }
 
-test_hold_shell_reserved_for_capture_mode() {
+test_hold_shell_runs_real_shell_without_creating_runid_on_exit() {
+  local before after rc
   "$HOLD_BIN" help shell >"$TEST_ROOT/hold-shell-help.out" || return 1
   grep -q 'system-shell capture mode' "$TEST_ROOT/hold-shell-help.out" || { cat "$TEST_ROOT/hold-shell-help.out" >&2; return 1; }
   grep -q 'Ctrl-P Ctrl-Q' "$TEST_ROOT/hold-shell-help.out" || { cat "$TEST_ROOT/hold-shell-help.out" >&2; return 1; }
   ! grep -q '/profiles' "$TEST_ROOT/hold-shell-help.out" || { cat "$TEST_ROOT/hold-shell-help.out" >&2; return 1; }
 
-  set +e; printf 'exit\n' | "$HOLD_BIN" shell >"$TEST_ROOT/hold-shell.out" 2>"$TEST_ROOT/hold-shell.err"; rc=$?; set -e
-  [ "$rc" -eq 5 ] || { echo "hold shell: rc=$rc (want 5)" >&2; cat "$TEST_ROOT/hold-shell.out" "$TEST_ROOT/hold-shell.err" >&2; return 1; }
-  grep -q 'shell capture mode is not implemented yet' "$TEST_ROOT/hold-shell.err" || { cat "$TEST_ROOT/hold-shell.err" >&2; return 1; }
-  grep -q 'Ctrl-P Ctrl-Q' "$TEST_ROOT/hold-shell.err" || { cat "$TEST_ROOT/hold-shell.err" >&2; return 1; }
+  before=$( { find "$HOME/.local/state/hold/runs" -name '*.json' 2>/dev/null || true; } | wc -l)
+  set +e; printf 'echo hold-shell-ok\nexit\n' | SHELL=/bin/sh "$HOLD_BIN" shell >"$TEST_ROOT/hold-shell.out" 2>"$TEST_ROOT/hold-shell.err"; rc=$?; set -e
+  [ "$rc" -eq 0 ] || { echo "hold shell: rc=$rc (want 0)" >&2; cat "$TEST_ROOT/hold-shell.out" "$TEST_ROOT/hold-shell.err" >&2; return 1; }
+  grep -q 'hold-shell-ok' "$TEST_ROOT/hold-shell.out" || { cat "$TEST_ROOT/hold-shell.out" "$TEST_ROOT/hold-shell.err" >&2; return 1; }
+  ! grep -q 'not implemented' "$TEST_ROOT/hold-shell.err" || { cat "$TEST_ROOT/hold-shell.err" >&2; return 1; }
+  after=$( { find "$HOME/.local/state/hold/runs" -name '*.json' 2>/dev/null || true; } | wc -l)
+  [ "$before" = "$after" ] || { echo "hold shell created a runid on normal exit: before=$before after=$after" >&2; return 1; }
   ! grep -q 'hold>' "$TEST_ROOT/hold-shell.out" || { cat "$TEST_ROOT/hold-shell.out" >&2; return 1; }
   ! grep -q 'NAME' "$TEST_ROOT/hold-shell.out" || { cat "$TEST_ROOT/hold-shell.out" >&2; return 1; }
 }
@@ -3243,7 +3247,7 @@ run_test "stop supports multiple IDs in one command" test_stop_multiple_ids
 run_test "argument edge cases" test_argument_edges
 run_test "hold unified CLI surface" test_hold_unified_cli_surface
 run_test "Docker-shaped run/logs/ps/rm surface" test_docker_shaped_cli_flags_and_rm
-run_test "hold shell is reserved for system-shell capture mode" test_hold_shell_reserved_for_capture_mode
+run_test "hold shell runs a real shell and normal exit creates no runid" test_hold_shell_runs_real_shell_without_creating_runid_on_exit
 run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture
 run_test "internal viewer harness seeds literal and similarity filters" test_log_view_internal_seed_filters

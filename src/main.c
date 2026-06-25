@@ -680,9 +680,9 @@ int main(int argc, char **argv) {
     }
 
     if (owned && !strcmp(command, "shell")) {
-        fprintf(stderr, "hold: shell capture mode is not implemented yet; `hold shell` is reserved for the system-shell capture workflow using Ctrl-P Ctrl-Q detach\n");
+        int rc = hold_cmd_shell_action(&inv, &user_store);
         free(cmd_argv);
-        return 5;
+        return rc;
     }
 
     if (!owned) {

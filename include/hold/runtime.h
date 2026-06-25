@@ -68,6 +68,8 @@ int hold_cmd_prune_action(const struct hold_invocation *inv,
                             const char *program,
                             const char *target_token,
                             bool all);
+int hold_cmd_shell_action(const struct hold_invocation *inv,
+                            const struct hold_store *store);
 int hold_elevate_start_token(const char *program,
                                bool tail,
                                bool console_mode,
