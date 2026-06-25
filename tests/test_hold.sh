@@ -3531,7 +3531,7 @@ test_grant_revoke_argument_refusals() {
 }
 
 test_multi_n_exact_count_and_invalid() {
-  local id ids running rc
+  local id id2 ids running rc
   id=$("$HOLD_BIN" sleep 60 2>&1 | extract_id) || return 1
   "$HOLD_BIN" profile save "$id" as web-n >/dev/null || return 1
   "$HOLD_BIN" stop "$id" >/dev/null; "$HOLD_BIN" prune "$id" >/dev/null
@@ -3539,6 +3539,17 @@ test_multi_n_exact_count_and_invalid() {
   [ "$(printf '%s\n' "$ids" | grep -c .)" -eq 3 ] || { echo "--multi 3 did not print 3 ids" >&2; return 1; }
   running=$("$HOLD_BIN" list 2>/dev/null | grep -c running || true)
   [ "$running" -ge 3 ] || { echo "expected >=3 running, got $running" >&2; return 1; }
+  "$HOLD_BIN" stop web-n --all >/dev/null 2>&1 || true
+  id=$("$HOLD_BIN" run web-n 2>&1 | extract_id); [ -n "$id" ] || return 1
+  set +e; "$HOLD_BIN" run web-n >/dev/null 2>"$TEST_ROOT/run-force.err"; rc=$?; set -e
+  [ "$rc" -eq 6 ] || { echo "run duplicate without --force: rc=$rc (want 6)" >&2; return 1; }
+  grep -q -- '--force' "$TEST_ROOT/run-force.err" || { cat "$TEST_ROOT/run-force.err" >&2; return 1; }
+  id2=$("$HOLD_BIN" run --force web-n 2>&1 | extract_id); [ -n "$id2" ] || return 1
+  [ "$id2" != "$id" ] || { echo "run --force reused the original id" >&2; return 1; }
+  "$HOLD_BIN" stop web-n --all >/dev/null 2>&1 || true
+  ids=$("$HOLD_BIN" run --multi 2 web-n 2>/dev/null | sed -n '/^[0-9a-f]\{8\}$/p')
+  [ "$(printf '%s\n' "$ids" | grep -c .)" -eq 2 ] || { echo "run --multi 2 did not print 2 ids" >&2; return 1; }
+  "$HOLD_BIN" stop web-n --all >/dev/null 2>&1 || true
   set +e; "$HOLD_BIN" start web-n --multi=abc >/dev/null 2>"$TEST_ROOT/m.err"; rc=$?; set -e
   [ "$rc" -eq 5 ] || { echo "--multi=abc: rc=$rc (want 5)" >&2; return 1; }
   grep -q "invalid --multi count" "$TEST_ROOT/m.err" || { cat "$TEST_ROOT/m.err" >&2; return 1; }

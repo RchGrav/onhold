@@ -555,12 +555,12 @@ int main(int argc, char **argv) {
                 list_iso = true;
                 continue;
             }
-            if (!literal_owned_arg && !strcmp(command, "start") && !strcmp(argv[i], "--force")) {
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strcmp(argv[i], "--force")) {
                 multi = true;
                 multi_count = 1;
                 continue;
             }
-            if (!literal_owned_arg && !strcmp(command, "start") && !strcmp(argv[i], "--multi")) {
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strcmp(argv[i], "--multi")) {
                 multi = true;
                 multi_count = 1;
                 if (i + 1 < argc) {
@@ -576,7 +576,7 @@ int main(int argc, char **argv) {
                 }
                 continue;
             }
-            if (!literal_owned_arg && !strcmp(command, "start") && strncmp(argv[i], "--multi=", 8) == 0) {
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && strncmp(argv[i], "--multi=", 8) == 0) {
                 multi = true;
                 if (!hold_parse_positive_count(argv[i] + 8, &multi_count)) {
                     fprintf(stderr, "hold: error: invalid --multi count '%s'\n", argv[i] + 8);
