@@ -662,14 +662,20 @@ static void page_down(struct viewer_state *state) {
             state->start_offset = state->history[--state->history_count];
             state->at_live_edge = state->history_count == 0 && state->start_offset >= state->tail_anchor;
         } else {
-            off_t end = lseek(state->fd, 0, SEEK_END);
-            if (end >= 0) {
-                state->start_offset = end;
-                state->tail_anchor = end;
-                state->newer_scan_offset = end;
+            if (!state->at_live_edge && state->visible_count > 0 && state->next_offset > state->start_offset) {
+                state->scan_mode = VIEWER_SCAN_FORWARD;
+                state->start_offset = state->next_offset;
+                state->at_live_edge = false;
+            } else {
+                off_t end = lseek(state->fd, 0, SEEK_END);
+                if (end >= 0) {
+                    state->start_offset = end;
+                    state->tail_anchor = end;
+                    state->newer_scan_offset = end;
+                }
+                state->at_live_edge = true;
+                state->newer_available = false;
             }
-            state->at_live_edge = true;
-            state->newer_available = false;
         }
         state->selected = 0;
         cache_invalidate(state);
