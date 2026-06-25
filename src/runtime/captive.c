@@ -28,6 +28,10 @@ struct captive_profile_stage {
     bool mode_tty;
     bool mode_detach;
     bool allow_multi;
+    bool has_restart_policy;
+    bool has_restart_delay;
+    char restart_policy[64];
+    int restart_delay_seconds;
     bool dirty;
 };
 
@@ -90,6 +94,12 @@ static int stage_load_recipe(struct captive_profile_stage *stage, const struct h
     stage->mode_tty = recipe.mode_tty;
     stage->mode_detach = recipe.mode_detach;
     stage->allow_multi = recipe.allow_multi;
+    stage->has_restart_policy = recipe.has_restart_policy;
+    stage->has_restart_delay = recipe.has_restart_delay;
+    if (recipe.has_restart_policy) {
+        snprintf(stage->restart_policy, sizeof(stage->restart_policy), "%s", recipe.restart_policy);
+    }
+    stage->restart_delay_seconds = recipe.restart_delay_seconds;
     stage->dirty = false;
 done:
     hold_free_profile(&recipe);
@@ -217,6 +227,8 @@ static void help_profile(void) {
     printf("  tty           Allocate a pseudo-TTY for profile runs\n");
     printf("  console       Alias for tty\n");
     printf("  detach        Run profile in background by default\n");
+    printf("  restart       Set restart policy (no|always|unless-stopped|on-failure[:N])\n");
+    printf("  restart-delay Set restart delay seconds\n");
     printf("  pty-shim      Start under the PTY shim (reserved)\n");
     printf("  no            Negate a command\n");
     printf("  default       Reset a command to default\n");
@@ -296,6 +308,9 @@ static void profile_info(const struct captive_profile_stage *stage) {
            stage->mode_detach ? " detach" : "",
            stage->allow_multi ? " multi" : "",
            (!stage->mode_interactive && !stage->mode_tty && !stage->mode_detach && !stage->allow_multi) ? " -" : "");
+    printf("  restart   : %s", stage->has_restart_policy ? stage->restart_policy : "-");
+    if (stage->has_restart_delay) printf(" delay=%d", stage->restart_delay_seconds);
+    printf("\n");
     printf("  staged    : %s\n", stage->dirty ? "uncommitted changes present" : "clean");
 }
 
@@ -411,6 +426,81 @@ static int unsupported_reserved_profile_command(const char *name) {
     return 5;
 }
 
+static int captive_parse_restart_policy(const char *arg, char out[64]) {
+    if (!arg || !*arg) {
+        fprintf(stderr, "%% Usage: restart <no|always|unless-stopped|on-failure[:N]>\n");
+        return 5;
+    }
+    if (!strcmp(arg, "no") || !strcmp(arg, "always") || !strcmp(arg, "unless-stopped")) {
+        snprintf(out, 64, "%s", arg);
+        return 0;
+    }
+    if (!strncmp(arg, "on-failure", 10) && (arg[10] == '\0' || arg[10] == ':')) {
+        if (arg[10] == ':') {
+            char *end = NULL;
+            long n = strtol(arg + 11, &end, 10);
+            if (!end || *end || n < 0 || n > INT_MAX) {
+                fprintf(stderr, "%% Invalid restart retry count '%s'\n", arg + 11);
+                return 5;
+            }
+        }
+        snprintf(out, 64, "%s", arg);
+        return 0;
+    }
+    fprintf(stderr, "%% Invalid restart policy '%s'\n", arg);
+    return 5;
+}
+
+static int profile_set_restart(struct captive_profile_stage *stage, int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "%% Usage: restart <no|always|unless-stopped|on-failure[:N]>\n");
+        return 5;
+    }
+    char policy[64];
+    int rc = captive_parse_restart_policy(argv[1], policy);
+    if (rc != 0) return rc;
+    if (!strcmp(policy, "no")) {
+        stage->restart_policy[0] = '\0';
+        stage->has_restart_policy = false;
+        stage->restart_delay_seconds = 0;
+        stage->has_restart_delay = false;
+    } else {
+        snprintf(stage->restart_policy, sizeof(stage->restart_policy), "%s", policy);
+        stage->has_restart_policy = true;
+    }
+    stage->dirty = true;
+    return 0;
+}
+
+static int profile_set_restart_delay(struct captive_profile_stage *stage, int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "%% Usage: restart-delay <seconds>\n");
+        return 5;
+    }
+    char *end = NULL;
+    long n = strtol(argv[1], &end, 10);
+    if (!end || *end || n < 0 || n > INT_MAX) {
+        fprintf(stderr, "%% Invalid restart-delay '%s'\n", argv[1]);
+        return 5;
+    }
+    if (!stage->has_restart_policy) {
+        fprintf(stderr, "%% restart-delay requires a restart policy\n");
+        return 5;
+    }
+    stage->restart_delay_seconds = (int)n;
+    stage->has_restart_delay = n > 0;
+    stage->dirty = true;
+    return 0;
+}
+
+static void profile_clear_restart(struct captive_profile_stage *stage) {
+    stage->restart_policy[0] = '\0';
+    stage->has_restart_policy = false;
+    stage->restart_delay_seconds = 0;
+    stage->has_restart_delay = false;
+    stage->dirty = true;
+}
+
 static int profile_set_mode(struct captive_profile_stage *stage, const char *name, bool enabled) {
     bool *slot = NULL;
     if (!strcmp(name, "interactive")) {
@@ -462,8 +552,8 @@ static int profile_commit(struct captive_session *s) {
                                       stage->mode_tty,
                                       stage->mode_detach,
                                       stage->allow_multi,
-                                      NULL,
-                                      0) != 0) {
+                                      stage->has_restart_policy ? stage->restart_policy : NULL,
+                                      stage->has_restart_delay ? stage->restart_delay_seconds : 0) != 0) {
         free(argv);
         hold_die_errno("hold: failed to commit profile");
     }
@@ -506,6 +596,14 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  WORD       Long flag to expose (e.g. --port)\n");
             return 0;
         }
+        if (!strcmp(argv[0], "restart")) {
+            printf("  WORD       no | always | unless-stopped | on-failure[:N]\n");
+            return 0;
+        }
+        if (!strcmp(argv[0], "restart-delay")) {
+            printf("  WORD       Delay in seconds before restart\n");
+            return 0;
+        }
         if (!strcmp(argv[0], "no")) {
             printf("  env         Remove an environment variable or all env\n");
             printf("  argv        Clear base argv tokens\n");
@@ -514,6 +612,8 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  console     Alias for no tty\n");
             printf("  detach      Disable detached default profile mode\n");
             printf("  multi       Disable multi-instance profile mode\n");
+            printf("  restart     Clear restart policy and delay\n");
+            printf("  restart-delay Clear restart delay only\n");
             return 0;
         }
         if (!strcmp(argv[0], "default")) {
@@ -524,6 +624,8 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  console     Alias for default tty\n");
             printf("  detach      Reset detached mode to default\n");
             printf("  multi       Reset multi-instance mode to default\n");
+            printf("  restart     Reset restart policy and delay to default\n");
+            printf("  restart-delay Reset restart delay to default\n");
             return 0;
         }
     }
@@ -538,6 +640,8 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     }
     if (!strcmp(argv[0], "argv")) return profile_append_args(&s->profile, argc, argv);
     if (!strcmp(argv[0], "env")) return profile_set_env(&s->profile, argc, argv);
+    if (!strcmp(argv[0], "restart")) return profile_set_restart(&s->profile, argc, argv);
+    if (!strcmp(argv[0], "restart-delay") || !strcmp(argv[0], "restart_delay_seconds")) return profile_set_restart_delay(&s->profile, argc, argv);
     if (!strcmp(argv[0], "alias") || !strcmp(argv[0], "param") || !strcmp(argv[0], "pty-shim")) {
         return unsupported_reserved_profile_command(argv[0]);
     }
@@ -545,6 +649,16 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     if (!strcmp(argv[0], "no") && argc >= 2 && !strcmp(argv[1], "env")) return profile_no_env(&s->profile, argc, argv);
     if (!strcmp(argv[0], "no") && argc == 2 && !strcmp(argv[1], "argv")) {
         profile_clear_argv(&s->profile);
+        return 0;
+    }
+    if (!strcmp(argv[0], "no") && argc == 2 && !strcmp(argv[1], "restart")) {
+        profile_clear_restart(&s->profile);
+        return 0;
+    }
+    if (!strcmp(argv[0], "no") && argc == 2 && (!strcmp(argv[1], "restart-delay") || !strcmp(argv[1], "restart_delay_seconds"))) {
+        s->profile.restart_delay_seconds = 0;
+        s->profile.has_restart_delay = false;
+        s->profile.dirty = true;
         return 0;
     }
     if (!strcmp(argv[0], "no") && argc == 2) {
@@ -560,6 +674,16 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             return 0;
         }
         if (!strcmp(argv[1], "env")) return profile_no_env(&s->profile, 2, argv);
+        if (!strcmp(argv[1], "restart")) {
+            profile_clear_restart(&s->profile);
+            return 0;
+        }
+        if (!strcmp(argv[1], "restart-delay") || !strcmp(argv[1], "restart_delay_seconds")) {
+            s->profile.restart_delay_seconds = 0;
+            s->profile.has_restart_delay = false;
+            s->profile.dirty = true;
+            return 0;
+        }
         int mode_rc = profile_set_mode(&s->profile, argv[1], false);
         if (mode_rc == 0) return 0;
         if (!strcmp(argv[1], "alias") || !strcmp(argv[1], "param") || !strcmp(argv[1], "pty-shim")) {

@@ -2322,6 +2322,84 @@ EOF
 }
 
 
+test_captive_profile_restart_metadata_preserves_edits_and_clears() {
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -d --name iosrestart --restart on-failure:2 --restart-delay 3 -- /bin/sh -c 'sleep 1' 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  "$HOLD_BIN" stop "$id" >/dev/null 2>&1 || true
+
+  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-restart-preserve.out" 2>"$TEST_ROOT/captive-restart-preserve.err" || { cat "$TEST_ROOT/captive-restart-preserve.out" "$TEST_ROOT/captive-restart-preserve.err" >&2; return 1; }
+enable
+configure terminal
+profile iosrestart
+info
+env HOLD_CISCO_TOUCHED yes
+commit
+end
+exit
+EOF
+  grep -q 'restart   : on-failure:2 delay=3' "$TEST_ROOT/captive-restart-preserve.out" || {
+    cat "$TEST_ROOT/captive-restart-preserve.out" >&2
+    return 1
+  }
+  "$HOLD_BIN" profile export iosrestart --json >"$TEST_ROOT/iosrestart-preserve.json" || return 1
+  python3 - "$TEST_ROOT/iosrestart-preserve.json" <<'PY' || { cat "$TEST_ROOT/iosrestart-preserve.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+if profile.get('restart') != 'on-failure:2':
+    raise SystemExit(f"restart not preserved: {profile.get('restart')!r}")
+if profile.get('restart_delay_seconds') != 3:
+    raise SystemExit(f"restart delay not preserved: {profile.get('restart_delay_seconds')!r}")
+if 'HOLD_CISCO_TOUCHED=yes' not in profile.get('env', []):
+    raise SystemExit(f"env edit missing after commit: {profile.get('env')!r}")
+PY
+
+  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-restart-edit.out" 2>"$TEST_ROOT/captive-restart-edit.err" || { cat "$TEST_ROOT/captive-restart-edit.out" "$TEST_ROOT/captive-restart-edit.err" >&2; return 1; }
+enable
+configure terminal
+profile iosrestart
+restart always
+restart-delay 4
+commit
+end
+exit
+EOF
+  "$HOLD_BIN" profile export iosrestart --json >"$TEST_ROOT/iosrestart-edit.json" || return 1
+  python3 - "$TEST_ROOT/iosrestart-edit.json" <<'PY' || { cat "$TEST_ROOT/iosrestart-edit.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+if profile.get('restart') != 'always':
+    raise SystemExit(f"restart not edited: {profile.get('restart')!r}")
+if profile.get('restart_delay_seconds') != 4:
+    raise SystemExit(f"restart delay not edited: {profile.get('restart_delay_seconds')!r}")
+PY
+
+  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-restart-clear.out" 2>"$TEST_ROOT/captive-restart-clear.err"
+enable
+configure terminal
+profile iosrestart
+no restart
+commit
+end
+exit
+EOF
+  rc=$?
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-restart-clear.out" "$TEST_ROOT/captive-restart-clear.err" >&2; return 1; }
+  "$HOLD_BIN" profile export iosrestart --json >"$TEST_ROOT/iosrestart-clear.json" || return 1
+  python3 - "$TEST_ROOT/iosrestart-clear.json" <<'PY' || { cat "$TEST_ROOT/iosrestart-clear.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+if 'restart' in profile or 'restart_delay_seconds' in profile:
+    raise SystemExit(f"restart fields not cleared: {profile!r}")
+PY
+}
+
+
 test_captive_profile_quoted_argv_and_env_round_trip() {
   local rc id got store
   store="$HOME/.local/state/hold"
@@ -4809,6 +4887,7 @@ run_test "Docker --rm removes run artifacts after exit" test_docker_rm_removes_r
 run_test "Docker --rm removes profile run artifacts after exit" test_docker_rm_removes_profile_run_artifacts_after_exit
 run_test "captive profile env persists and runs" test_captive_profile_env_persists_and_runs
 run_test "captive profile mode loads and edits an existing recipe" test_captive_profile_loads_existing_recipe_for_edit
+run_test "captive profile restart metadata preserves edits and clears" test_captive_profile_restart_metadata_preserves_edits_and_clears
 run_test "captive profile mode preserves quoted argv and env values" test_captive_profile_quoted_argv_and_env_round_trip
 run_test "profile transcript import/export round-trips a user-local recipe" test_profile_transcript_import_export_roundtrip
 run_test "profile name-first set command edits a user-local recipe" test_profile_name_first_set_command
