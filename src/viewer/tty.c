@@ -350,6 +350,9 @@ static int handle_follow_tick(struct viewer_state *state) {
             state->newer_available = false;
             cache_invalidate(state);
             changed = true;
+        } else if (state->cache_reached_eof) {
+            cache_invalidate(state);
+            changed = true;
         }
     }
     if (end >= 0 && !state->at_live_edge && !state->newer_available && state->newer_scan_offset < state->tail_anchor) {
@@ -435,6 +438,7 @@ static int refill_cache(struct viewer_state *state) {
             }
         }
         if (hold_log_filter_backward_fd(state->fd, &opts, state->start_offset, scan_budget, &result) != 0) return -1;
+        bool oldest_backward_page = !result.scan_limited && result.match_count <= result.line_count;
         if (state->start_offset > 0 && !result.scan_limited && result.line_count == 0) {
             state->start_offset = 0;
             state->scan_mode = VIEWER_SCAN_FORWARD;
@@ -444,6 +448,17 @@ static int refill_cache(struct viewer_state *state) {
             memset(&result, 0, sizeof(result));
             opts.scan_byte_budget = scan_budget;
             if (lseek(state->fd, 0, SEEK_SET) < 0) return -1;
+            if (hold_log_filter_fd(state->fd, &opts, &result) != 0) return -1;
+        } else if (!state->at_live_edge && oldest_backward_page && result.line_count > 0) {
+            off_t oldest_visible = result.line_offsets[0];
+            state->start_offset = oldest_visible;
+            state->scan_mode = VIEWER_SCAN_FORWARD;
+            state->history_count = 0;
+            state->at_live_edge = false;
+            hold_log_filter_result_free(&result);
+            memset(&result, 0, sizeof(result));
+            opts.scan_byte_budget = scan_budget;
+            if (lseek(state->fd, state->start_offset, SEEK_SET) < 0) return -1;
             if (hold_log_filter_fd(state->fd, &opts, &result) != 0) return -1;
         }
     } else {
