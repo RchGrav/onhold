@@ -45,6 +45,24 @@ int hold_write_record_atomic(const char *dir, const struct hold_run_record *r, i
     fprintf(f, "  \"argv\": ");
     hold_write_json_argv(f, argc, argv);
     fprintf(f, ",\n");
+    if (r->has_observed) {
+        fprintf(f, "  \"observed\": {\n");
+        fprintf(f, "    \"exe\": \"");
+        hold_json_escape(f, r->observed_exe);
+        fprintf(f, "\",\n");
+        fprintf(f, "    \"argv\": ");
+        hold_write_json_argv(f, r->observed_argc, r->observed_argv);
+        fprintf(f, ",\n");
+        fprintf(f, "    \"cwd\": \"");
+        hold_json_escape(f, r->observed_cwd);
+        fprintf(f, "\"\n");
+        fprintf(f, "  },\n");
+    }
+    fprintf(f, "  \"normalized\": {\n");
+    fprintf(f, "    \"argv\": ");
+    hold_write_json_argv(f, argc, argv);
+    fprintf(f, "\n");
+    fprintf(f, "  },\n");
     fprintf(f, "  \"cmdline_display\": \"");
     hold_json_escape(f, r->cmdline);
     fprintf(f, "\",\n");

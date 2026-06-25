@@ -50,6 +50,11 @@ struct hold_run_record {
     char **ports;
     int volumec;
     char **volumes;
+    bool has_observed;
+    char observed_exe[HOLD_PATH_MAX];
+    char observed_cwd[HOLD_PATH_MAX];
+    int observed_argc;
+    char **observed_argv;
     char restart_policy[64];
     int restart_delay_seconds;
     bool has_restart_policy;

@@ -292,18 +292,24 @@ static int adopt_foreground_group(const struct hold_invocation *inv,
         fprintf(stderr, "hold: failed to identify foreground process group %ld\n", (long)fg_pgid);
         return 5;
     }
-    char **argv = NULL;
+    char **observed_argv = NULL;
     int argc = 0;
-    if (read_proc_cmdline(adopted_pid, &argv, &argc) != 0) {
+    if (read_proc_cmdline(adopted_pid, &observed_argv, &argc) != 0) {
         fprintf(stderr, "hold: failed to read foreground process arguments\n");
         return 5;
     }
+    char **normalized_argv = NULL;
+    if (hold_copy_argv(&normalized_argv, argc, observed_argv) != 0) {
+        hold_free_argv_alloc(observed_argv, argc);
+        return 3;
+    }
     char exe_path[HOLD_PATH_MAX] = {0};
     if (read_proc_exe_path(adopted_pid, exe_path, sizeof(exe_path)) == 0 && exe_path[0]) {
-        free(argv[0]);
-        argv[0] = strdup(exe_path);
-        if (!argv[0]) {
-            hold_free_argv_alloc(argv, argc);
+        free(normalized_argv[0]);
+        normalized_argv[0] = strdup(exe_path);
+        if (!normalized_argv[0]) {
+            hold_free_argv_alloc(normalized_argv, argc);
+            hold_free_argv_alloc(observed_argv, argc);
             return 3;
         }
     }
@@ -311,8 +317,9 @@ static int adopt_foreground_group(const struct hold_invocation *inv,
     if (read_proc_cwd_path(adopted_pid, cwd_path, sizeof(cwd_path)) != 0) {
         cwd_path[0] = '\0';
     }
-    if (hold_normalize_existing_argv_paths_from_cwd(argv, argc, 1, cwd_path[0] ? cwd_path : NULL) != 0) {
-        hold_free_argv_alloc(argv, argc);
+    if (hold_normalize_existing_argv_paths_from_cwd(normalized_argv, argc, 1, cwd_path[0] ? cwd_path : NULL) != 0) {
+        hold_free_argv_alloc(normalized_argv, argc);
+        hold_free_argv_alloc(observed_argv, argc);
         return 3;
     }
 
@@ -324,13 +331,15 @@ static int adopt_foreground_group(const struct hold_invocation *inv,
     char id[16], log_path[HOLD_PATH_MAX];
     if (hold_gen_id_for_store(store, avoid_public_store, NULL, id, sizeof(id)) != 0 ||
         hold_checked_snprintf(log_path, sizeof(log_path), "%s/%s.log", store->log_dir, id) != 0) {
-        hold_free_argv_alloc(argv, argc);
+        hold_free_argv_alloc(normalized_argv, argc);
+        hold_free_argv_alloc(observed_argv, argc);
         return 3;
     }
 
     pid_t logger = fork();
     if (logger < 0) {
-        hold_free_argv_alloc(argv, argc);
+        hold_free_argv_alloc(normalized_argv, argc);
+        hold_free_argv_alloc(observed_argv, argc);
         return 3;
     }
     if (logger == 0) {
@@ -359,14 +368,20 @@ static int adopt_foreground_group(const struct hold_invocation *inv,
     r.has_boot = hold_current_boot_id(r.boot_id, sizeof(r.boot_id));
     hold_read_proc_stat_tokens(adopted_pid, NULL, &r.proc_starttime_ticks);
     hold_read_proc_exe(adopted_pid, &r.exe_dev, &r.exe_ino);
-    if (hold_format_argv_human(r.cmdline, sizeof(r.cmdline), argc, argv) != 0) {
+    if (hold_format_argv_human(r.cmdline, sizeof(r.cmdline), argc, normalized_argv) != 0) {
         snprintf(r.cmdline, sizeof(r.cmdline), "?");
     }
+    r.has_observed = true;
+    snprintf(r.observed_exe, sizeof(r.observed_exe), "%s", exe_path[0] ? exe_path : observed_argv[0]);
+    snprintf(r.observed_cwd, sizeof(r.observed_cwd), "%s", cwd_path);
+    r.observed_argc = argc;
+    r.observed_argv = observed_argv;
     char record_path[HOLD_PATH_MAX];
-    if (hold_write_record_atomic(store->record_dir, &r, argc, argv, record_path, sizeof(record_path)) != 0) {
+    if (hold_write_record_atomic(store->record_dir, &r, argc, normalized_argv, record_path, sizeof(record_path)) != 0) {
         int saved = errno;
         kill(logger, SIGTERM);
-        hold_free_argv_alloc(argv, argc);
+        hold_free_argv_alloc(normalized_argv, argc);
+        hold_free_argv_alloc(observed_argv, argc);
         errno = saved;
         hold_die_errno("hold: failed to write adopted run record");
     }
@@ -382,7 +397,8 @@ static int adopt_foreground_group(const struct hold_invocation *inv,
                   r.id,
                   r.id);
     fflush(stdout);
-    hold_free_argv_alloc(argv, argc);
+    hold_free_argv_alloc(normalized_argv, argc);
+    hold_free_argv_alloc(observed_argv, argc);
     return 0;
 #endif
 }

@@ -59,6 +59,11 @@ static int perform_explicit_start_options(const struct hold_invocation *inv,
                                             char **argv);
 static void spawn_auto_remove_watcher(const struct hold_store *store, const struct hold_run_record *record);
 
+static void free_launch_and_observed_argv(char **launch_argv, char **observed_argv, int argc) {
+    hold_free_argv_alloc(launch_argv, argc);
+    hold_free_argv_alloc(observed_argv, argc);
+}
+
 static void handle_restart_signal(int signo) {
     (void)signo;
     g_restart_stop = 1;
@@ -365,16 +370,28 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         return 1;
     }
 
+    char observed_cwd[HOLD_PATH_MAX] = {0};
+    if (!getcwd(observed_cwd, sizeof(observed_cwd))) {
+        observed_cwd[0] = '\0';
+    }
+    char **observed_argv = NULL;
+    if (hold_copy_argv(&observed_argv, argc, argv) != 0) {
+        hold_die_errno("hold: failed to prepare observed argv");
+    }
+
     char **launch_argv = NULL;
     if (hold_copy_argv(&launch_argv, argc, argv) != 0) {
+        hold_free_argv_alloc(observed_argv, argc);
         hold_die_errno("hold: failed to prepare argv");
     }
     free(launch_argv[0]);
     launch_argv[0] = strdup(resolved_exec_path);
     if (!launch_argv[0]) {
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         hold_die_errno("hold: failed to prepare argv");
     }
-    if (hold_normalize_existing_argv_paths_from_cwd(launch_argv, argc, 1, NULL) != 0) {
+    if (hold_normalize_existing_argv_paths_from_cwd(launch_argv, argc, 1, observed_cwd[0] ? observed_cwd : NULL) != 0) {
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         hold_die_errno("hold: failed to normalize argv paths");
     }
 
@@ -397,19 +414,19 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
     }
 
     if (hold_gen_id_for_store(store, avoid_public_store, avoid_user_store, id, sizeof(id)) != 0) {
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         hold_die_errno("hold: failed to generate id");
     }
     if (hold_checked_snprintf(log_path, sizeof(log_path), "%s/%s.log", store->log_dir, id) != 0) {
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         hold_die_errno("hold: log path too long");
     }
     if (hold_checked_snprintf(reserve_path, sizeof(reserve_path), "%s/.%s.reserve", store->record_dir, id) != 0) {
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         hold_die_errno("hold: reserve path too long");
     }
     if (console_mode && hold_format_console_sock_path(store, id, console_sock, sizeof(console_sock)) != 0) {
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         hold_die_errno("hold: console socket path too long");
     }
     uid_t console_owner_uid = geteuid();
@@ -424,7 +441,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         if (pipe(pipefd) != 0) {
             int saved = errno;
             unlink(reserve_path);
-            hold_free_argv_alloc(launch_argv, argc);
+            free_launch_and_observed_argv(launch_argv, observed_argv, argc);
             errno = saved;
             hold_die_errno("hold: pipe failed");
         }
@@ -434,7 +451,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
             close(pipefd[0]);
             close(pipefd[1]);
             unlink(reserve_path);
-            hold_free_argv_alloc(launch_argv, argc);
+            free_launch_and_observed_argv(launch_argv, observed_argv, argc);
             errno = saved;
             hold_die_errno("hold: pipe setup failed");
         }
@@ -445,7 +462,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         close(pipefd[0]);
         close(pipefd[1]);
         unlink(reserve_path);
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         errno = saved;
         hold_die_errno("hold: fork failed");
     }
@@ -535,7 +552,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         if (console_sock[0]) {
             unlink(console_sock);
         }
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         errno = handshake_errno;
         hold_die_errno("hold: exec handshake failed");
     }
@@ -554,7 +571,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         if (console_sock[0]) {
             unlink(console_sock);
         }
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         return 1;
     }
 
@@ -637,6 +654,15 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
     if (hold_format_argv_human(r.cmdline, sizeof(r.cmdline), argc, launch_argv) != 0) {
         snprintf(r.cmdline, sizeof(r.cmdline), "?");
     }
+    r.has_observed = true;
+    if (hold_checked_snprintf(r.observed_exe, sizeof(r.observed_exe), "%s", resolved_exec_path) != 0) {
+        hold_die_errno("hold: observed executable path too long");
+    }
+    if (hold_checked_snprintf(r.observed_cwd, sizeof(r.observed_cwd), "%s", observed_cwd) != 0) {
+        hold_die_errno("hold: observed cwd too long");
+    }
+    r.observed_argc = argc;
+    r.observed_argv = observed_argv;
 
     char record_path[HOLD_PATH_MAX] = {0};
     bool chown_user_local_artifacts = store->kind == STORE_USER_LOCAL && inv && inv->euid_root && inv->have_sudo_user;
@@ -667,7 +693,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
                     unlink(console_sock);
                 }
                 unlink(reserve_path);
-                hold_free_argv_alloc(launch_argv, argc);
+                free_launch_and_observed_argv(launch_argv, observed_argv, argc);
                 errno = saved;
                 hold_die_errno("hold: failed to set user-local ownership");
             }
@@ -694,7 +720,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
                     unlink(console_sock);
                 }
                 unlink(reserve_path);
-                hold_free_argv_alloc(launch_argv, argc);
+                free_launch_and_observed_argv(launch_argv, observed_argv, argc);
                 char public_path[HOLD_PATH_MAX];
                 if (hold_checked_snprintf(public_path, sizeof(public_path), "%s/%s.json", store->public_dir, r.id) == 0) {
                     unlink(public_path);
@@ -721,7 +747,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         fflush(stdout);
 
         if (tail) {
-            hold_free_argv_alloc(launch_argv, argc);
+            free_launch_and_observed_argv(launch_argv, observed_argv, argc);
             int tail_rc = 0;
             if (console_mode) {
                 tail_rc = hold_run_native_console(r.console_sock);
@@ -744,7 +770,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         }
         hold_free_argv_alloc(r.ports, r.portc);
         hold_free_argv_alloc(r.volumes, r.volumec);
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         return 0;
     }
     {
@@ -755,7 +781,7 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
         if (console_sock[0]) {
             unlink(console_sock);
         }
-        hold_free_argv_alloc(launch_argv, argc);
+        free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         errno = saved;
         hold_die_errno("hold: failed to write record");
     }

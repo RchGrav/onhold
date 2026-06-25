@@ -3436,9 +3436,20 @@ record = json.load(open(sys.argv[1], encoding='utf-8'))[0]
 profile = json.load(open(sys.argv[2], encoding='utf-8'))
 want = sys.argv[3]
 argv = record.get('argv') or []
+normalized = (record.get('normalized') or {}).get('argv') or []
+observed = record.get('observed') or {}
+observed_argv = observed.get('argv') or []
 args = profile.get('args') or []
 if len(argv) < 2 or argv[1] != want:
     raise SystemExit(f'run record did not normalize relative script arg: {argv!r}')
+if len(normalized) < 2 or normalized[1] != want:
+    raise SystemExit(f'normalized argv did not preserve absolute script arg: {normalized!r}')
+if len(observed_argv) < 2 or observed_argv[1] != './rel-normalize.sh':
+    raise SystemExit(f'observed argv did not preserve captured relative script arg: {observed_argv!r}')
+if observed.get('cwd') != __import__('os').path.dirname(want):
+    raise SystemExit(f'observed cwd mismatch: {observed.get("cwd")!r}')
+if not (observed.get('exe') or '').startswith('/'):
+    raise SystemExit(f'observed exe is not absolute: {observed.get("exe")!r}')
 if len(args) < 2 or args[1] != want:
     raise SystemExit(f'named profile did not normalize relative script arg: {args!r}')
 PY
@@ -3501,8 +3512,19 @@ PY
 import json, sys
 record = json.load(open(sys.argv[1], encoding='utf-8'))
 argv = record.get('argv') or []
+normalized = (record.get('normalized') or {}).get('argv') or []
+observed = record.get('observed') or {}
+observed_argv = observed.get('argv') or []
 if len(argv) < 2 or argv[1] != sys.argv[2]:
     raise SystemExit(f'adopted shell record did not normalize relative foreground argv path: {argv!r}')
+if len(normalized) < 2 or normalized[1] != sys.argv[2]:
+    raise SystemExit(f'adopted shell normalized argv mismatch: {normalized!r}')
+if len(observed_argv) < 2 or observed_argv[1] != './shell-rel.sh':
+    raise SystemExit(f'adopted shell observed argv did not preserve captured relative path: {observed_argv!r}')
+if observed.get('cwd') != __import__('os').path.dirname(sys.argv[2]):
+    raise SystemExit(f'adopted shell observed cwd mismatch: {observed.get("cwd")!r}')
+if not (observed.get('exe') or '').startswith('/'):
+    raise SystemExit(f'adopted shell observed exe is not absolute: {observed.get("exe")!r}')
 PY
   then
     cat "$record" >&2
