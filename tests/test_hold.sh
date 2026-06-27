@@ -759,6 +759,12 @@ test_argument_edges() {
   "$HOLD_BIN" help profiles | grep -q 'hold profile <name> create -- <cmd>' || return 1
   "$HOLD_BIN" help targets | grep -q 'run id, leading id prefix, or profile name' || return 1
   "$HOLD_BIN" help scripting | grep -q 'Exit codes:' || return 1
+  "$HOLD_BIN" help run >"$TEST_ROOT/help-run.out" || return 1
+  grep -q -- '-p, --publish SPEC' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
+  grep -q -- '-v, --volume SPEC' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
+  grep -q -- '--restart POLICY' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
+  grep -q -- '--restart-delay N' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
+  grep -q -- '--privileged' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
   "$HOLD_BIN" stop -h | grep -q 'usage: hold stop' || return 1
   out=$("$HOLD_BIN" --version) || return 1
   printf '%s\n' "$out" | grep -Eq '^(dev|[0-9a-f]{7,40}|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
@@ -1100,6 +1106,108 @@ for wanted in ('idempotent-top-line-1', 'idempotent-top-line-2', 'idempotent-top
         raise SystemExit(f'final page lost top line {wanted}')
 if any(f'idempotent-top-line-{i}' in final for i in range(70, 81)):
     raise SystemExit('final page looped back to the bottom/tail')
+PYCHECK
+}
+
+test_log_view_follow_repeated_top_commands_ignore_live_growth() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 40); do echo "sticktop-line-$i"; done; for i in $(seq 41 90); do sleep 0.03; echo "sticktop-line-$i"; done; sleep 0.2' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.15
+  set +e
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 40); out.flush(); time.sleep(0.2); out.write((b"\x1b[H" + b"\x1b[5~") * 5); out.flush(); time.sleep(1.4); out.write((b"\x1b[H" + b"\x1b[5~") * 3); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-repeated-top-live.out" 2>"$TEST_ROOT/view-follow-repeated-top-live.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-repeated-top-live.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/view-follow-repeated-top-live.out" <<'PYCHECK' || { cat "$TEST_ROOT/view-follow-repeated-top-live.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw).replace('\r', '')
+stats = re.findall(r'scan_gen=(\d+) offset=(\d+) prev=(\d+) next=(\d+).*?follow=(tail|browsing|exited)', plain)
+if not stats:
+    raise SystemExit('missing debug stats')
+first_top = next((i for i, st in enumerate(stats) if st[1] == '0' and st[4] in ('browsing', 'exited')), None)
+if first_top is None:
+    raise SystemExit(f'never reached top page: {stats[-10:]}')
+for st in stats[first_top:]:
+    if st[1] != '0' or st[4] not in ('browsing', 'exited'):
+        raise SystemExit(f'repeated top commands during live growth looped away from top: {st}')
+final = plain[-1600:]
+for wanted in ('sticktop-line-1', 'sticktop-line-2', 'sticktop-line-3', 'sticktop-line-4'):
+    if wanted not in final:
+        raise SystemExit(f'final top-pinned page lost oldest line {wanted}')
+if any(f'sticktop-line-{i}' in final for i in range(80, 91)):
+    raise SystemExit('final top-pinned page looped back to the newest tail')
+PYCHECK
+}
+
+test_log_view_modified_page_up_reaches_oldest_page_without_tail_loop() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 80); do echo "modpgup-line-$i"; done; sleep 0.4' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.2
+  set +e
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5;5~" * 30); out.flush(); time.sleep(0.2); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-modpgup.out" 2>"$TEST_ROOT/view-follow-modpgup.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-modpgup.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/view-follow-modpgup.out" <<'PYCHECK' || { cat "$TEST_ROOT/view-follow-modpgup.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw).replace('\r', '')
+stats = re.findall(r'scan_gen=(\d+) offset=(\d+) prev=(\d+) next=(\d+).*?follow=(tail|browsing|exited)', plain)
+if not stats:
+    raise SystemExit('missing debug stats')
+last = stats[-1]
+if last[1] != '0' or last[4] not in ('browsing', 'exited'):
+    raise SystemExit(f'modified PageUp did not reach/stay at offset 0: {last}')
+final = plain[-1400:]
+for wanted in ('modpgup-line-1', 'modpgup-line-2', 'modpgup-line-3', 'modpgup-line-4'):
+    if wanted not in final:
+        raise SystemExit(f'final modified-PageUp page lost oldest line {wanted}')
+if any(f'modpgup-line-{i}' in final for i in range(70, 81)):
+    raise SystemExit('modified-PageUp page looped back to the bottom/tail')
+PYCHECK
+}
+
+test_log_view_modified_home_key_pins_oldest_page_without_tail_loop() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 90); do echo "modhome-line-$i"; done; sleep 0.6; echo "modhome-line-91"; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.2
+  set +e
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[1;5H"); out.flush(); time.sleep(0.9); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-modhomepin.out" 2>"$TEST_ROOT/view-follow-modhomepin.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-modhomepin.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/view-follow-modhomepin.out" <<'PYCHECK' || { cat "$TEST_ROOT/view-follow-modhomepin.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw).replace('\r', '')
+stats = re.findall(r'scan_gen=(\d+) offset=(\d+) prev=(\d+) next=(\d+).*?follow=(tail|browsing|exited)', plain)
+if not stats:
+    raise SystemExit('missing debug stats')
+last = stats[-1]
+if last[1] != '0' or last[4] not in ('browsing', 'exited'):
+    raise SystemExit(f'modified Home/top navigation did not stay anchored at offset 0: {last}')
+final = 'hold logs' + plain.split('hold logs')[-1]
+for wanted in ('modhome-line-1', 'modhome-line-2', 'modhome-line-3', 'modhome-line-4'):
+    if wanted not in final:
+        raise SystemExit(f'final modified-Home page lost oldest line {wanted}')
+if any(f'modhome-line-{i}' in final for i in range(80, 92)):
+    raise SystemExit('modified-Home page looped back to the bottom/tail')
 PYCHECK
 }
 
@@ -4996,7 +5104,10 @@ run_test "internal viewer follow page-up stays at the first log page" test_log_v
 run_test "internal viewer follow oldest page does not wrap back to tail" test_log_view_follow_oldest_page_does_not_wrap_to_tail
 run_test "internal viewer follow arrow-up to top does not wrap to tail" test_log_view_follow_arrow_up_to_top_does_not_wrap_to_tail
 run_test "internal viewer top navigation is idempotent after reaching oldest page" test_log_view_follow_top_navigation_is_idempotent
+run_test "internal viewer repeated top commands ignore live growth" test_log_view_follow_repeated_top_commands_ignore_live_growth
 run_test "internal viewer Home key pins oldest page without tail loop" test_log_view_home_key_pins_oldest_page_without_tail_loop
+run_test "internal viewer modified Home key pins oldest page without tail loop" test_log_view_modified_home_key_pins_oldest_page_without_tail_loop
+run_test "internal viewer modified PageUp reaches oldest page without tail loop" test_log_view_modified_page_up_reaches_oldest_page_without_tail_loop
 run_test "internal viewer follow page-down from top does not wrap to tail" test_log_view_follow_page_down_from_top_does_not_wrap_to_tail
 run_test "internal viewer follow page-down stops on the last real page" test_log_view_follow_page_down_stops_on_last_real_page
 run_test "internal viewer follow page-up returns to top after paging down" test_log_view_follow_page_up_after_top_page_down_returns_to_top

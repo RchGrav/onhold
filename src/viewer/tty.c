@@ -195,20 +195,47 @@ static enum viewer_key read_key(unsigned char *printable, int timeout_ms) {
     if (c == 6) return VIEWER_KEY_PAGE_DOWN;
     if (c == 2) return VIEWER_KEY_PAGE_UP;
     if (c == 27) {
-        unsigned char a = 0, b = 0, d = 0;
+        unsigned char a = 0;
         if (read_byte(&a) != 0) return VIEWER_KEY_QUIT;
+        if (a == 'O') {
+            unsigned char b = 0;
+            if (read_byte(&b) != 0) return VIEWER_KEY_QUIT;
+            if (b == 'A') return VIEWER_KEY_UP;
+            if (b == 'B') return VIEWER_KEY_DOWN;
+            if (b == 'H') return VIEWER_KEY_TOP;
+            if (b == 'F') return VIEWER_KEY_BOTTOM;
+            return VIEWER_KEY_NONE;
+        }
         if (a != '[') return VIEWER_KEY_QUIT;
-        if (read_byte(&b) != 0) return VIEWER_KEY_QUIT;
-        if (b == 'A') return VIEWER_KEY_UP;
-        if (b == 'B') return VIEWER_KEY_DOWN;
-        if (b == 'H') return VIEWER_KEY_TOP;
-        if (b == 'F') return VIEWER_KEY_BOTTOM;
-        if (b == '1' || b == '4' || b == '5' || b == '6' || b == '7' || b == '8') {
-            if (read_byte(&d) == 0 && d == '~') {
-                if (b == '5') return VIEWER_KEY_PAGE_UP;
-                if (b == '6') return VIEWER_KEY_PAGE_DOWN;
-                if (b == '1' || b == '7') return VIEWER_KEY_TOP;
-                if (b == '4' || b == '8') return VIEWER_KEY_BOTTOM;
+        unsigned char seq[32];
+        size_t n = 0;
+        while (n + 1 < sizeof(seq)) {
+            if (read_byte(&seq[n]) != 0) return VIEWER_KEY_QUIT;
+            unsigned char ch = seq[n++];
+            if (ch >= 0x40 && ch <= 0x7e) break;
+        }
+        if (n == 0) return VIEWER_KEY_NONE;
+        unsigned char final = seq[n - 1];
+        if (final == 'A') return VIEWER_KEY_UP;
+        if (final == 'B') return VIEWER_KEY_DOWN;
+        if (final == 'H') return VIEWER_KEY_TOP;
+        if (final == 'F') return VIEWER_KEY_BOTTOM;
+        if (final == '~') {
+            long param = 0;
+            bool have_param = false;
+            for (size_t i = 0; i + 1 < n; i++) {
+                if (isdigit(seq[i])) {
+                    have_param = true;
+                    param = param * 10 + (long)(seq[i] - '0');
+                    continue;
+                }
+                break;
+            }
+            if (have_param) {
+                if (param == 5) return VIEWER_KEY_PAGE_UP;
+                if (param == 6) return VIEWER_KEY_PAGE_DOWN;
+                if (param == 1 || param == 7) return VIEWER_KEY_TOP;
+                if (param == 4 || param == 8) return VIEWER_KEY_BOTTOM;
             }
         }
         return VIEWER_KEY_NONE;
