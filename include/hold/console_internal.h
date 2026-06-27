@@ -47,7 +47,8 @@ int hold_broker_process_client_input(struct console_client_state *state, int mas
                                 const unsigned char *buf, size_t n);
 int hold_make_console_listener(const char *sock_path);
 int hold_console_peer_uid(int fd, uid_t *uid_out);
-int hold_open_console_pty(int *master_out, int *slave_out);
+int hold_open_console_pty(int *master_out, int *slave_out,
+                          unsigned short init_rows, unsigned short init_cols);
 int hold_connect_console_socket(const char *sock_path);
 void hold_make_raw_termios(const struct termios *in, struct termios *out);
 

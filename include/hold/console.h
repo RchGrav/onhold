@@ -20,7 +20,9 @@ void hold_run_console_broker(int parent_pipe,
                         uid_t allowed_peer_uid,
                         int argc,
                         char **argv,
-                        const char *exec_path);
+                        const char *exec_path,
+                        unsigned short init_rows,
+                        unsigned short init_cols);
 int hold_run_native_console(const char *sock_path);
 
 #endif /* HOLD_CONSOLE_H */

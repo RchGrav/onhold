@@ -248,10 +248,23 @@ out:
     if (have_old_pipe) {
         sigaction(SIGPIPE, &old_pipe, NULL);
     }
+    if (terminal_saved) {
+        /* A program run inside the console may have left terminal-global modes
+         * enabled -- mouse reporting, bracketed paste, application keypad/cursor
+         * keys, a hidden cursor. These survive the PTY teardown and would leak
+         * back to the user's shell (mouse selection emitting control bytes, paste
+         * corruption, an invisible cursor -- i.e. an "unstable" terminal). Reset
+         * the common offenders before handing the terminal back. */
+        static const char reset_modes[] =
+            "\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1015l"
+            "\033[?2004l\033[?1l\033>\033[?25h";
+        (void)hold_write_all(STDOUT_FILENO, reset_modes, sizeof(reset_modes) - 1);
+    }
     if (alt_screen) {
         (void)hold_write_all(STDOUT_FILENO, "\033[?1049l", 8);
     }
     if (terminal_saved) {
+        (void)hold_write_all(STDOUT_FILENO, "\033[?25h", 6);
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_termios);
     }
     close(sock);

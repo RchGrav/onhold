@@ -440,6 +440,21 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
     bool console_have_allowed_peer_uid = inv && inv->euid_root && inv->have_sudo_user && inv->invoking_uid != console_owner_uid;
     uid_t console_allowed_peer_uid = console_have_allowed_peer_uid ? inv->invoking_uid : (uid_t)0;
 
+    /* Capture the invoking terminal size up front so the console broker can size
+     * its PTY before the child execs. The broker itself runs with /dev/null stdio
+     * and cannot query a terminal, so the size must be sampled here in the parent
+     * while the real controlling terminal is still on our stdin/stdout. */
+    unsigned short console_init_rows = 0, console_init_cols = 0;
+    if (console_mode) {
+        struct winsize start_ws;
+        memset(&start_ws, 0, sizeof(start_ws));
+        if (ioctl(STDIN_FILENO, TIOCGWINSZ, &start_ws) == 0 ||
+            ioctl(STDOUT_FILENO, TIOCGWINSZ, &start_ws) == 0) {
+            console_init_rows = start_ws.ws_row;
+            console_init_cols = start_ws.ws_col;
+        }
+    }
+
     int pipefd[2];
 #if defined(__linux__) && defined(O_CLOEXEC)
     if (pipe2(pipefd, O_CLOEXEC) != 0)
@@ -517,7 +532,9 @@ int hold_perform_start_with_metadata_options(const struct hold_invocation *inv,
                                       console_allowed_peer_uid,
                                       argc,
                                       launch_argv,
-                                      resolved_exec_path);
+                                      resolved_exec_path,
+                                      console_init_rows,
+                                      console_init_cols);
             _exit(127);
         }
         if (!interactive_stdin) {

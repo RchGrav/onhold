@@ -178,7 +178,8 @@ int hold_console_peer_uid(int fd, uid_t *uid_out) {
 #endif
 }
 
-int hold_open_console_pty(int *master_out, int *slave_out) {
+int hold_open_console_pty(int *master_out, int *slave_out,
+                          unsigned short init_rows, unsigned short init_cols) {
     int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (master < 0) {
         return -1;
@@ -196,17 +197,27 @@ int hold_open_console_pty(int *master_out, int *slave_out) {
         errno = saved;
         return -1;
     }
-    int slave = open(slave_name, O_RDWR | O_CLOEXEC);
+    /* Open the slave with O_NOCTTY so the broker (a session leader without a
+     * controlling terminal) does not accidentally adopt this PTY as its own
+     * controlling tty. The target child claims it explicitly via setsid() +
+     * TIOCSCTTY so that terminal-generated signals (Ctrl-C, etc.) and the
+     * foreground process group are scoped to the child, never the broker. */
+    int slave = open(slave_name, O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (slave < 0) {
         int saved = errno;
         close(master);
         errno = saved;
         return -1;
     }
-#ifdef TIOCSCTTY
-    (void)ioctl(slave, TIOCSCTTY, 0);
-#endif
-    (void)tcsetpgrp(slave, getpgrp());
+    /* Give the PTY a real window size before the child execs. Without this the
+     * kernel defaults to 0x0, which makes shells/readline and TUIs misrender and
+     * appear to drop keystrokes. Fall back to a sane 80x24 when no terminal size
+     * was supplied (e.g. a detached `-d -t` start with no client attached). */
+    struct winsize ws;
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_row = init_rows ? init_rows : 24;
+    ws.ws_col = init_cols ? init_cols : 80;
+    (void)ioctl(master, TIOCSWINSZ, &ws);
     *master_out = master;
     *slave_out = slave;
     return 0;

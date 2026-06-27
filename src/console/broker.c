@@ -105,7 +105,9 @@ void hold_run_console_broker(int parent_pipe,
                                uid_t allowed_peer_uid,
                                int argc,
                                char **argv,
-                               const char *exec_path) {
+                               const char *exec_path,
+                               unsigned short init_rows,
+                               unsigned short init_cols) {
     int listener = -1;
     int master = -1;
     int slave = -1;
@@ -124,7 +126,7 @@ void hold_run_console_broker(int parent_pipe,
     if (logfd < 0) {
         broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
     }
-    if (hold_open_console_pty(&master, &slave) != 0) {
+    if (hold_open_console_pty(&master, &slave, init_rows, init_cols) != 0) {
         broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
     }
 
@@ -157,6 +159,22 @@ void hold_run_console_broker(int parent_pipe,
         close(listener);
         close(master);
         close(logfd);
+        /* Become a session leader and claim the PTY slave as our controlling
+         * terminal. This scopes terminal-generated signals and the foreground
+         * process group to the target (so Ctrl-C interrupts the child instead of
+         * killing the broker) and lets interactive shells run job control. */
+        if (setsid() < 0) {
+            int e = errno;
+            (void)hold_write_all(exec_pipe[1], &e, sizeof(e));
+            _exit(127);
+        }
+#ifdef TIOCSCTTY
+        if (ioctl(slave, TIOCSCTTY, 0) != 0) {
+            int e = errno;
+            (void)hold_write_all(exec_pipe[1], &e, sizeof(e));
+            _exit(127);
+        }
+#endif
         if (dup2(slave, STDIN_FILENO) < 0 ||
             dup2(slave, STDOUT_FILENO) < 0 ||
             dup2(slave, STDERR_FILENO) < 0) {
