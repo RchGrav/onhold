@@ -53,8 +53,11 @@ Recommended next implementation tasks, in order:
    table shape with `RUN ID`, `PROFILE`, `COMMAND`, `CREATED`, `STATUS`,
    observed `PORTS`, and `NAMES`.
 4. **Public CLI contract completion:** finish the table-driven parser/help
-   agreement for the 0.4 shell surface, then remove or hide remaining legacy
-   primary verbs that conflict with the target command language.
+   agreement for the 0.4 shell surface, including the strict distinction
+   between Docker-shaped `hold run` and background-first bare `hold`, the
+   profile-over-executable selection rule, `--` conflict escape, and the
+   non-running `hold profile` creation twin; then remove or hide remaining
+   legacy primary verbs that conflict with the target command language.
 5. **Release evidence refresh:** after each implementation slice, update this
    file with exact command/date/environment evidence instead of relying on
    historical green runs.

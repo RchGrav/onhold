@@ -11,7 +11,7 @@ On Hold remains the project identity; the intended 0.4.0 user-facing command is 
 
 Version 0.4.0 is intentionally allowed to break the current CLI because the tool has no established user base. This document defines the target product direction for that release. Until the tracked alignment matrix marks a section implemented, treat it as a requirement or follow-up rather than a release claim. The goal is to replace the legacy action-first/alias-based surface with two deliberately familiar surfaces:
 
-1. **Normal shell CLI:** mimic Docker command names, option names, and flag semantics as closely as Hold's host-process model allows. Ease-of-use tweak: `run` may be optional for ad-hoc launches, so `hold -d sleep 30` is equivalent to the Docker-shaped `hold run -d sleep 30`.
+1. **Normal shell CLI:** mimic Docker command names, option names, and flag semantics as closely as Hold's host-process model allows when the user says `run`. Ease-of-use tweak: omitting `run` preserves Hold's original convenience mode: bare `hold <cmd>` or `hold <profile>` starts managed work in the background by default unless explicit flags or profile defaults say otherwise.
 2. **Captive CLI:** clone the Cisco IOS operator experience: User EXEC (`hold>`), Privileged EXEC (`hold#`), global configuration (`hold(config)#`), profile sub-configuration (`hold(config-profile:name)#`), `?` help, `enable`, `configure terminal`, `end`, `write`, `no`, `default`, staged config, and commit/install validation.
 
 JSON remains the canonical on-disk profile storage format. CLI transcript config is a human Cisco-IOS-style editing/import/export format that compiles to the JSON profile model.
@@ -31,6 +31,7 @@ Profiles may contain:
 - environment variables;
 - terminal/TTY preference;
 - Docker-familiar run flags and metadata (`--name`, `-d`, `-i`, `-t`, `-e`, `-p`, `-v`, `--rm`, `--restart`);
+- default launch policy for convenience/captive starts (`detach`, `interactive`, `tty`, and legacy `console`/`no console` as a compatibility spelling);
 - multi-run and instance allocation policy;
 - readiness/health metadata;
 - cleanup settings;
@@ -109,8 +110,9 @@ If a profile selector has zero matching runs, say so and suggest `hold run <prof
 The easiest path remains a bare command:
 
 ```sh
-hold npm run dev              # foreground: stream stdout/stderr, no stdin unless -i
-hold -d python server.py      # detached: print run ID
+hold npm run dev              # convenience mode: start managed work in the background
+hold web                      # if profile web exists, start it using profile defaults
+hold -- web                   # force executable web instead of profile web
 hold -it bash                 # allocate an interactive TTY; detach leaves it running
 hold --name web npm run dev   # create/label profile web from the launch recipe
 ```
@@ -122,7 +124,13 @@ hold -- logs                  # launch an executable named "logs"
 hold -it -- logs              # launch executable "logs" with an interactive TTY
 ```
 
-Do not document strange flag-name executables as the primary mental model. The practical rule is: `--` ends Hold parsing when a child command conflicts with the Hold command language.
+Do not document strange flag-name executables as the primary mental model. The practical rule is: `--` ends Hold/profile parsing when a child command conflicts with the Hold command language or with a profile name. A token containing `/`, such as `./web` or `/usr/bin/web`, is a filesystem path and must not be resolved as a profile.
+
+Selection priority differs by surface:
+
+- `hold run <word>` is Docker-shaped profile/image mode: resolve `<word>` as a profile first; only treat it as an executable name when no profile matches, or when `--` forces executable parsing. `hold run web` starts profile `web` if it exists; `hold run -- web` starts executable `web`.
+- bare `hold <word>` is convenience mode: resolve an exact profile match first, then fall back to executable lookup. This preserves short profile launches while still allowing `--` to force a same-named executable.
+- path-like tokens always win as executable/file paths and bypass profile lookup.
 
 ### 2.4 Observed vs normalized launch facts
 
@@ -593,17 +601,22 @@ ID  CLASS     OBJECT                         DEVIATION
 
 ## 3. Proposed command grammar and namespace rules
 
-The 0.4.0 normal shell CLI should be Docker-shaped. Command names and switches should match Docker where Hold has an equivalent concept; deviations must be intentional and documented. The most important ease-of-use deviation is optional `run` for ad-hoc launches.
+The 0.4.0 normal shell CLI should be Docker-shaped when the user chooses Docker-shaped commands. Command names and switches should match Docker where Hold has an equivalent concept; deviations must be intentional and documented. The most important ease-of-use deviation is that omitting `run` enters Hold convenience mode, which starts managed work in the background by default and may use profile defaults.
 
 ### 3.1 Normal shell command set
 
-The normal shell CLI is Docker-shaped. `run` is supported for Docker familiarity, but optional for ad-hoc ease of use.
+The normal shell CLI has two launch personalities. `run` is Docker-shaped and observes Docker-like flags directly. Omitting `run` is Hold convenience mode and preserves the original background-first workflow.
 
 ```text
 Launch:
-  hold run [run-options] <cmd|profile> [args...]
-  hold [run-options] <cmd> [args...]            # ease-of-use alias for ad-hoc run
-  hold [run-options] -- <cmd> [args...]         # only when cmd conflicts with Hold syntax
+  hold run [run-options] <profile|cmd> [args...] # Docker-shaped; profile match first
+  hold run [run-options] -- <cmd> [args...]      # force executable when cmd conflicts
+  hold [run-options] <profile|cmd> [args...]     # convenience mode; background-first
+  hold [run-options] -- <cmd> [args...]          # force executable/profile conflict resolver
+
+Profile creation:
+  hold profile [run-options] --name <profile> <cmd> [args...]
+  hold profile [run-options] --name <profile> -- <cmd> [args...]
 
 Listing and inspection:
   hold ps                                      # active run IDs, Docker-shaped
@@ -670,7 +683,7 @@ Launch flags:
 
 | Short | Long | Target meaning in Hold |
 | --- | --- | --- |
-| `-d` | `--detach` | Run in the background and print the run ID. Without `-d`, Hold stays attached to the child output like `docker run` foreground mode. |
+| `-d` | `--detach` | In `hold run`, run in the background and print the run ID. Without `-d`, Docker-shaped `run` stays attached to the child output like `docker run` foreground mode. In convenience mode, backgrounding is already the default. |
 | `-i` | `--interactive` | Keep stdin open for the child process without requiring a PTY. This supports raw interactive stdin flows, just like Docker `-i`. |
 | `-t` | `--tty` | Allocate the existing Hold PTY/console capability using Docker-shaped spelling. Replaces shell-side `console` as the primary 0.4 UX. |
 | `-it` | `--interactive --tty` | Combine stdin-open plus Hold's PTY/console capability: the normal terminal/shell experience. For profiles, `hold run -it <profile>` starts the profile attached when inactive, or reconnects to the singular active interactive/TTY run for that profile. The detach key sequence leaves the run alive under Hold. |
@@ -688,9 +701,11 @@ Launch flags:
 Examples:
 
 ```sh
-hold -d --name web -p 8080:3000 -e NODE_ENV=production npm run start
-hold -i python
+hold --name web -p 8080:3000 -e NODE_ENV=production npm run start
+hold python
 hold -it --rm bash
+hold run -d web
+hold run -- web
 hold run -i pythonshell
 hold run -it web
 hold run -d --restart always web
@@ -699,11 +714,33 @@ hold logs -f -n 100 web
 hold inspect web
 ```
 
+`run` versus convenience launch rules:
+
+- `hold run ...` is the Docker-faithful surface. It is foreground/attached unless `-d`/`--detach` is present, keeps stdin closed unless `-i` is present, and allocates a PTY only when `-t`/`-it` is present. The invocation's switches are the source of truth for these launch-mode choices.
+- bare `hold ...` is convenience mode. It creates a managed background run by default, unless explicit flags or profile defaults request foreground/interactive/TTY behavior.
+- When a bare word could be either a profile or an executable, prefer the profile. Use `--` to force the executable. Path-like tokens containing `/` are always paths, not profiles.
+
 `--name` rule:
 
 - If the profile name does not exist, create a profile from the normalized launch recipe and label the first run with that profile.
 - If the profile name exists and the launch recipe matches, treat it as a profile launch.
 - If the profile name exists and the recipe differs, refuse and suggest `hold run <profile>`, Cisco IOS captive configuration (`hold`, `enable`, `configure terminal`, `profile <name>`), or an explicit replacement flow. Do not silently mutate a profile from a launch command.
+
+`profile` creation twin:
+
+- `hold profile ...` accepts the same launch/profile-shaping switches as `hold run ...`, but it does not start a process. It writes a profile from the normalized recipe and saved options.
+- `--name <profile>` is required for the non-running profile-creation form so the command remains unambiguous and scriptable.
+- Options supplied to `hold profile` are persisted as profile defaults/metadata. They drive bare convenience starts, captive-CLI starts, grants, and generated IOS transcript output. The Docker-shaped `hold run` path still gives the current invocation's explicit switches priority for foreground/detach/interactivity/TTY behavior.
+
+Examples:
+
+```sh
+hold profile --name web -d -p 8080:3000 -e NODE_ENV=production npm run start
+hold profile --name shell -it -- bash
+hold web                 # convenience start using profile defaults
+hold run -d web          # Docker-shaped start with explicit detach
+hold run -- web          # force executable named web
+```
 
 Log flags:
 
@@ -728,7 +765,7 @@ Quick lookup:
 
 | Short | Long | Purpose | Common use |
 | --- | --- | --- | --- |
-| `-d` | `--detach` | Run the process/profile in the background, leaving the terminal free. | Long-running services |
+| `-d` | `--detach` | In Docker-shaped `run`, background the process/profile and leave the terminal free; in convenience mode, make the default explicit. | Long-running services |
 | `-i` | `--interactive` | Keep stdin open for sending raw data/commands. | Interactive shells, debugging |
 | `-t` | `--tty` | Allocate Hold's PTY/console path under Docker-shaped spelling. | Interactive terminal sessions |
 | `-e` | `--env` | Pass environment variables into the process/profile. | Configuration management |
@@ -859,11 +896,12 @@ Interactive TTY rule:
 
 Foreground/detach behavior:
 
-- Without `-d`, `hold <cmd>` and `hold run <profile>` stay in the foreground. Child stdout and stderr stream to the invoking terminal.
+- `hold run ...` follows Docker semantics: without `-d`, it stays in the foreground and streams child stdout/stderr to the invoking terminal. Use `-d`/`--detach` to background it and print only the run ID to stdout.
+- bare `hold <profile|cmd> ...` is Hold convenience mode: it backgrounds immediately by default and prints the run ID, unless explicit flags or profile defaults request foreground/interactive/TTY behavior.
 - Without `-i`, child stdin is not connected for input; the user may simply see output or a quiet/blinking cursor while the process runs.
 - `-i` connects stdin without adding terminal behavior.
 - `-t` allocates terminal behavior.
-- `-d` is the scriptable/background form and is the form that prints only the run ID to stdout.
+- In Docker-shaped mode, `-d` is the scriptable/background form. In convenience mode, backgrounding is already the default, and `-d` is accepted as explicit/documentary spelling.
 - `Ctrl-C` and other explicit terminal signals in foreground mode are forwarded to the child process group according to the selected terminal mode.
 - Closing the client terminal or losing the foreground client should be treated as a detach when Hold can do so safely; it should not be the normal lifecycle mechanism for stopping a run. Users stop runs with `stop`, `kill`, or `rm --force`.
 - The detach key sequence leaves the run alive and returns the user to the shell/captive CLI.
@@ -1088,6 +1126,16 @@ hold(config-profile:web)# param ?
 hold(config-profile:web)# param --port ?
   WORD       Pattern name from the pattern dictionary
 ```
+
+`param` is the bridge from profile configuration to safe delegated operation. A
+profile may expose operator-facing switches that are narrower than, or different
+from, the target program's raw argv. For granted profiles, non-root users choose
+only validated profile parameters; Hold maps those values into the canonical
+profile command/env shape before elevation. This is the core reason the
+IOS-style configuration surface matters: it gives admins a readable way to build
+small, constrained controls for development helpers, CI services, autostart-like
+workflows, and root-managed tasks without handing users arbitrary root argv or
+requiring them to edit systemd units directly.
 
 Example profile configuration:
 
@@ -1560,7 +1608,7 @@ Example:
 id="$(hold -d sleep 30)"
 ```
 
-`-d`/`--detach` starts should print only the run ID to stdout on success. Foreground starts without `-d` stream child stdout/stderr instead of reserving stdout for the run ID.
+Starts that detach or background by policy should print only the run ID to stdout on success. Docker-shaped foreground starts without `-d` stream child stdout/stderr instead of reserving stdout for the run ID.
 
 ## 10. Alignment status and decisions
 
@@ -1569,8 +1617,8 @@ Current branch status is tracked in [0.4.0 branch alignment and follow-up matrix
 Resolved decisions for the current 0.4.0 direction:
 
 1. Use **On Hold** for the project and **`hold`** for the intended 0.4.0 operator command.
-2. Keep ad-hoc launch as bare `hold <cmd> [args...]`; use `--` only when a child executable conflicts with Hold syntax.
-3. Use `run` and `stop` as profile lifecycle verbs, not as a namespace for managing existing executions. `hold run web logs` remains invalid.
+2. Keep ad-hoc/convenience launch as bare `hold <profile|cmd> [args...]`; prefer profile matches over executable names and use `--` when a child executable conflicts with Hold syntax or a profile name.
+3. Use `run` and `stop` as profile lifecycle verbs, not as a namespace for managing existing executions. `hold run web logs` remains invalid; `hold run <profile>` is Docker-shaped foreground by default and requires `-d`/`--detach` for explicit backgrounding.
 4. Use concrete run IDs as the safest singular handles for `stop`, `kill`, `logs`, `inspect`, and targeted `rm`. Profile-name selectors are allowed only when they resolve safely.
 5. Keep `prune` for bulk inactive history cleanup and `rm` for targeted deletion; `rm --force` is the explicit stop-and-remove form for an active concrete run ID.
 6. Treat current Space-selected, local deterministic exclusion as the minimum implemented v1 slice until the fuller `S/X/A/D/U` interaction model is implemented. The 0.4.0 default interaction is subtractive: Space removes things that look like the selected row, while Ctrl-R restores the full view.
