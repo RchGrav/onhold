@@ -74,3 +74,12 @@ dkms.conf
 
 # Local demo run IDs
 /.review-demo-runs.env
+
+HANDOFF.md
+
+# Local agent instructions
+CODEX.md
+CURSOR.md
+EXAMPLES.md
+.cursor/
+skills/

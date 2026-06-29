@@ -7,6 +7,11 @@ This is the top-level guide to how On Hold works. Start with the [quickstart](qu
 On Hold is a daemonless process launcher and recorder. It starts a command in a new session, writes a durable run record and log path, and later uses that record to inspect, tail, stop, kill, attach, or prune the tracked process group.
 
 > 0.4.0 redesign note: most reference pages describe the current 0.3.x/legacy command contract. The intended `hold` redesign and current branch gap matrix live in [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md).
+> The 2026-06-28 recovery/design artifacts are preserved as review material:
+> [direction and decisions](0.4.0-direction-2026-06-28.md) and
+> [security review](security-review-2026-06-28.md). They are not user-facing
+> command references; use them to choose implementation work and reconcile
+> release blockers.
 
 The philosophy is simple:
 
@@ -166,6 +171,9 @@ Every subsystem page links back here, names the quickstart step it explains, res
 
 - [Current implementation specification](SPEC.md)
 - [Hold 0.4 UX and CLI implementation plan](HOLD_0_4_UX_SPEC.md)
+- [0.4.0 branch alignment and follow-up matrix](0.4.0-alignment.md)
+- [0.4.0 direction and decisions, 2026-06-28](0.4.0-direction-2026-06-28.md)
+- [0.4.0 security review, 2026-06-28](security-review-2026-06-28.md)
 - [Documentation plan and review notes](PLAN.md)
 - [Repository README](../README.md)
 

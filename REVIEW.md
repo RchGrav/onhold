@@ -13,6 +13,49 @@ This file replaces an older review report whose test counts and file references 
 1. the full `hold` CLI/product direction in `docs/HOLD_0_4_UX_SPEC.md` is implemented and documented; and
 2. the hardening backlog in that same spec is implemented, tested, and reviewed.
 
+## Latest recovery/readiness pass
+
+Date: 2026-06-29
+
+The crash-recovery pass restored a test-green working tree and preserved the
+2026-06-28 direction/security findings as branch review artifacts:
+
+- [0.4.0 direction and decisions](docs/0.4.0-direction-2026-06-28.md)
+- [0.4.0 security review](docs/security-review-2026-06-28.md)
+
+Current verification from this pass:
+
+```sh
+make test
+# summary: 157 passed, 0 failed, 0 skipped
+# viewer filter engine: PASS
+# profile-hash vector: PASS
+
+make lint
+# layer dependency direction: clean
+```
+
+This proves the current recovered branch is ready for the next implementation
+slice. It does **not** prove 0.4.0 release readiness.
+
+Recommended next implementation tasks, in order:
+
+1. **Privilege hardening gate:** implement the trusted-execution-context layer
+   before shipping delegation: pinned cwd, root-owned binary/path-arg/ancestor
+   validation, sanitized/hash-covered env, and `O_NOFOLLOW`/fd-based log
+   handling. This is the highest-risk release blocker.
+2. **Profile schema expansion:** persist and hash cwd/env so the capability
+   digest matches the actual execution context.
+3. **Public CLI contract completion:** finish the table-driven parser/help
+   agreement for the 0.4 shell surface, then remove or hide remaining legacy
+   primary verbs that conflict with the target command language.
+4. **Run identity/name generator:** decide whether to wire the staged
+   adjective/noun wordlists into run naming now or keep them staged until the
+   run-id/name migration begins.
+5. **Release evidence refresh:** after each implementation slice, update this
+   file with exact command/date/environment evidence instead of relying on
+   historical green runs.
+
 ## Latest alignment pass
 
 Date: 2026-06-23

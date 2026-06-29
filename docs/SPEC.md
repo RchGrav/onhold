@@ -67,6 +67,33 @@ public profile map:   0644 root:root
 
 A root-managed start must never create a run under `/root/.local/state/hold` and must never accidentally create a root-managed run inside the invoking user's home state.
 
+### Global eligibility and granting
+
+Two separate operations, two separate rules.
+
+**To become a global profile:** none of the paths in the command may be located in a user's
+home folder. This applies to *every* path in the command — the program (`argv[0]`), every
+path argument (a script such as `server.py`, a config file, an `--output`/log target), and
+the working directory. Paths were already resolved to absolute form when the command ran
+(resolution is a run-time step, not a grant-time one), so this is a pure check: if any
+resolved path falls inside a user's home folder, the command **cannot become a global
+profile** — On Hold refuses.
+
+**To grant a profile to a user:** every target in the command must be **root-owned**. Granting
+delegates an existing global profile — it makes the per-user private copy and writes the
+sudoers entry — but only if the binary and every path argument are owned by root; otherwise
+On Hold refuses. This is a *stronger and separate* bar from global eligibility: global only
+excludes home-folder paths, whereas a granted profile runs as root on behalf of a non-root
+user, so every target it touches must be root-owned and therefore untamperable by that user.
+A profile can be global yet still not grantable (e.g. a target owned by some non-root service
+account).
+
+> Implementation status (2026-06-28): only the executable (`argv[0]`) is checked today —
+> `hold_start_target_is_within_invoking_home` (src/runtime/start.c:270) inspects `argv[0]`
+> alone and reroutes the run to the user-local store rather than refusing. The check must be
+> extended to cover every path argument and the working directory, applied as an explicit
+> refusal at the point a command would become global.
+
 Production builds use the compiled system store path. Test builds compiled with `HOLD_TESTING` may honor `HOLD_TEST_SYSTEM_STATE_DIR`; production root On Hold must not honor arbitrary user-controlled environment paths for the system store.
 
 ## 2. Invocation context
