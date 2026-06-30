@@ -5799,7 +5799,10 @@ SH
   PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" dump "$id" >"$TEST_ROOT/literal-h-command.out" || return 1
   grep -q 'literal-h-command' "$TEST_ROOT/literal-h-command.out" || { cat "$TEST_ROOT/literal-h-command.out" >&2; return 1; }
 
-  public_files=$(git ls-files docs examples install.sh scripts Makefile 2>/dev/null | grep -Ev '^docs/(archive/.*|0\.4-repair-ledger\.md|0\.4\.0-direction-.*|security-review-.*)$' || find docs examples install.sh scripts Makefile -type f 2>/dev/null)
+  public_files=$(
+    { git ls-files docs examples install.sh scripts Makefile 2>/dev/null || find docs examples install.sh scripts Makefile -type f 2>/dev/null; } |
+      grep -Ev '^docs/(archive/.*|0\.4-repair-ledger\.md|0\.4\.0-direction-.*|security-review-.*)$' || true
+  )
   if printf '%s\n' "$public_files" | xargs grep -InEi '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases|hold[[:space:]]+(start|grant|revoke)[[:space:]]+<alias>|start[[:space:]]+<alias>|known alias|alias selection|alias-labeled|alias exists|create an alias|aliases turn|system alias|alias starts|alias ambiguity|alias filtering|alias creation|run id or alias|command as an alias|system:alias|grant alias|root alias|public alias/hash|root-managed alias capabilities|supplied alias|alias/hash capability|run-alias verification|behind an alias|alias was called|alias was created from|for this alias/profile|across aliases' \
       >"$TEST_ROOT/forbidden-public-names.out" 2>/dev/null; then
     cat "$TEST_ROOT/forbidden-public-names.out" >&2

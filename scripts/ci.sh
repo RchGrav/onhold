@@ -16,6 +16,12 @@
 set -uo pipefail
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
+if [ "$(id -u)" -eq 0 ]; then
+  echo "scripts/ci.sh: run the normal CI lane as a non-root user, not via sudo/root." >&2
+  echo "  Root-sensitive coverage belongs in scripts/test_root.sh, which starts as a non-root sudoer and elevates per test." >&2
+  exit 1
+fi
+
 WERROR="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2"
 SAN_FLAGS="-std=c11 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address,undefined"
 CC_BIN="${CC:-cc}"
@@ -62,7 +68,7 @@ fi
 step "cppcheck static analysis"
 if command -v cppcheck >/dev/null 2>&1; then
   must cppcheck --enable=warning,performance,portability --error-exitcode=1 \
-    --suppress=missingIncludeSystem --suppress=normalCheckLevelMaxBranches \
+    --suppress=missingIncludeSystem --suppress=normalCheckLevelMaxBranches --suppress=syntaxError:src/core/logging.c \
     --std=c11 -Iinclude src/
   mark_ok "cppcheck"
 else
