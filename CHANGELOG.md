@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.4.0 - Hold process-management redesign
+
+This release turns the project into Hold: a Docker-shaped, daemonless manager
+for ordinary host processes. It keeps the lightweight single-binary model while
+adding durable 64-hex run IDs, generated run names, profile-first workflows,
+raw logs with sidecar indexes, a captive operator CLI, and stronger privilege
+and storage boundaries.
+
+### Added
+
+- Added the `hold` command surface with Docker-shaped `run`, `ps`, `logs`,
+  `inspect`, `stop`, `kill`, `rm`, `prune`, `profile`, and `console` workflows.
+- Added full 64-hex run tracking with 12-hex display selectors and generated
+  Docker-style `adjective_noun` run names.
+- Added explicit profile creation/update through `hold profile <name> ...` and
+  profile execution through `hold run <profile>`.
+- Added Docker-shaped run modes including foreground `hold run`, explicit
+  `-d/--detach`, `-i`, `-t`, `-it`, env/env-file persistence, restart metadata,
+  and profile replay of saved mode options.
+- Added raw local logs with an `HLOGIDX` sidecar index for offsets, lengths,
+  timestamps, and stdout/stderr metadata while keeping plain `hold logs` output
+  script-friendly.
+- Added dynamic log-viewer/filter foundations, including type-to-filter,
+  similarity exclusion, browse-away follow behavior, and PTY-friendly viewer
+  tests.
+- Added captive CLI profile editing, IOS-style prompts/help, profile transcript
+  import/export, and robust terminal input handling.
+- Added capability metadata support for direct runs and profiles, plus stronger
+  grant refusal/reporting for unsafe privileged profile paths.
+
+### Changed
+
+- Renamed the public product identity from Sigmund/Mund-era wording to Hold.
+- Reworked `ps` output into Docker-like columns with observed host listening
+  ports instead of fake publish metadata.
+- Made `hold run` foreground by default and kept bare `hold <cmd...>` as the
+  convenience background-first launch form.
+- Prioritized profile-name matches over executable-name matches unless `--` or a
+  path-like command token makes the executable intent explicit.
+- Unified run/profile/grant object handling around the Docker-shaped inspect
+  storage shape documented in `docs/0.4-object-format-repair.md`.
+- Replaced glibc NSS passwd/group lookups in the static-build path so the static
+  release build is warning-free.
+- Scrubbed stale public documentation and moved old planning/review material
+  under `docs/archive/`.
+
+### Fixed
+
+- Fixed captive CLI terminal handling so mouse reports, arrow keys, and stale
+  terminal modes do not leak raw escape text into the prompt.
+- Fixed public CLI contract handling so retired aliases and `run <subcommand>`
+  namespace passthrough forms are rejected.
+- Fixed sanitizer compatibility for PTY/viewer timing tests; sanitizer lanes now
+  run without timing-test skips.
+- Fixed system/user path classification so elevated runs targeting user-home
+  executables or path-like argv values remain user-scoped.
+- Fixed restart behavior so retained runs append to existing logs instead of
+  replacing them.
+
+### Removed
+
+- Removed fake Docker substrate behavior for `-p/--publish`, `-P`, and
+  `-v/--volume`; Hold rejects those flags because it is not containerized.
+- Removed the misleading captive `ping` command.
+
+### Release notes
+
+0.4.0 is the first Hold release candidate for the redesigned host-process
+management surface. Local release-gate CI passed with strict static/dynamic
+builds, the full regression suite, ASan/UBSan, cppcheck, layer lint, and the
+0.4 Docker-shaped smoke tests.
+
 ## 0.3.9 - Layered internal architecture and a hardened, reproducible build
 
 No runtime behavior change from 0.3.8: the CLI, on-disk formats, the profile-hash
