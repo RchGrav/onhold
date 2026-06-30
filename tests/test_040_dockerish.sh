@@ -49,7 +49,7 @@ grep -Eq '^\{"log":"smoke-out\\n","stream":"stdout","time":"[0-9]{4}-[0-9]{2}-[0
   fail "stdout JSON log entry missing"
 hold logs --plain "$display" | grep -qx 'smoke-out' || fail "logs --plain did not decode JSON"
 
-hold profile web -d -e HELLO=world --log-destination syslog -- /bin/sh -c 'echo $HELLO; sleep 2' >/dev/null
+hold profile web -e HELLO=world --log-destination syslog -- /bin/sh -c 'echo $HELLO; sleep 2' >/dev/null
 hold profile web export --json | grep -q '"log_destination": "syslog"' ||
   fail "profile log destination was not persisted"
 if hold profile --name nope /bin/true >/tmp/hold-profile-name.out 2>/tmp/hold-profile-name.err; then

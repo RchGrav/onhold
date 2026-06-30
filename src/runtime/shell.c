@@ -243,6 +243,7 @@ static int read_proc_cwd_path(pid_t pid, char *out, size_t n) {
 }
 #endif
 
+#if defined(__linux__)
 static void shell_background_logger(int master, const char *log_path, pid_t shell_pid, pid_t adopted_pgid, pid_t adopted_sid) {
     signal(SIGHUP, SIG_IGN);
     shell_close_stdio_to_devnull();
@@ -357,6 +358,7 @@ static int shell_hashed_adopt_id(const struct hold_store *store,
     errno = EEXIST;
     return -1;
 }
+#endif
 
 static int adopt_foreground_group(const struct hold_invocation *inv,
                                   const struct hold_store *store,

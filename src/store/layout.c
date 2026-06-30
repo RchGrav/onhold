@@ -29,9 +29,14 @@ int hold_init_user_store_from_home(const char *home, struct hold_store *store) {
         errno = EINVAL;
         return -1;
     }
+    char resolved_home[HOLD_PATH_MAX];
+    const char *base_home = home;
+    if (realpath(home, resolved_home)) {
+        base_home = resolved_home;
+    }
     memset(store, 0, sizeof(*store));
     store->kind = STORE_USER_LOCAL;
-    if (hold_checked_snprintf(store->base, sizeof(store->base), "%s/.local/state/hold", home) != 0 ||
+    if (hold_checked_snprintf(store->base, sizeof(store->base), "%s/.local/state/hold", base_home) != 0 ||
         hold_checked_snprintf(store->record_dir, sizeof(store->record_dir), "%s", store->base) != 0 ||
         hold_checked_snprintf(store->log_dir, sizeof(store->log_dir), "%s", store->base) != 0 ||
         hold_checked_snprintf(store->console_dir, sizeof(store->console_dir), "%s/console", store->base) != 0 ||
