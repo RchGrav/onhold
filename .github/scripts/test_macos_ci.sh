@@ -86,8 +86,7 @@ if [ -n "$expected_arch" ] && [ "$actual_arch" != "$expected_arch" ]; then
   fail "expected runner arch $expected_arch, got $actual_arch"
 fi
 
-version=$(sed -n '1s/[[:space:]]*$//p' VERSION)
-[ -n "$version" ] || fail "missing VERSION"
+version=$(bash .github/scripts/resolve_version.sh --base)
 
 make_args=(
   CC=clang

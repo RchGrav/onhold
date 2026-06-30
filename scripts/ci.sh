@@ -28,6 +28,10 @@ mark_ok() { ran="$ran $1"; }
 mark_no() { skipped="$skipped|$1 ($2)"; printf '  -- SKIPPED: %s (%s)\n' "$1" "$2"; }
 must()    { if ! "$@"; then printf '  FAILED: %s\n' "$*" >&2; fails=$((fails + 1)); fi; }
 
+step "version sync"
+must bash scripts/check_version_sync.sh
+mark_ok "version-sync"
+
 step "static, -Werror (CC=$CC_BIN)"
 must make clean
 must make CC="$CC_BIN" CFLAGS="$WERROR"

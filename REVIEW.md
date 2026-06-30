@@ -6,7 +6,7 @@ Scope: release-readiness notes for the 0.4.0 documentation, branch alignment, an
 
 ## Current status
 
-This file replaces an older review report whose test counts and file references described a previous implementation review. Treat this document as a status tracker, not proof that the current branch is release-ready. The current branch version file remains `0.3.9`; 0.4.0 wording is release-plan status unless backed by fresh verification.
+This file replaces an older review report whose test counts and file references described a previous implementation review. Treat this document as a status tracker, not proof that the current branch is release-ready. The current branch version is `0.4.0` from the canonical `VERSION` file; release-readiness wording still requires fresh verification evidence.
 
 0.4.0 is release-ready only after both tracks are complete:
 
