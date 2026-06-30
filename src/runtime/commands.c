@@ -71,6 +71,7 @@ int hold_cmd_console_action(const struct hold_invocation *inv,
     bool have_boot = hold_current_boot_id(boot, sizeof(boot));
     enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
     rc = attach_console_record(inv, &r, st);
+    hold_free_run_record(&r);
     free(targets);
     return rc;
 }
@@ -132,28 +133,43 @@ int hold_cmd_alias_action(const struct hold_invocation *inv,
     if (hold_load_record_by_id(target.store.record_dir, target.id, &r, record_path, sizeof(record_path)) != 0) {
         return 5;
     }
-    char *j = NULL;
-    if (hold_read_owned_file_no_symlink(record_path, &j) != 0) {
-        return 5;
-    }
-    char **profile_argv = NULL;
-    int profile_argc = 0;
     char binary_path[HOLD_PATH_MAX];
     char hash[PROFILE_HASH_STR_LEN];
     int rc = 0;
-    if (hold_json_get_argv_alloc(j, &profile_argv, &profile_argc) != 0 ||
-        hold_resolve_binary_path(profile_argv[0], binary_path, sizeof(binary_path)) != 0) {
+    if (r.argc <= 0 || !r.argv || !r.argv[0] ||
+        hold_resolve_binary_path(r.argv[0], binary_path, sizeof(binary_path)) != 0) {
         fprintf(stderr, "hold: error: failed to derive profile from run %s\n", target.id);
         rc = 5;
         goto out;
     }
     char command[256];
-    if (hold_format_argv_human(command, sizeof(command), profile_argc, profile_argv) != 0) {
+    if (hold_format_argv_human(command, sizeof(command), r.argc, r.argv) != 0) {
         snprintf(command, sizeof(command), "%s", "?");
     }
     if (target.store.kind == STORE_SYSTEM_MANAGED) {
-        hold_profile_hash_for_argv(binary_path, profile_argc, profile_argv, hash);
-        if (hold_write_profile_atomic(&target.store, hash, binary_path, profile_argc, profile_argv) != 0) {
+        hold_profile_hash_for_argv(binary_path, r.argc, r.argv, hash);
+        if (hold_write_profile_atomic_full(&target.store,
+                                           hash,
+                                           binary_path,
+                                           r.argc,
+                                           r.argv,
+                                           r.envc,
+                                           r.env,
+                                           r.portc,
+                                           r.ports,
+                                           r.volumec,
+                                           r.volumes,
+                                           r.cap_addc,
+                                           r.cap_add,
+                                           r.cap_dropc,
+                                           r.cap_drop,
+                                           r.mode_interactive,
+                                           r.mode_tty,
+                                           r.mode_detach,
+                                           r.allow_multi,
+                                           r.has_restart_policy ? r.restart_policy : NULL,
+                                           r.has_restart_delay ? r.restart_delay_seconds : 0,
+                                           r.has_log_destination ? r.log_destination : NULL) != 0) {
             hold_die_errno("hold: failed to write profile");
         }
         if (hold_alias_upsert_hash(&target.store, name, hash) != 0) {
@@ -165,15 +181,35 @@ int hold_cmd_alias_action(const struct hold_invocation *inv,
             hold_sig_note(inv, "hold: pinned '%s' -> %s\n", name, command);
         }
     } else {
-        if (hold_alias_upsert_recipe(&target.store, name, binary_path, profile_argc, profile_argv) != 0) {
+        if (hold_alias_upsert_recipe_full(&target.store,
+                                          name,
+                                          binary_path,
+                                          r.argc,
+                                          r.argv,
+                                          r.envc,
+                                          r.env,
+                                          r.portc,
+                                          r.ports,
+                                          r.volumec,
+                                          r.volumes,
+                                          r.cap_addc,
+                                          r.cap_add,
+                                          r.cap_dropc,
+                                          r.cap_drop,
+                                          r.mode_interactive,
+                                          r.mode_tty,
+                                          r.mode_detach,
+                                          r.allow_multi,
+                                          r.has_restart_policy ? r.restart_policy : NULL,
+                                          r.has_restart_delay ? r.restart_delay_seconds : 0,
+                                          r.has_log_destination ? r.log_destination : NULL) != 0) {
             hold_die_errno("hold: failed to write profile");
         }
         hold_sig_note(inv, "hold: pinned '%s' -> %s\n", name, command);
     }
 
 out:
-    hold_free_argv_alloc(profile_argv, profile_argc);
-    free(j);
+    hold_free_run_record(&r);
     return rc;
 }
 
@@ -292,6 +328,16 @@ static int profile_export_transcript(FILE *out, const char *name, const struct h
         profile_shell_quote(out, eq + 1);
         fputc('\n', out);
     }
+    for (int i = 0; i < recipe->cap_addc; i++) {
+        fputs("cap-add ", out);
+        profile_shell_quote(out, recipe->cap_add[i]);
+        fputc('\n', out);
+    }
+    for (int i = 0; i < recipe->cap_dropc; i++) {
+        fputs("cap-drop ", out);
+        profile_shell_quote(out, recipe->cap_drop[i]);
+        fputc('\n', out);
+    }
     if (recipe->mode_interactive) fputs("interactive\n", out);
     if (recipe->mode_tty) fputs("tty\n", out);
     if (recipe->mode_detach) fputs("detach\n", out);
@@ -316,47 +362,8 @@ static int profile_export_transcript(FILE *out, const char *name, const struct h
 static int profile_export_json(FILE *out, const char *name, const struct hold_profile *recipe) {
     fputs("{\n  \"version\": 1,\n  \"name\": \"", out);
     hold_json_escape(out, name);
-    fputs("\",\n  \"bin\": \"", out);
-    hold_json_escape(out, recipe->binary_path);
-    fputs("\",\n  \"args\": ", out);
-    hold_write_json_argv(out, recipe->argc, recipe->argv);
-    if (recipe->envc > 0 && recipe->env) {
-        fputs(",\n  \"env\": ", out);
-        hold_write_json_argv(out, recipe->envc, recipe->env);
-    }
-    if (recipe->mode_interactive || recipe->mode_tty || recipe->mode_detach || recipe->allow_multi) {
-        bool wrote = false;
-        fputs(",\n  \"mode\": {", out);
-        if (recipe->mode_interactive) {
-            fputs("\"interactive\": true", out);
-            wrote = true;
-        }
-        if (recipe->mode_tty) {
-            fprintf(out, "%s\"tty\": true", wrote ? ", " : "");
-            wrote = true;
-        }
-        if (recipe->mode_detach) {
-            fprintf(out, "%s\"detach\": true", wrote ? ", " : "");
-            wrote = true;
-        }
-        if (recipe->allow_multi) {
-            fprintf(out, "%s\"multi\": true", wrote ? ", " : "");
-        }
-        fputs("}", out);
-    }
-    if (recipe->has_restart_policy && recipe->restart_policy[0]) {
-        fputs(",\n  \"restart\": \"", out);
-        hold_json_escape(out, recipe->restart_policy);
-        fputs("\"", out);
-    }
-    if (recipe->has_restart_delay) {
-        fprintf(out, ",\n  \"restart_delay_seconds\": %d", recipe->restart_delay_seconds);
-    }
-    if (recipe->has_log_destination && recipe->log_destination[0]) {
-        fputs(",\n  \"log_destination\": \"", out);
-        hold_json_escape(out, recipe->log_destination);
-        fputs("\"", out);
-    }
+    fputs("\",\n", out);
+    hold_write_profile_recipe_json_members(out, recipe, "  ", "bin", "args", true);
     fputs("\n}\n", out);
     return ferror(out) ? 3 : 0;
 }
@@ -480,25 +487,10 @@ static int profile_import_json(const struct hold_store *store,
                                const char *override_name,
                                bool dry_run) {
     char name[ALIAS_MAX_LEN + 1];
-    char binary_path[HOLD_PATH_MAX];
-    char **argv = NULL;
-    char **env = NULL;
-    char **ports = NULL;
-    char **volumes = NULL;
-    int argc = 0;
-    int envc = 0;
-    int portc = 0;
-    int volumec = 0;
-    bool mode_interactive = false;
-    bool mode_tty = false;
-    bool mode_detach = false;
-    bool allow_multi = false;
-    char restart_policy[64] = {0};
-    int restart_delay_seconds = 0;
-    char log_destination[32] = {0};
+    struct hold_profile recipe;
+    bool have_recipe = false;
     int rc = 5;
-    if (hold_json_get_str(j, "name", name, sizeof(name)) != 0 || !hold_valid_alias(name) ||
-        hold_json_get_args_alloc(j, &argv, &argc) != 0 || argc <= 0) {
+    if (hold_json_get_str(j, "name", name, sizeof(name)) != 0 || !hold_valid_alias(name)) {
         fprintf(stderr, "hold: error: invalid profile JSON\n");
         goto out;
     }
@@ -509,20 +501,6 @@ static int profile_import_json(const struct hold_store *store,
         }
         snprintf(name, sizeof(name), "%s", override_name);
     }
-    if (hold_json_get_str(j, "bin", binary_path, sizeof(binary_path)) != 0 &&
-        hold_json_get_str(j, "binary_path", binary_path, sizeof(binary_path)) != 0 &&
-        hold_resolve_binary_path(argv[0], binary_path, sizeof(binary_path)) != 0) {
-        fprintf(stderr, "hold: error: failed to resolve profile command '%s'\n", argv[0]);
-        goto out;
-    }
-    if (binary_path[0] != '/') {
-        fprintf(stderr, "hold: error: invalid profile binary path\n");
-        goto out;
-    }
-    if (hold_normalize_existing_argv_paths_from_cwd(argv, argc, 1, NULL) != 0) {
-        hold_die_errno("hold: failed to normalize profile argv paths");
-    }
-    (void)hold_json_get_env_alloc(j, &env, &envc);
     const char *unsupported = NULL;
     if (hold_json_find_key(j, "ports", &unsupported) == 0) {
         fprintf(stderr, "hold: error: profile JSON uses unsupported ports metadata; Hold observes listening ports in hold ps instead\n");
@@ -532,34 +510,13 @@ static int profile_import_json(const struct hold_store *store,
         fprintf(stderr, "hold: error: profile JSON uses unsupported volumes metadata; pass host paths directly as argv/config paths\n");
         goto out;
     }
-    (void)hold_json_get_bool(j, "interactive", &mode_interactive);
-    (void)hold_json_get_bool(j, "tty", &mode_tty);
-    (void)hold_json_get_bool(j, "detach", &mode_detach);
-    (void)hold_json_get_bool(j, "multi", &allow_multi);
-    (void)hold_json_get_str(j, "restart", restart_policy, sizeof(restart_policy));
-    (void)hold_json_get_str(j, "log_destination", log_destination, sizeof(log_destination));
-    int64_t restart_delay_tmp = 0;
-    if (hold_json_get_i64(j, "restart_delay_seconds", &restart_delay_tmp) == 0 && restart_delay_tmp >= 0 && restart_delay_tmp <= INT_MAX) {
-        restart_delay_seconds = (int)restart_delay_tmp;
+    if (hold_parse_profile_recipe_json(j, NULL, &recipe) != 0) {
+        fprintf(stderr, "hold: error: invalid profile JSON\n");
+        goto out;
     }
-    const char *mode = NULL;
-    if (hold_json_find_key(j, "mode", &mode) == 0 && *mode == '{') {
-        const char *end = mode;
-        if (hold_skip_json_value(&end) == 0 && end > mode) {
-            size_t len = (size_t)(end - mode);
-            char *copy = malloc(len + 1);
-            if (!copy) {
-                rc = 3;
-                goto out;
-            }
-            memcpy(copy, mode, len);
-            copy[len] = '\0';
-            (void)hold_json_get_bool(copy, "interactive", &mode_interactive);
-            (void)hold_json_get_bool(copy, "tty", &mode_tty);
-            (void)hold_json_get_bool(copy, "detach", &mode_detach);
-            (void)hold_json_get_bool(copy, "multi", &allow_multi);
-            free(copy);
-        }
+    have_recipe = true;
+    if (hold_normalize_existing_argv_paths_from_cwd(recipe.argv, recipe.argc, 1, NULL) != 0) {
+        hold_die_errno("hold: failed to normalize profile argv paths");
     }
     if (dry_run) {
         printf("profile %s import dry-run ok\n", name);
@@ -568,30 +525,31 @@ static int profile_import_json(const struct hold_store *store,
     }
     if (hold_alias_upsert_recipe_full(store,
                                       name,
-                                      binary_path,
-                                      argc,
-                                      argv,
-                                      envc,
-                                      env,
-                                      portc,
-                                      ports,
-                                      volumec,
-                                      volumes,
-                                      mode_interactive,
-                                      mode_tty,
-                                      mode_detach,
-                                      allow_multi,
-                                      restart_policy[0] ? restart_policy : NULL,
-                                      restart_delay_seconds,
-                                      log_destination[0] ? log_destination : NULL) != 0) {
+                                      recipe.binary_path,
+                                      recipe.argc,
+                                      recipe.argv,
+                                      recipe.envc,
+                                      recipe.env,
+                                      recipe.portc,
+                                      recipe.ports,
+                                      recipe.volumec,
+                                      recipe.volumes,
+                                      recipe.cap_addc,
+                                      recipe.cap_add,
+                                      recipe.cap_dropc,
+                                      recipe.cap_drop,
+                                      recipe.mode_interactive,
+                                      recipe.mode_tty,
+                                      recipe.mode_detach,
+                                      recipe.allow_multi,
+                                      recipe.has_restart_policy ? recipe.restart_policy : NULL,
+                                      recipe.has_restart_delay ? recipe.restart_delay_seconds : 0,
+                                      recipe.has_log_destination ? recipe.log_destination : NULL) != 0) {
         hold_die_errno("hold: failed to import profile");
     }
     rc = 0;
 out:
-    hold_free_argv_alloc(argv, argc);
-    hold_free_argv_alloc(env, envc);
-    hold_free_argv_alloc(ports, portc);
-    hold_free_argv_alloc(volumes, volumec);
+    if (have_recipe) hold_free_profile(&recipe);
     return rc;
 }
 
@@ -639,6 +597,10 @@ static int profile_write_full_recipe(const struct hold_store *store,
                                      char **ports,
                                      int volumec,
                                      char **volumes,
+                                     int cap_addc,
+                                     char **cap_add,
+                                     int cap_dropc,
+                                     char **cap_drop,
                                      bool mode_interactive,
                                      bool mode_tty,
                                      bool mode_detach,
@@ -653,7 +615,9 @@ static int profile_write_full_recipe(const struct hold_store *store,
     if (!binary || !*binary || argc <= 0 || !argv || !argv[0] ||
         envc < 0 || (envc > 0 && !env) ||
         portc < 0 || (portc > 0 && !ports) ||
-        volumec < 0 || (volumec > 0 && !volumes)) {
+        volumec < 0 || (volumec > 0 && !volumes) ||
+        cap_addc < 0 || (cap_addc > 0 && !cap_add) ||
+        cap_dropc < 0 || (cap_dropc > 0 && !cap_drop)) {
         fprintf(stderr, "hold: error: incomplete profile transcript\n");
         return 5;
     }
@@ -681,6 +645,10 @@ static int profile_write_full_recipe(const struct hold_store *store,
                                       ports,
                                       volumec,
                                       volumes,
+                                      cap_addc,
+                                      cap_add,
+                                      cap_dropc,
+                                      cap_drop,
                                       mode_interactive,
                                       mode_tty,
                                       mode_detach,
@@ -725,6 +693,12 @@ static int profile_import_transcript(const struct hold_store *store,
     int volumec = 0;
     char **cmd_argv = NULL;
     int cmd_argc = 0;
+    char **cap_add = NULL;
+    int cap_addc = 0;
+    int cap_add_cap = 0;
+    char **cap_drop = NULL;
+    int cap_dropc = 0;
+    int cap_drop_cap = 0;
     bool mode_interactive = false;
     bool mode_tty = false;
     bool mode_detach = false;
@@ -801,6 +775,20 @@ static int profile_import_transcript(const struct hold_store *store,
             }
             char *copy = strdup(assignment);
             if (!copy || profile_push_token(&env, &envc, &env_cap, copy) != 0) {
+                free(copy);
+                profile_free_tokens(tokens, ntokens);
+                goto out;
+            }
+        } else if ((!strcmp(tokens[0], "cap-add") || !strcmp(tokens[0], "cap_add")) && ntokens == 2) {
+            char *copy = strdup(tokens[1]);
+            if (!copy || profile_push_token(&cap_add, &cap_addc, &cap_add_cap, copy) != 0) {
+                free(copy);
+                profile_free_tokens(tokens, ntokens);
+                goto out;
+            }
+        } else if ((!strcmp(tokens[0], "cap-drop") || !strcmp(tokens[0], "cap_drop")) && ntokens == 2) {
+            char *copy = strdup(tokens[1]);
+            if (!copy || profile_push_token(&cap_drop, &cap_dropc, &cap_drop_cap, copy) != 0) {
                 free(copy);
                 profile_free_tokens(tokens, ntokens);
                 goto out;
@@ -939,7 +927,7 @@ static int profile_import_transcript(const struct hold_store *store,
             printf("profile %s import dry-run ok\n", name);
             rc = 0;
         } else {
-            rc = profile_write_full_recipe(store, name, binary, argc, argv, envc, env, portc, ports, volumec, volumes, mode_interactive, mode_tty, mode_detach, allow_multi, restart_policy[0] ? restart_policy : NULL, restart_delay_seconds, log_destination[0] ? log_destination : NULL);
+            rc = profile_write_full_recipe(store, name, binary, argc, argv, envc, env, portc, ports, volumec, volumes, cap_addc, cap_add, cap_dropc, cap_drop, mode_interactive, mode_tty, mode_detach, allow_multi, restart_policy[0] ? restart_policy : NULL, restart_delay_seconds, log_destination[0] ? log_destination : NULL);
         }
         free(argv);
     }
@@ -949,6 +937,8 @@ out:
     profile_free_tokens(env, envc);
     profile_free_tokens(ports, portc);
     profile_free_tokens(volumes, volumec);
+    profile_free_tokens(cap_add, cap_addc);
+    profile_free_tokens(cap_drop, cap_dropc);
     profile_free_tokens(cmd_argv, cmd_argc);
     free(text);
     return rc;
@@ -1114,6 +1104,10 @@ int hold_cmd_profile_define_command(const struct hold_invocation *inv,
                                       char **env,
                                       int volumec,
                                       char **volumes,
+                                      int cap_addc,
+                                      char **cap_add,
+                                      int cap_dropc,
+                                      char **cap_drop,
                                       bool mode_interactive,
                                       bool mode_tty,
                                       bool mode_detach,
@@ -1140,6 +1134,10 @@ int hold_cmd_profile_define_command(const struct hold_invocation *inv,
                                      NULL,
                                      volumec,
                                      volumes,
+                                     cap_addc,
+                                     cap_add,
+                                     cap_dropc,
+                                     cap_drop,
                                      mode_interactive,
                                      mode_tty,
                                      mode_detach,
@@ -1244,7 +1242,7 @@ void hold_usage(void) {
            HOLD_VERSION);
 }
 
-static int json_request_get_op(const char *json, char *op, size_t op_n, bool *force) {
+static int json_request_get_op(const char *json, char *op, size_t op_n, bool *force, bool *detach) {
     int64_t v = 0;
     if (hold_json_get_i64(json, "v", &v) != 0 || v != 1 ||
         hold_json_get_str(json, "op", op, op_n) != 0) {
@@ -1254,7 +1252,22 @@ static int json_request_get_op(const char *json, char *op, size_t op_n, bool *fo
     if (hold_json_get_bool(json, "force", &parsed_force) != 0) {
         parsed_force = false;
     }
+    bool parsed_detach = false;
+    if (hold_json_get_bool(json, "detach", &parsed_detach) != 0) {
+        parsed_detach = false;
+    }
     *force = parsed_force;
+    *detach = parsed_detach;
+    return 0;
+}
+
+static int count_granted_profile_running(const struct hold_store *store, const char *alias, size_t *count_out) {
+    struct alias_match_list matches;
+    if (hold_collect_private_alias_matches(store, alias, "start", &matches) != 0) {
+        return -1;
+    }
+    *count_out = matches.count;
+    hold_free_alias_match_list(&matches);
     return 0;
 }
 
@@ -1287,7 +1300,8 @@ int hold_cmd_cap_request_action(const struct hold_invocation *inv,
     decoded[decoded_len] = '\0';
     char op[32];
     bool force = false;
-    if (json_request_get_op((const char *)decoded, op, sizeof(op), &force) != 0) {
+    bool request_detach = false;
+    if (json_request_get_op((const char *)decoded, op, sizeof(op), &force, &request_detach) != 0) {
         fprintf(stderr, "hold: error: invalid capability request\n");
         return 5;
     }
@@ -1299,8 +1313,50 @@ int hold_cmd_cap_request_action(const struct hold_invocation *inv,
     }
     int rc = 0;
     if (!strcmp(op, "start")) {
-        (void)force;
-        rc = hold_perform_start_with_env(inv, system_store, tail, console_mode, granted.argc, granted.argv, granted.binary_path, profile, granted.envc, granted.env);
+        if (!force && !granted.allow_multi) {
+            size_t running = 0;
+            if (count_granted_profile_running(system_store, profile, &running) != 0) {
+                hold_free_profile(&granted);
+                return 3;
+            }
+            if (running > 0) {
+                fprintf(stderr,
+                        "hold: error: profile '%s' already has a running process; use --force to start another\n",
+                        profile);
+                hold_free_profile(&granted);
+                return 6;
+            }
+        }
+        bool eff_console = console_mode || granted.mode_tty;
+        bool eff_interactive = granted.mode_interactive;
+        bool eff_tail = tail;
+        if ((request_detach || granted.mode_detach) && !console_mode) {
+            eff_tail = false;
+        }
+        rc = hold_perform_start_with_metadata_name_cap_options(inv,
+                                                               system_store,
+                                                               eff_tail,
+                                                               eff_console,
+                                                               false,
+                                                               eff_interactive,
+                                                               granted.argc,
+                                                               granted.argv,
+                                                               granted.binary_path,
+                                                               profile,
+                                                               NULL,
+                                                               granted.envc,
+                                                               granted.env,
+                                                               granted.portc,
+                                                               granted.ports,
+                                                               granted.volumec,
+                                                               granted.volumes,
+                                                               granted.cap_addc,
+                                                               granted.cap_add,
+                                                               granted.cap_dropc,
+                                                               granted.cap_drop,
+                                                               granted.has_restart_policy ? granted.restart_policy : NULL,
+                                                               granted.has_restart_delay ? granted.restart_delay_seconds : 0,
+                                                               granted.has_log_destination ? granted.log_destination : NULL);
     } else {
         fprintf(stderr, "hold: error: unsupported capability operation '%s'\n", op);
         rc = 5;
@@ -1327,7 +1383,14 @@ int hold_cmd_elevated_capability_action(const struct hold_invocation *inv,
     if (!hold_valid_runid_selector(runid_sel) || !hold_valid_alias(alias) || !hold_valid_profile_hash(hash)) {
         return -1;
     }
-    if (hold_verify_system_alias_cap(system_store, alias, hash) != 0) {
+    bool grant_validated = false;
+    const char *subject = (inv->have_sudo_user && inv->invoking_user[0]) ? inv->invoking_user : NULL;
+    struct hold_profile grant_probe;
+    if (subject && hold_load_subject_grant_profile(system_store, subject, alias, hash, command, &grant_probe) == 0) {
+        hold_free_profile(&grant_probe);
+        grant_validated = true;
+    }
+    if (!grant_validated && hold_verify_system_alias_cap(system_store, alias, hash) != 0) {
         fprintf(stderr, "hold: error: capability for '%s' is no longer valid\n", alias);
         return 3;
     }
@@ -1414,14 +1477,18 @@ int hold_cmd_elevated_capability_action(const struct hold_invocation *inv,
     bool have_selected_boot = hold_current_boot_id(selected_boot, sizeof(selected_boot));
     enum run_state selected_state = hold_eval_state(&selected_record, have_selected_boot ? selected_boot : NULL);
     if (!strcmp(command, "console")) {
-        return attach_console_record(inv, &selected_record, selected_state);
+        int rc = attach_console_record(inv, &selected_record, selected_state);
+        hold_free_run_record(&selected_record);
+        return rc;
     }
     if (!hold_record_matches_alias_intent(command, &selected_record, selected_state)) {
         hold_sig_note(inv, "hold: nothing to %s\n", command);
+        hold_free_run_record(&selected_record);
         return 0;
     }
 
     if (!strcmp(command, "stop") || !strcmp(command, "kill")) {
+        hold_free_run_record(&selected_record);
         bool already_done = false;
         int rc = hold_do_signal_action(system_store, runid_sel, sig, graceful, &already_done);
         if (rc == 0) {
@@ -1434,6 +1501,7 @@ int hold_cmd_elevated_capability_action(const struct hold_invocation *inv,
         return rc;
     }
     if (!strcmp(command, "prune")) {
+        hold_free_run_record(&selected_record);
         char boot[128] = {0};
         bool have_boot = hold_current_boot_id(boot, sizeof(boot));
         bool removed = false;
@@ -1444,6 +1512,7 @@ int hold_cmd_elevated_capability_action(const struct hold_invocation *inv,
         return rc;
     }
     if (!strcmp(command, "tail") || !strcmp(command, "dump")) {
+        hold_free_run_record(&selected_record);
         struct hold_run_record r;
         char path[HOLD_PATH_MAX];
         if (hold_load_record_by_id(system_store->record_dir, runid_sel, &r, path, sizeof(path)) != 0 || !r.has_log) {
@@ -1453,7 +1522,9 @@ int hold_cmd_elevated_capability_action(const struct hold_invocation *inv,
             char boot[128] = {0};
             bool have_boot = hold_current_boot_id(boot, sizeof(boot));
             enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
-            return hold_tail_log_until_exit(&r, st == STATE_RUNNING, st == STATE_RUNNING);
+            int rc = hold_tail_log_until_exit(&r, st == STATE_RUNNING, st == STATE_RUNNING);
+            hold_free_run_record(&r);
+            return rc;
         }
         int fd = open(r.log_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         if (fd < 0) {
@@ -1478,6 +1549,7 @@ int hold_cmd_elevated_capability_action(const struct hold_invocation *inv,
             }
         }
         close(fd);
+        hold_free_run_record(&r);
         return 0;
     }
 

@@ -13,8 +13,12 @@ struct shell_raw_terminal {
 static const char *resolve_user_shell(void) {
     const char *shell = getenv("SHELL");
     if (shell && *shell) return shell;
-    struct passwd *pw = getpwuid(geteuid());
-    if (pw && pw->pw_shell && *pw->pw_shell) return pw->pw_shell;
+    static char passwd_shell[HOLD_PATH_MAX];
+    struct hold_passwd_entry pw;
+    if (hold_lookup_passwd_by_uid(geteuid(), &pw) == 0 && pw.shell[0] &&
+        hold_checked_snprintf(passwd_shell, sizeof(passwd_shell), "%s", pw.shell) == 0) {
+        return passwd_shell;
+    }
     return "/bin/sh";
 }
 
@@ -251,6 +255,7 @@ static void shell_background_logger(int master, const char *log_path, pid_t shel
     shell_close_stdio_to_devnull();
     int fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
     if (fd < 0) _exit(1);
+    int idxfd = hold_open_log_index_fd(log_path, fd);
     while (1) {
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -266,7 +271,7 @@ static void shell_background_logger(int master, const char *log_path, pid_t shel
             char buf[4096];
             ssize_t n = read(master, buf, sizeof(buf));
             if (n > 0) {
-                (void)hold_write_json_log_bytes_fd(fd, "stdout", buf, (size_t)n);
+                (void)hold_write_indexed_log_bytes_fd(fd, idxfd, "stdout", buf, (size_t)n);
             } else if (n == 0 || (n < 0 && errno != EINTR)) {
                 break;
             }
@@ -277,6 +282,7 @@ static void shell_background_logger(int master, const char *log_path, pid_t shel
         }
     }
     kill(shell_pid, SIGHUP);
+    if (idxfd >= 0) close(idxfd);
     close(fd);
     close(master);
     _exit(0);

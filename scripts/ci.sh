@@ -2,7 +2,8 @@
 # One entrypoint, same rigor everywhere. Runs the full local mirror of the
 # GitHub CI matrix against the current tree:
 #   static -Werror build -> dynamic -Werror build -> regression suite +
-#   hash-vector -> ASan/UBSan build+test -> cppcheck -> layer-dependency lint.
+#   profile-hash vector + 0.4 Docker-shaped smoke -> ASan/UBSan build+test ->
+#   cppcheck -> layer-dependency lint.
 #
 # Runs identically on macOS and Linux. Each check that the local toolchain
 # genuinely lacks (e.g. cppcheck not installed) is reported as SKIPPED with a
@@ -45,13 +46,14 @@ mark_ok "dynamic-build"
 step "regression suite + profile-hash vector"
 must make clean
 must make test CC="$CC_BIN" CFLAGS="$WERROR"
+must make test-040 CC="$CC_BIN" CFLAGS="$WERROR"
 mark_ok "suite"
 
 step "ASan/UBSan"
 if printf 'int main(void){return 0;}\n' | "$CC_BIN" -fsanitize=address,undefined -x c - -o /tmp/.hold_sanprobe 2>/dev/null; then
   rm -f /tmp/.hold_sanprobe
   must make clean
-  must env HOLD_SKIP_TIMING_SENSITIVE_VIEWER_TESTS=1 make test CC="$CC_BIN" CFLAGS="$SAN_FLAGS" STATIC_LDFLAGS='' LDFLAGS='-fsanitize=address,undefined' TEST_LDFLAGS='-fsanitize=address,undefined'
+  must make test CC="$CC_BIN" CFLAGS="$SAN_FLAGS" STATIC_LDFLAGS='' LDFLAGS='-fsanitize=address,undefined' TEST_LDFLAGS='-fsanitize=address,undefined'
   mark_ok "asan-ubsan"
 else
   mark_no "asan-ubsan" "$CC_BIN has no -fsanitize support"

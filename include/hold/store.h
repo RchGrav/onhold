@@ -19,6 +19,7 @@ int hold_gen_id_for_store(const struct hold_store *primary,
 void hold_profile_hash_for_argv(const char *binary_path, int argc, char **argv, char out[PROFILE_HASH_STR_LEN]);
 int hold_write_record_atomic(const char *dir, const struct hold_run_record *r, int argc, char **argv, char *out_json_path, size_t out_n);
 int hold_write_public_index_atomic(const struct hold_store *store, const struct hold_run_record *r);
+int hold_mark_run_finished(const struct hold_store *store, const char *id, int status);
 void hold_free_profile(struct hold_profile *p);
 int hold_write_profile_atomic(const struct hold_store *store,
                                 const char *hash,
@@ -43,12 +44,24 @@ int hold_write_profile_atomic_full(const struct hold_store *store,
                                     char **ports,
                                     int volumec,
                                     char **volumes,
+                                    int cap_addc,
+                                    char **cap_add,
+                                    int cap_dropc,
+                                    char **cap_drop,
                                     bool mode_interactive,
                                     bool mode_tty,
                                     bool mode_detach,
                                     bool allow_multi,
                                     const char *restart_policy,
-                                    int restart_delay_seconds);
+                                    int restart_delay_seconds,
+                                    const char *log_destination);
+int hold_parse_profile_recipe_json(const char *j, const char *expected_hash, struct hold_profile *profile);
+void hold_write_profile_recipe_json_members(FILE *f,
+                                            const struct hold_profile *profile,
+                                            const char *indent,
+                                            const char *bin_key,
+                                            const char *argv_key,
+                                            bool mode_object);
 int hold_load_profile_by_hash(const struct hold_store *store, const char *hash, struct hold_profile *profile);
 void hold_free_aliases(struct hold_alias *entries, size_t count);
 int hold_load_aliases(const struct hold_store *store, struct hold_alias **entries_out, size_t *count_out);
@@ -78,6 +91,10 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
                                    char **ports,
                                    int volumec,
                                    char **volumes,
+                                   int cap_addc,
+                                   char **cap_add,
+                                   int cap_dropc,
+                                   char **cap_drop,
                                    bool mode_interactive,
                                    bool mode_tty,
                                    bool mode_detach,

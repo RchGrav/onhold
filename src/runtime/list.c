@@ -49,6 +49,7 @@ static int collect_list_public(const struct hold_store *store,
 static int print_collected_list(struct list_rows *rows, bool iso);
 static int print_collected_ps(struct list_rows *rows);
 static void unlink_public_index(const struct hold_store *store, const char *id);
+static void unlink_log_index_for_log(const char *log_path);
 static int cmd_prune_store_all(const struct hold_store *store, bool include_stale, int *removed_count);
 
 static void free_list_rows(struct list_rows *rows) {
@@ -377,19 +378,16 @@ static int collect_list_private(const struct hold_store *store,
         }
         if (!hold_valid_record(&r) || strcmp(r.id, file_id) != 0) {
             fprintf(stderr, "hold: warning: skipping corrupt record %s\n", e->d_name);
+            hold_free_run_record(&r);
             continue;
         }
         if (alias_filter && (!r.has_alias || strcmp(r.alias, alias_filter) != 0)) {
-            hold_free_argv_alloc(r.env, r.envc);
-            hold_free_argv_alloc(r.ports, r.portc);
-            hold_free_argv_alloc(r.volumes, r.volumec);
+            hold_free_run_record(&r);
             continue;
         }
         enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
         if (!include_all && st != STATE_RUNNING) {
-            hold_free_argv_alloc(r.env, r.envc);
-            hold_free_argv_alloc(r.ports, r.portc);
-            hold_free_argv_alloc(r.volumes, r.volumec);
+            hold_free_run_record(&r);
             continue;
         }
         struct list_row row;
@@ -426,15 +424,11 @@ static int collect_list_private(const struct hold_store *store,
             }
         }
         if (append_list_row(rows, &row) != 0) {
-            hold_free_argv_alloc(r.env, r.envc);
-            hold_free_argv_alloc(r.ports, r.portc);
-            hold_free_argv_alloc(r.volumes, r.volumec);
+            hold_free_run_record(&r);
             closedir(d);
             return -1;
         }
-        hold_free_argv_alloc(r.env, r.envc);
-        hold_free_argv_alloc(r.ports, r.portc);
-        hold_free_argv_alloc(r.volumes, r.volumec);
+        hold_free_run_record(&r);
     }
     closedir(d);
     return 0;
@@ -486,8 +480,8 @@ static int collect_list_public(const struct hold_store *store,
         snprintf(row.id, sizeof(row.id), "%s", display_id);
         snprintf(row.profile, sizeof(row.profile), "%s", pi.has_alias ? pi.alias : "-");
         if (pi.has_name && pi.name[0]) snprintf(row.name, sizeof(row.name), "%s", pi.name);
-        snprintf(row.state, sizeof(row.state), "%s", "unknown");
-        row.running = false;
+        snprintf(row.state, sizeof(row.state), "%s", pi.state_hint[0] ? pi.state_hint : "unknown");
+        row.running = !strcmp(row.state, "running");
         row.start_unix_ns = 0;
         if (iso) {
             snprintf(row.started, sizeof(row.started), "%s", pi.started_at[0] ? pi.started_at : "-");
@@ -597,6 +591,13 @@ static void unlink_public_index(const struct hold_store *store, const char *id) 
     }
 }
 
+static void unlink_log_index_for_log(const char *log_path) {
+    char idx[HOLD_PATH_MAX];
+    if (hold_log_idx_path(log_path, idx, sizeof(idx)) == 0) {
+        unlink(idx);
+    }
+}
+
 int hold_prune_one_run(const struct hold_store *store, const char *id, const char *boot, bool allow_stale, bool *removed) {
     struct hold_run_record r;
     char path[HOLD_PATH_MAX];
@@ -607,10 +608,12 @@ int hold_prune_one_run(const struct hold_store *store, const char *id, const cha
     bool prunable = (st == STATE_EXITED || st == STATE_FAILED || (allow_stale && st == STATE_STALE));
     if (!prunable) {
         fprintf(stderr, "hold: error: run %s is %s and cannot be pruned\n", id, hold_state_str(st));
+        hold_free_run_record(&r);
         return 2;
     }
     unlink(path);
     if (r.has_log) {
+        unlink_log_index_for_log(r.log_path);
         unlink(r.log_path);
     }
     if (r.has_console) {
@@ -620,6 +623,7 @@ int hold_prune_one_run(const struct hold_store *store, const char *id, const cha
     if (removed) {
         *removed = true;
     }
+    hold_free_run_record(&r);
     return 0;
 }
 
@@ -651,6 +655,7 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
         }
         if (!hold_valid_record(&r) || strcmp(r.id, file_id) != 0) {
             unlink(path);
+            hold_free_run_record(&r);
             continue;
         }
         enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
@@ -667,6 +672,7 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
                 (*removed_count)++;
             }
         }
+        hold_free_run_record(&r);
     }
     closedir(d);
 
@@ -700,6 +706,7 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
             continue;
         }
         if (access(json_path, F_OK) != 0) {
+            unlink_log_index_for_log(log_path);
             unlink(log_path);
             if (removed_count) {
                 (*removed_count)++;

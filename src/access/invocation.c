@@ -25,9 +25,9 @@ int hold_detect_invocation(struct hold_invocation *inv, bool requested_system, b
     uid_t uid = 0;
     gid_t gid = 0;
     if (hold_parse_uid_env(su, &uid) == 0 && hold_parse_gid_env(sg, &gid) == 0 && sn && *sn) {
-        struct passwd *pw = getpwuid(uid);
-        if (pw && pw->pw_dir && *pw->pw_dir) {
-            const char *home = pw->pw_dir;
+        struct hold_passwd_entry pw;
+        if (hold_lookup_passwd_by_uid(uid, &pw) == 0 && pw.home[0]) {
+            const char *home = pw.home;
 #ifdef HOLD_TESTING
             const char *home_override = getenv("HOLD_TEST_INVOKING_HOME");
             if (home_override && *home_override) {

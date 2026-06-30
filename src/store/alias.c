@@ -4,7 +4,6 @@
 #include "hold/core.h"
 #include "hold/platform.h"
 
-static int parse_alias_recipe_object(const char *j, struct hold_alias *entry);
 static int write_aliases_atomic(const struct hold_store *store, const struct hold_alias *entries, size_t count);
 
 void hold_free_aliases(struct hold_alias *entries, size_t count) {
@@ -16,68 +15,52 @@ void hold_free_aliases(struct hold_alias *entries, size_t count) {
         hold_free_argv_alloc(entries[i].env, entries[i].envc);
         hold_free_argv_alloc(entries[i].ports, entries[i].portc);
         hold_free_argv_alloc(entries[i].volumes, entries[i].volumec);
+        hold_free_argv_alloc(entries[i].cap_add, entries[i].cap_addc);
+        hold_free_argv_alloc(entries[i].cap_drop, entries[i].cap_dropc);
     }
     free(entries);
 }
 
 static int parse_alias_recipe_object(const char *j, struct hold_alias *entry) {
-    if (hold_json_get_str(j, "bin", entry->binary_path, sizeof(entry->binary_path)) != 0 &&
-        hold_json_get_str(j, "binary_path", entry->binary_path, sizeof(entry->binary_path)) != 0) {
+    struct hold_profile recipe;
+    if (hold_parse_profile_recipe_json(j, NULL, &recipe) != 0) {
         return -1;
     }
-    if (entry->binary_path[0] != '/') {
-        errno = EINVAL;
-        return -1;
-    }
-    if (hold_json_get_args_alloc(j, &entry->argv, &entry->argc) != 0 &&
-        hold_json_get_argv_alloc(j, &entry->argv, &entry->argc) != 0) {
-        return -1;
-    }
-    if (hold_json_get_env_alloc(j, &entry->env, &entry->envc) != 0) {
-        entry->env = NULL;
-        entry->envc = 0;
-    }
-    if (hold_json_get_ports_alloc(j, &entry->ports, &entry->portc) != 0) {
-        entry->ports = NULL;
-        entry->portc = 0;
-    }
-    if (hold_json_get_volumes_alloc(j, &entry->volumes, &entry->volumec) != 0) {
-        entry->volumes = NULL;
-        entry->volumec = 0;
-    }
-    if (hold_json_get_str(j, "log_destination", entry->log_destination, sizeof(entry->log_destination)) == 0 &&
-        entry->log_destination[0]) {
-        entry->has_log_destination = true;
-    }
-    (void)hold_json_get_bool(j, "interactive", &entry->mode_interactive);
-    (void)hold_json_get_bool(j, "tty", &entry->mode_tty);
-    (void)hold_json_get_bool(j, "detach", &entry->mode_detach);
-    (void)hold_json_get_bool(j, "multi", &entry->allow_multi);
-    if (hold_json_get_str(j, "restart", entry->restart_policy, sizeof(entry->restart_policy)) == 0 &&
-        entry->restart_policy[0] && strcmp(entry->restart_policy, "no") != 0) {
-        entry->has_restart_policy = true;
-    }
-    int64_t restart_delay_tmp = 0;
-    if (hold_json_get_i64(j, "restart_delay_seconds", &restart_delay_tmp) == 0 && restart_delay_tmp >= 0 && restart_delay_tmp <= INT_MAX) {
-        entry->restart_delay_seconds = (int)restart_delay_tmp;
-        entry->has_restart_delay = entry->has_restart_policy;
-    }
-    const char *mode = NULL;
-    if (hold_json_find_key(j, "mode", &mode) == 0 && *mode == '{') {
-        const char *end = mode;
-        if (hold_skip_json_value(&end) == 0 && end > mode) {
-            size_t len = (size_t)(end - mode);
-            char *copy = malloc(len + 1);
-            if (!copy) return -1;
-            memcpy(copy, mode, len);
-            copy[len] = '\0';
-            (void)hold_json_get_bool(copy, "interactive", &entry->mode_interactive);
-            (void)hold_json_get_bool(copy, "tty", &entry->mode_tty);
-            (void)hold_json_get_bool(copy, "detach", &entry->mode_detach);
-            (void)hold_json_get_bool(copy, "multi", &entry->allow_multi);
-            free(copy);
-        }
-    }
+    snprintf(entry->binary_path, sizeof(entry->binary_path), "%s", recipe.binary_path);
+    entry->argc = recipe.argc;
+    entry->argv = recipe.argv;
+    entry->envc = recipe.envc;
+    entry->env = recipe.env;
+    entry->portc = recipe.portc;
+    entry->ports = recipe.ports;
+    entry->volumec = recipe.volumec;
+    entry->volumes = recipe.volumes;
+    entry->cap_addc = recipe.cap_addc;
+    entry->cap_add = recipe.cap_add;
+    entry->cap_dropc = recipe.cap_dropc;
+    entry->cap_drop = recipe.cap_drop;
+    entry->mode_interactive = recipe.mode_interactive;
+    entry->mode_tty = recipe.mode_tty;
+    entry->mode_detach = recipe.mode_detach;
+    entry->allow_multi = recipe.allow_multi;
+    snprintf(entry->restart_policy, sizeof(entry->restart_policy), "%s", recipe.restart_policy);
+    entry->restart_delay_seconds = recipe.restart_delay_seconds;
+    entry->has_restart_policy = recipe.has_restart_policy;
+    entry->has_restart_delay = recipe.has_restart_delay;
+    snprintf(entry->log_destination, sizeof(entry->log_destination), "%s", recipe.log_destination);
+    entry->has_log_destination = recipe.has_log_destination;
+    recipe.argv = NULL;
+    recipe.argc = 0;
+    recipe.env = NULL;
+    recipe.envc = 0;
+    recipe.ports = NULL;
+    recipe.portc = 0;
+    recipe.volumes = NULL;
+    recipe.volumec = 0;
+    recipe.cap_add = NULL;
+    recipe.cap_addc = 0;
+    recipe.cap_drop = NULL;
+    recipe.cap_dropc = 0;
     entry->has_recipe = true;
     return 0;
 }
@@ -227,55 +210,33 @@ static int write_aliases_atomic(const struct hold_store *store, const struct hol
                 errno = EINVAL;
                 return -1;
             }
-            fprintf(f, "\": {\"bin\": \"");
-            hold_json_escape(f, entries[i].binary_path);
-            fprintf(f, "\", \"args\": ");
-            hold_write_json_argv(f, entries[i].argc, entries[i].argv);
-            if (entries[i].envc > 0 && entries[i].env) {
-                fprintf(f, ", \"env\": ");
-                hold_write_json_argv(f, entries[i].envc, entries[i].env);
-            }
-            if (entries[i].portc > 0 && entries[i].ports) {
-                fprintf(f, ", \"ports\": ");
-                hold_write_json_argv(f, entries[i].portc, entries[i].ports);
-            }
-            if (entries[i].volumec > 0 && entries[i].volumes) {
-                fprintf(f, ", \"volumes\": ");
-                hold_write_json_argv(f, entries[i].volumec, entries[i].volumes);
-            }
-            if (entries[i].mode_interactive || entries[i].mode_tty || entries[i].mode_detach || entries[i].allow_multi) {
-                fprintf(f, ", \"mode\": {");
-                bool wrote_mode = false;
-                if (entries[i].mode_interactive) {
-                    fprintf(f, "\"interactive\": true");
-                    wrote_mode = true;
-                }
-                if (entries[i].mode_tty) {
-                    fprintf(f, "%s\"tty\": true", wrote_mode ? ", " : "");
-                    wrote_mode = true;
-                }
-                if (entries[i].mode_detach) {
-                    fprintf(f, "%s\"detach\": true", wrote_mode ? ", " : "");
-                    wrote_mode = true;
-                }
-                if (entries[i].allow_multi) {
-                    fprintf(f, "%s\"multi\": true", wrote_mode ? ", " : "");
-                }
-                fprintf(f, "}");
-            }
-            if (entries[i].has_restart_policy && entries[i].restart_policy[0]) {
-                fprintf(f, ", \"restart\": \"");
-                hold_json_escape(f, entries[i].restart_policy);
-                fprintf(f, "\"");
-            }
-            if (entries[i].has_restart_delay) {
-                fprintf(f, ", \"restart_delay_seconds\": %d", entries[i].restart_delay_seconds);
-            }
-            if (entries[i].has_log_destination && entries[i].log_destination[0]) {
-                fprintf(f, ", \"log_destination\": \"");
-                hold_json_escape(f, entries[i].log_destination);
-                fprintf(f, "\"");
-            }
+            fprintf(f, "\": {");
+            struct hold_profile view;
+            memset(&view, 0, sizeof(view));
+            snprintf(view.binary_path, sizeof(view.binary_path), "%s", entries[i].binary_path);
+            view.argc = entries[i].argc;
+            view.argv = entries[i].argv;
+            view.envc = entries[i].envc;
+            view.env = entries[i].env;
+            view.portc = entries[i].portc;
+            view.ports = entries[i].ports;
+            view.volumec = entries[i].volumec;
+            view.volumes = entries[i].volumes;
+            view.cap_addc = entries[i].cap_addc;
+            view.cap_add = entries[i].cap_add;
+            view.cap_dropc = entries[i].cap_dropc;
+            view.cap_drop = entries[i].cap_drop;
+            view.mode_interactive = entries[i].mode_interactive;
+            view.mode_tty = entries[i].mode_tty;
+            view.mode_detach = entries[i].mode_detach;
+            view.allow_multi = entries[i].allow_multi;
+            snprintf(view.restart_policy, sizeof(view.restart_policy), "%s", entries[i].restart_policy);
+            view.restart_delay_seconds = entries[i].restart_delay_seconds;
+            view.has_restart_policy = entries[i].has_restart_policy;
+            view.has_restart_delay = entries[i].has_restart_delay;
+            snprintf(view.log_destination, sizeof(view.log_destination), "%s", entries[i].log_destination);
+            view.has_log_destination = entries[i].has_log_destination;
+            hold_write_profile_recipe_json_members(f, &view, "", "bin", "args", true);
             fprintf(f, "}%s\n", i + 1 == count ? "" : ",");
         }
     }
@@ -376,11 +337,15 @@ int hold_alias_lookup_recipe(const struct hold_store *store, const char *alias, 
                 hold_copy_argv(&recipe->argv, entries[i].argc, entries[i].argv) == 0 &&
                 (entries[i].envc == 0 || hold_copy_argv(&recipe->env, entries[i].envc, entries[i].env) == 0) &&
                 (entries[i].portc == 0 || hold_copy_argv(&recipe->ports, entries[i].portc, entries[i].ports) == 0) &&
-                (entries[i].volumec == 0 || hold_copy_argv(&recipe->volumes, entries[i].volumec, entries[i].volumes) == 0)) {
+                (entries[i].volumec == 0 || hold_copy_argv(&recipe->volumes, entries[i].volumec, entries[i].volumes) == 0) &&
+                (entries[i].cap_addc == 0 || hold_copy_argv(&recipe->cap_add, entries[i].cap_addc, entries[i].cap_add) == 0) &&
+                (entries[i].cap_dropc == 0 || hold_copy_argv(&recipe->cap_drop, entries[i].cap_dropc, entries[i].cap_drop) == 0)) {
                 recipe->argc = entries[i].argc;
                 recipe->envc = entries[i].envc;
                 recipe->portc = entries[i].portc;
                 recipe->volumec = entries[i].volumec;
+                recipe->cap_addc = entries[i].cap_addc;
+                recipe->cap_dropc = entries[i].cap_dropc;
                 recipe->mode_interactive = entries[i].mode_interactive;
                 recipe->mode_tty = entries[i].mode_tty;
                 recipe->mode_detach = entries[i].mode_detach;
@@ -423,7 +388,7 @@ int hold_alias_upsert_recipe_env(const struct hold_store *store,
                                    char **argv,
                                    int envc,
                                    char **env) {
-    return hold_alias_upsert_recipe_full(store, alias, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, false, false, false, false, NULL, 0, NULL);
+    return hold_alias_upsert_recipe_full(store, alias, binary_path, argc, argv, envc, env, 0, NULL, 0, NULL, 0, NULL, 0, NULL, false, false, false, false, NULL, 0, NULL);
 }
 
 int hold_alias_upsert_recipe_full(const struct hold_store *store,
@@ -437,6 +402,10 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
                                    char **ports,
                                    int volumec,
                                    char **volumes,
+                                   int cap_addc,
+                                   char **cap_add,
+                                   int cap_dropc,
+                                   char **cap_drop,
                                    bool mode_interactive,
                                    bool mode_tty,
                                    bool mode_detach,
@@ -448,6 +417,8 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
         envc < 0 || (envc > 0 && !env) ||
         portc < 0 || (portc > 0 && !ports) ||
         volumec < 0 || (volumec > 0 && !volumes) ||
+        cap_addc < 0 || (cap_addc > 0 && !cap_add) ||
+        cap_dropc < 0 || (cap_dropc > 0 && !cap_drop) ||
         restart_delay_seconds < 0 ||
         (log_destination && strcmp(log_destination, "syslog") != 0)) {
         errno = EINVAL;
@@ -464,6 +435,8 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
             hold_free_argv_alloc(entries[i].env, entries[i].envc);
             hold_free_argv_alloc(entries[i].ports, entries[i].portc);
             hold_free_argv_alloc(entries[i].volumes, entries[i].volumec);
+            hold_free_argv_alloc(entries[i].cap_add, entries[i].cap_addc);
+            hold_free_argv_alloc(entries[i].cap_drop, entries[i].cap_dropc);
             entries[i].argv = NULL;
             entries[i].argc = 0;
             entries[i].env = NULL;
@@ -472,11 +445,17 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
             entries[i].portc = 0;
             entries[i].volumes = NULL;
             entries[i].volumec = 0;
+            entries[i].cap_add = NULL;
+            entries[i].cap_addc = 0;
+            entries[i].cap_drop = NULL;
+            entries[i].cap_dropc = 0;
             if (hold_checked_snprintf(entries[i].binary_path, sizeof(entries[i].binary_path), "%s", binary_path) != 0 ||
                 hold_copy_argv(&entries[i].argv, argc, argv) != 0 ||
                 (envc > 0 && hold_copy_argv(&entries[i].env, envc, env) != 0) ||
                 (portc > 0 && hold_copy_argv(&entries[i].ports, portc, ports) != 0) ||
-                (volumec > 0 && hold_copy_argv(&entries[i].volumes, volumec, volumes) != 0)) {
+                (volumec > 0 && hold_copy_argv(&entries[i].volumes, volumec, volumes) != 0) ||
+                (cap_addc > 0 && hold_copy_argv(&entries[i].cap_add, cap_addc, cap_add) != 0) ||
+                (cap_dropc > 0 && hold_copy_argv(&entries[i].cap_drop, cap_dropc, cap_drop) != 0)) {
                 hold_free_aliases(entries, count);
                 return -1;
             }
@@ -484,6 +463,8 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
             entries[i].envc = envc;
             entries[i].portc = portc;
             entries[i].volumec = volumec;
+            entries[i].cap_addc = cap_addc;
+            entries[i].cap_dropc = cap_dropc;
             entries[i].mode_interactive = mode_interactive;
             entries[i].mode_tty = mode_tty;
             entries[i].mode_detach = mode_detach;
@@ -522,7 +503,9 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
         hold_copy_argv(&entries[count].argv, argc, argv) != 0 ||
         (envc > 0 && hold_copy_argv(&entries[count].env, envc, env) != 0) ||
         (portc > 0 && hold_copy_argv(&entries[count].ports, portc, ports) != 0) ||
-        (volumec > 0 && hold_copy_argv(&entries[count].volumes, volumec, volumes) != 0)) {
+        (volumec > 0 && hold_copy_argv(&entries[count].volumes, volumec, volumes) != 0) ||
+        (cap_addc > 0 && hold_copy_argv(&entries[count].cap_add, cap_addc, cap_add) != 0) ||
+        (cap_dropc > 0 && hold_copy_argv(&entries[count].cap_drop, cap_dropc, cap_drop) != 0)) {
         hold_free_aliases(entries, count + 1);
         return -1;
     }
@@ -530,6 +513,8 @@ int hold_alias_upsert_recipe_full(const struct hold_store *store,
     entries[count].envc = envc;
     entries[count].portc = portc;
     entries[count].volumec = volumec;
+    entries[count].cap_addc = cap_addc;
+    entries[count].cap_dropc = cap_dropc;
     entries[count].mode_interactive = mode_interactive;
     entries[count].mode_tty = mode_tty;
     entries[count].mode_detach = mode_detach;
@@ -572,6 +557,8 @@ int hold_alias_delete(const struct hold_store *store, const char *alias, bool *d
         hold_free_argv_alloc(entries[i].env, entries[i].envc);
         hold_free_argv_alloc(entries[i].ports, entries[i].portc);
         hold_free_argv_alloc(entries[i].volumes, entries[i].volumec);
+        hold_free_argv_alloc(entries[i].cap_add, entries[i].cap_addc);
+        hold_free_argv_alloc(entries[i].cap_drop, entries[i].cap_dropc);
         for (size_t j = i + 1; j < count; j++) {
             entries[j - 1] = entries[j];
         }

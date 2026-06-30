@@ -1,7 +1,7 @@
 # On Hold Specification
 
-> Status: This page describes the current 0.3.x/legacy implementation contract. For the 0.4.0 `hold` redesign target and current branch gap matrix, see [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md).
-[Docs index](index.md) | [Quickstart](quickstart.md) | [Documentation plan](PLAN.md) | [Repository README](../README.md)
+> Status: This is a retained implementation specification. The current 0.4 repair contracts are [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md), [0.4 object format repair](0.4-object-format-repair.md), and [0.4 release cut](0.4-release-cut.md). Historical planning links point into `archive/`.
+[Docs index](index.md) | [Quickstart](quickstart.md) | [Archived documentation plan](archive/PLAN.md) | [Repository README](../README.md)
 
 This document describes the current On Hold implementation contract: user-local state, root-managed state, public redacted discovery, profile/internal-alias resolution, sudo-aware target resolution, argv-preserving fork/wait self-elevation, and process-safety behavior.
 
@@ -116,11 +116,10 @@ routing, or the rule that only global profiles can be granted. If it exists, it
 only overrides grant-hardening checks that are explicitly designed to be
 operator-overridable.
 
-> Implementation status (2026-06-28): only the executable (`argv[0]`) is checked today —
-> `hold_start_target_is_within_invoking_home` (src/runtime/start.c:270) inspects `argv[0]`
-> alone and reroutes the run to the user-local store rather than refusing. The check must be
-> extended to cover every normalized path-like argument and the working directory. The same
-> absolute normalized paths then feed global-profile eligibility and grant validation.
+> Implementation status (2026-06-30): `hold_start_target_is_within_invoking_home` checks the
+> resolved executable plus existing path-like argv values, including bare path tokens,
+> `--flag=/path`, and `--flag /path` forms where the following token resolves as a path. If any
+> checked path is inside the invoking user home, the run is routed to the invoking user-local store.
 
 Production builds use the compiled system store path. Test builds compiled with `HOLD_TESTING` may honor `HOLD_TEST_SYSTEM_STATE_DIR`; production root On Hold must not honor arbitrary user-controlled environment paths for the system store.
 
@@ -300,12 +299,27 @@ Example:
 
 ```json
 {
-  "id": "7f3c2a9dcafe",
+  "id": "7f3c2a9dcafe0711502b4632bc1db9e89a70c4c3d2437fc6b0c9d2699188",
   "root_managed": true,
   "requires_elevation": true,
   "alias": "web-test",
-  "state_hint": "unknown",
-  "started_at": "2026-06-15T18:42:11Z"
+  "state_hint": "running",
+  "started_at": "2026-06-15T18:42:11Z",
+  "created_at": "2026-06-15T18:42:11Z",
+  "State": {
+    "Status": "running",
+    "Running": true,
+    "Paused": false,
+    "Restarting": false,
+    "Dead": false,
+    "Pid": 1234,
+    "Pgid": 1234,
+    "Sid": 1234,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2026-06-15T18:42:11Z",
+    "FinishedAt": "0001-01-01T00:00:00Z"
+  }
 }
 ```
 
@@ -317,9 +331,6 @@ cmdline_display
 log_path
 console_sock
 environment
-pid
-pgid
-sid
 boot_id
 process start time
 executable identity
@@ -330,9 +341,9 @@ profile hashes
 
 Private root records are authoritative. Public records are derived discovery data.
 
-Private run records store the resolved executable path in `argv[0]`. Before a run record is written, On Hold also resolves any existing non-option argv path tokens after `argv[0]` against the launch cwd (or, for `hold shell` adoption, against the adopted foreground process cwd). Profiles created from a run therefore inherit an absolute, replayable launch recipe instead of depending on the profile creator's old current directory.
+Private run records store the resolved executable path in `argv[0]`. Before a run record is written, On Hold also resolves existing path-like argv values after `argv[0]` against the launch cwd, including bare path tokens and `--flag=/path` forms (or, for `hold shell` adoption, against the adopted foreground process cwd). Profiles created from a run therefore inherit an absolute, replayable launch recipe instead of depending on the profile creator's old current directory.
 
-Because On Hold is daemonless and cannot continuously refresh root-public state after natural process exit, normal `hold list` displays public root rows as `unknown` rather than overselling stale `running` hints. Root/private list and root action commands evaluate authoritative state from private records.
+Because On Hold is daemonless, public state is a projection written by Hold at start and by the Hold-owned supervisor/reaper on exit. Normal `hold list` may display that projected state, but root/private list and root action commands still evaluate authoritative state from private records before acting.
 
 `public/aliases.json` is a flat JSON object mapping validated profile names to 64-character profile hashes:
 
@@ -346,7 +357,7 @@ Public profile-map entries must not include argv, binary paths, log paths, conso
 
 ## 6. Run IDs and collision checks
 
-Run IDs are random opaque 12-character lowercase hex identifiers. `000000000000` and `ffffffffffff` are reserved internal sentinels and must never be generated. Global uniqueness across all users is not required.
+Run IDs are stable opaque 64-character lowercase hex identifiers. Display surfaces may abbreviate to the first 12 hex characters, Docker-style. The ID is generated from launch material such as profile/origin name, resolved executable, cwd, timestamp, launcher PID, argv, and a collision counter; it is a tracking number, not a mutable content signature.
 
 ### 6.1 User-local start avoids
 
@@ -636,9 +647,6 @@ Core fields:
 version
 id
 run_id
-pid
-pgid
-sid
 start_unix_ns
 argv
 uid
@@ -781,4 +789,4 @@ This implementation does not add root log visibility for normal users, global al
 
 ## Continue
 
-[Back to docs index](index.md) | [Quickstart](quickstart.md) | [Top](#hold-specification) | [Documentation plan](PLAN.md)
+[Back to docs index](index.md) | [Quickstart](quickstart.md) | [Top](#hold-specification) | [Archived documentation plan](archive/PLAN.md)

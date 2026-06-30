@@ -7,10 +7,13 @@
 #include "hold/store.h"
 #include "hold/console.h"
 #include "hold/access.h"
-#include "sigmund/adjectives.h"
-#include "sigmund/nouns.h"
+#include "hold/names/adjectives.h"
+#include "hold/names/nouns.h"
 #if defined(__linux__)
 #include <syslog.h>
+#include <linux/capability.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
 #endif
 
 struct start_profile_target {
@@ -28,6 +31,7 @@ static volatile sig_atomic_t g_restart_stop = 0;
 
 static const char *explicit_start_argv0(bool owned, const char *command, int argc, char **argv);
 static int apply_child_env(int envc, char **env);
+static int apply_child_capabilities(int cap_addc, char **cap_add, int cap_dropc, char **cap_drop);
 static int private_start_hash_for_token(const struct hold_store *store,
                                         const char *token,
                                         char hash[PROFILE_HASH_STR_LEN],
@@ -89,6 +93,10 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
                                                              const char *restart_policy,
                                                              int restart_delay_seconds,
                                                              const char *log_destination,
+                                                             int cap_addc,
+                                                             char **cap_add,
+                                                             int cap_dropc,
+                                                             char **cap_drop,
                                                              const char *existing_id,
                                                              const char *existing_log_path,
                                                              const char *existing_run_name,
@@ -114,7 +122,7 @@ static int reserve_hashed_run_id(const struct hold_store *store,
                                  const char *cwd,
                                  int64_t start_unix_ns,
                                  char out[ID_STR_LEN]);
-static void spawn_json_logger(int stdout_fd,
+static void spawn_log_capture(int stdout_fd,
                               int stderr_fd,
                               const char *log_path,
                               const char *log_destination,
@@ -133,6 +141,16 @@ static void free_launch_and_observed_argv(char **launch_argv, char **observed_ar
 static void unlink_if_nonempty(const char *path) {
     if (path && *path) {
         unlink(path);
+    }
+}
+
+static void kill_supervisor_if_distinct(pid_t supervisor_pid, pid_t target_pid) {
+    if (supervisor_pid > 1 && supervisor_pid != target_pid) {
+        kill(supervisor_pid, SIGKILL);
+        int st = 0;
+        while (waitpid(supervisor_pid, &st, 0) < 0 && errno == EINTR) {
+            continue;
+        }
     }
 }
 
@@ -204,15 +222,11 @@ static int run_name_exists_in_store(const struct hold_store *store, const char *
         struct hold_run_record r;
         memset(&r, 0, sizeof(r));
         if (hold_load_record(path, &r) == 0 && r.has_name && strcmp(r.name, name) == 0) {
-            hold_free_argv_alloc(r.env, r.envc);
-            hold_free_argv_alloc(r.ports, r.portc);
-            hold_free_argv_alloc(r.volumes, r.volumec);
+            hold_free_run_record(&r);
             closedir(d);
             return 1;
         }
-        hold_free_argv_alloc(r.env, r.envc);
-        hold_free_argv_alloc(r.ports, r.portc);
-        hold_free_argv_alloc(r.volumes, r.volumec);
+        hold_free_run_record(&r);
     }
     closedir(d);
     return 0;
@@ -241,9 +255,7 @@ static int find_restart_record(const struct hold_store *store, const char *token
             if (hold_load_record(path, &r) == 0 && r.has_name && strcmp(r.name, token) == 0) {
                 hit = true;
             }
-            hold_free_argv_alloc(r.env, r.envc);
-            hold_free_argv_alloc(r.ports, r.portc);
-            hold_free_argv_alloc(r.volumes, r.volumec);
+            hold_free_run_record(&r);
         }
         if (hit) {
             matches++;
@@ -283,16 +295,12 @@ static int restart_existing_run(const struct hold_invocation *inv,
         char display[ID_DISPLAY_HEX_LEN + 1];
         hold_run_id_display(old.id, display);
         fprintf(stderr, "hold: error: run %s is already running\n", display);
-        hold_free_argv_alloc(old.env, old.envc);
-        hold_free_argv_alloc(old.ports, old.portc);
-        hold_free_argv_alloc(old.volumes, old.volumec);
+        hold_free_run_record(&old);
         return 6;
     }
     if (!old.has_log || !old.log_path[0]) {
         fprintf(stderr, "hold: error: run %s has no retained log path\n", id);
-        hold_free_argv_alloc(old.env, old.envc);
-        hold_free_argv_alloc(old.ports, old.portc);
-        hold_free_argv_alloc(old.volumes, old.volumec);
+        hold_free_run_record(&old);
         return 5;
     }
     char *j = NULL;
@@ -330,6 +338,10 @@ static int restart_existing_run(const struct hold_invocation *inv,
                                                            restart_policy ? restart_policy : (old.has_restart_policy ? old.restart_policy : NULL),
                                                            restart_policy ? restart_delay_seconds : old.restart_delay_seconds,
                                                            old.has_log_destination ? old.log_destination : NULL,
+                                                           old.cap_addc,
+                                                           old.cap_add,
+                                                           old.cap_dropc,
+                                                           old.cap_drop,
                                                            old.id,
                                                            old.log_path,
                                                            old.has_name ? old.name : NULL,
@@ -338,9 +350,7 @@ static int restart_existing_run(const struct hold_invocation *inv,
 out:
     hold_free_argv_alloc(argv, argc);
     free(j);
-    hold_free_argv_alloc(old.env, old.envc);
-    hold_free_argv_alloc(old.ports, old.portc);
-    hold_free_argv_alloc(old.volumes, old.volumec);
+    hold_free_run_record(&old);
     return rc;
 }
 
@@ -476,6 +486,7 @@ static void mirror_syslog_line(const char *stream,
 }
 
 static void logger_write_bytes(int logfd,
+                               int idxfd,
                                const char *log_destination,
                                const char *stream,
                                const char *id,
@@ -484,7 +495,7 @@ static void logger_write_bytes(int logfd,
                                const char *cmdline,
                                const char *buf,
                                size_t n) {
-    (void)hold_write_json_log_bytes_fd(logfd, stream, buf, n);
+    (void)hold_write_indexed_log_bytes_fd(logfd, idxfd, stream, buf, n);
     if (log_destination && strcmp(log_destination, "syslog") == 0) {
         size_t start = 0;
         for (size_t i = 0; i < n; i++) {
@@ -497,7 +508,7 @@ static void logger_write_bytes(int logfd,
     }
 }
 
-static void spawn_json_logger(int stdout_fd,
+static void spawn_log_capture(int stdout_fd,
                               int stderr_fd,
                               const char *log_path,
                               const char *log_destination,
@@ -514,6 +525,7 @@ static void spawn_json_logger(int stdout_fd,
     close_stdio_to_devnull();
     int logfd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
     if (logfd < 0) _exit(0);
+    int idxfd = hold_open_log_index_fd(log_path, logfd);
     while (stdout_fd >= 0 || stderr_fd >= 0) {
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -529,15 +541,16 @@ static void spawn_json_logger(int stdout_fd,
         char buf[4096];
         if (stdout_fd >= 0 && FD_ISSET(stdout_fd, &rfds)) {
             ssize_t n = read(stdout_fd, buf, sizeof(buf));
-            if (n > 0) logger_write_bytes(logfd, log_destination, "stdout", id, name, profile, cmdline, buf, (size_t)n);
+            if (n > 0) logger_write_bytes(logfd, idxfd, log_destination, "stdout", id, name, profile, cmdline, buf, (size_t)n);
             else { close(stdout_fd); stdout_fd = -1; }
         }
         if (stderr_fd >= 0 && FD_ISSET(stderr_fd, &rfds)) {
             ssize_t n = read(stderr_fd, buf, sizeof(buf));
-            if (n > 0) logger_write_bytes(logfd, log_destination, "stderr", id, name, profile, cmdline, buf, (size_t)n);
+            if (n > 0) logger_write_bytes(logfd, idxfd, log_destination, "stderr", id, name, profile, cmdline, buf, (size_t)n);
             else { close(stderr_fd); stderr_fd = -1; }
         }
     }
+    if (idxfd >= 0) close(idxfd);
     close(logfd);
     _exit(0);
 }
@@ -549,6 +562,10 @@ static void run_restart_supervisor(int handshake_fd,
                                    char **env,
                                    const char *resolved_exec_path,
                                    char **launch_argv,
+                                   int cap_addc,
+                                   char **cap_add,
+                                   int cap_dropc,
+                                   char **cap_drop,
                                    const char *restart_policy,
                                    int restart_delay_seconds) {
     (void)log_path;
@@ -590,6 +607,10 @@ static void run_restart_supervisor(int handshake_fd,
             signal(SIGTERM, SIG_DFL);
             signal(SIGINT, SIG_DFL);
             signal(SIGHUP, SIG_DFL);
+            if (apply_child_capabilities(cap_addc, cap_add, cap_dropc, cap_drop) != 0) {
+                fprintf(stderr, "hold: cannot apply restart capabilities for '%s': %s\n", resolved_exec_path, strerror(errno));
+                _exit(127);
+            }
             execv(resolved_exec_path, launch_argv);
             fprintf(stderr, "hold: cannot restart '%s': %s\n", resolved_exec_path, strerror(errno));
             _exit(127);
@@ -646,6 +667,246 @@ static int apply_child_env(int envc, char **env) {
     }
     return 0;
 }
+
+#if defined(__linux__) && defined(SYS_capget) && defined(SYS_capset)
+struct hold_cap_name { const char *name; int value; };
+static const struct hold_cap_name HOLD_CAP_NAMES[] = {
+#ifdef CAP_CHOWN
+    {"CHOWN", CAP_CHOWN},
+#endif
+#ifdef CAP_DAC_OVERRIDE
+    {"DAC_OVERRIDE", CAP_DAC_OVERRIDE},
+#endif
+#ifdef CAP_DAC_READ_SEARCH
+    {"DAC_READ_SEARCH", CAP_DAC_READ_SEARCH},
+#endif
+#ifdef CAP_FOWNER
+    {"FOWNER", CAP_FOWNER},
+#endif
+#ifdef CAP_FSETID
+    {"FSETID", CAP_FSETID},
+#endif
+#ifdef CAP_KILL
+    {"KILL", CAP_KILL},
+#endif
+#ifdef CAP_SETGID
+    {"SETGID", CAP_SETGID},
+#endif
+#ifdef CAP_SETUID
+    {"SETUID", CAP_SETUID},
+#endif
+#ifdef CAP_SETPCAP
+    {"SETPCAP", CAP_SETPCAP},
+#endif
+#ifdef CAP_LINUX_IMMUTABLE
+    {"LINUX_IMMUTABLE", CAP_LINUX_IMMUTABLE},
+#endif
+#ifdef CAP_NET_BIND_SERVICE
+    {"NET_BIND_SERVICE", CAP_NET_BIND_SERVICE},
+#endif
+#ifdef CAP_NET_BROADCAST
+    {"NET_BROADCAST", CAP_NET_BROADCAST},
+#endif
+#ifdef CAP_NET_ADMIN
+    {"NET_ADMIN", CAP_NET_ADMIN},
+#endif
+#ifdef CAP_NET_RAW
+    {"NET_RAW", CAP_NET_RAW},
+#endif
+#ifdef CAP_IPC_LOCK
+    {"IPC_LOCK", CAP_IPC_LOCK},
+#endif
+#ifdef CAP_IPC_OWNER
+    {"IPC_OWNER", CAP_IPC_OWNER},
+#endif
+#ifdef CAP_SYS_MODULE
+    {"SYS_MODULE", CAP_SYS_MODULE},
+#endif
+#ifdef CAP_SYS_RAWIO
+    {"SYS_RAWIO", CAP_SYS_RAWIO},
+#endif
+#ifdef CAP_SYS_CHROOT
+    {"SYS_CHROOT", CAP_SYS_CHROOT},
+#endif
+#ifdef CAP_SYS_PTRACE
+    {"SYS_PTRACE", CAP_SYS_PTRACE},
+#endif
+#ifdef CAP_SYS_PACCT
+    {"SYS_PACCT", CAP_SYS_PACCT},
+#endif
+#ifdef CAP_SYS_ADMIN
+    {"SYS_ADMIN", CAP_SYS_ADMIN},
+#endif
+#ifdef CAP_SYS_BOOT
+    {"SYS_BOOT", CAP_SYS_BOOT},
+#endif
+#ifdef CAP_SYS_NICE
+    {"SYS_NICE", CAP_SYS_NICE},
+#endif
+#ifdef CAP_SYS_RESOURCE
+    {"SYS_RESOURCE", CAP_SYS_RESOURCE},
+#endif
+#ifdef CAP_SYS_TIME
+    {"SYS_TIME", CAP_SYS_TIME},
+#endif
+#ifdef CAP_SYS_TTY_CONFIG
+    {"SYS_TTY_CONFIG", CAP_SYS_TTY_CONFIG},
+#endif
+#ifdef CAP_MKNOD
+    {"MKNOD", CAP_MKNOD},
+#endif
+#ifdef CAP_LEASE
+    {"LEASE", CAP_LEASE},
+#endif
+#ifdef CAP_AUDIT_WRITE
+    {"AUDIT_WRITE", CAP_AUDIT_WRITE},
+#endif
+#ifdef CAP_AUDIT_CONTROL
+    {"AUDIT_CONTROL", CAP_AUDIT_CONTROL},
+#endif
+#ifdef CAP_SETFCAP
+    {"SETFCAP", CAP_SETFCAP},
+#endif
+#ifdef CAP_MAC_OVERRIDE
+    {"MAC_OVERRIDE", CAP_MAC_OVERRIDE},
+#endif
+#ifdef CAP_MAC_ADMIN
+    {"MAC_ADMIN", CAP_MAC_ADMIN},
+#endif
+#ifdef CAP_SYSLOG
+    {"SYSLOG", CAP_SYSLOG},
+#endif
+#ifdef CAP_WAKE_ALARM
+    {"WAKE_ALARM", CAP_WAKE_ALARM},
+#endif
+#ifdef CAP_BLOCK_SUSPEND
+    {"BLOCK_SUSPEND", CAP_BLOCK_SUSPEND},
+#endif
+#ifdef CAP_AUDIT_READ
+    {"AUDIT_READ", CAP_AUDIT_READ},
+#endif
+#ifdef CAP_PERFMON
+    {"PERFMON", CAP_PERFMON},
+#endif
+#ifdef CAP_BPF
+    {"BPF", CAP_BPF},
+#endif
+#ifdef CAP_CHECKPOINT_RESTORE
+    {"CHECKPOINT_RESTORE", CAP_CHECKPOINT_RESTORE},
+#endif
+};
+
+static int cap_last_cap_value(void) {
+    long fallback = 40;
+#ifdef CAP_LAST_CAP
+    fallback = CAP_LAST_CAP;
+#endif
+    FILE *f = fopen("/proc/sys/kernel/cap_last_cap", "r");
+    if (!f) return (int)fallback;
+    long n = fallback;
+    if (fscanf(f, "%ld", &n) != 1 || n < 0 || n > 63) n = fallback;
+    fclose(f);
+    return (int)n;
+}
+
+static int normalize_cap_name(const char *in, char out[64]) {
+    if (!in || !*in) { errno = EINVAL; return -1; }
+    const char *src = in;
+    if (!strncasecmp(src, "CAP_", 4)) src += 4;
+    size_t n = strlen(src);
+    if (n == 0 || n >= 64) { errno = EINVAL; return -1; }
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (c == '-') c = '_';
+        if (!(isalnum(c) || c == '_')) { errno = EINVAL; return -1; }
+        out[i] = (char)toupper(c);
+    }
+    out[n] = '\0';
+    return 0;
+}
+
+static int cap_name_to_value(const char *name) {
+    char norm[64];
+    if (normalize_cap_name(name, norm) != 0) return -1;
+    for (size_t i = 0; i < sizeof(HOLD_CAP_NAMES) / sizeof(HOLD_CAP_NAMES[0]); i++) {
+        if (!strcmp(norm, HOLD_CAP_NAMES[i].name)) return HOLD_CAP_NAMES[i].value;
+    }
+    errno = EINVAL;
+    return -1;
+}
+
+static void cap_set_bit(struct __user_cap_data_struct data[2], int cap, bool enabled) {
+    unsigned idx = (unsigned)cap / 32U;
+    __u32 mask = ((__u32)1U) << ((unsigned)cap % 32U);
+    if (idx >= 2) return;
+    if (enabled) {
+        data[idx].effective |= mask;
+        data[idx].permitted |= mask;
+    } else {
+        data[idx].effective &= ~mask;
+        data[idx].permitted &= ~mask;
+        data[idx].inheritable &= ~mask;
+    }
+}
+
+static bool cap_permitted_bit_is_set(const struct __user_cap_data_struct data[2], int cap) {
+    unsigned idx = (unsigned)cap / 32U;
+    __u32 mask = ((__u32)1U) << ((unsigned)cap % 32U);
+    return idx < 2 && (data[idx].permitted & mask) != 0;
+}
+
+static int apply_child_capabilities(int cap_addc, char **cap_add, int cap_dropc, char **cap_drop) {
+    if (cap_addc <= 0 && cap_dropc <= 0) return 0;
+    if ((cap_addc > 0 && !cap_add) || (cap_dropc > 0 && !cap_drop)) { errno = EINVAL; return -1; }
+    struct __user_cap_header_struct hdr;
+    struct __user_cap_data_struct data[2];
+    bool drop_all = false;
+    bool drop_explicit[64];
+    memset(&hdr, 0, sizeof(hdr));
+    memset(data, 0, sizeof(data));
+    memset(drop_explicit, 0, sizeof(drop_explicit));
+    hdr.version = _LINUX_CAPABILITY_VERSION_3;
+    hdr.pid = 0;
+    if (syscall(SYS_capget, &hdr, data) != 0) return -1;
+    int last = cap_last_cap_value();
+    for (int i = 0; i < cap_dropc; i++) {
+        char norm[64];
+        if (normalize_cap_name(cap_drop[i], norm) != 0) return -1;
+        if (!strcmp(norm, "ALL")) {
+            drop_all = true;
+            for (int c = 0; c <= last && c < 64; c++) cap_set_bit(data, c, false);
+            continue;
+        }
+        int c = cap_name_to_value(norm);
+        if (c < 0 || c > last) return -1;
+        cap_set_bit(data, c, false);
+        if (c < 64) drop_explicit[c] = true;
+    }
+    for (int i = 0; i < cap_addc; i++) {
+        char norm[64];
+        if (normalize_cap_name(cap_add[i], norm) != 0) return -1;
+        if (!strcmp(norm, "ALL")) {
+            for (int c = 0; c <= last && c < 64; c++) cap_set_bit(data, c, true);
+            continue;
+        }
+        int c = cap_name_to_value(norm);
+        if (c < 0 || c > last) return -1;
+        cap_set_bit(data, c, true);
+    }
+    for (int c = 0; c <= last && c < 64; c++) {
+        if ((drop_all || drop_explicit[c]) && !cap_permitted_bit_is_set(data, c)) {
+            (void)prctl(PR_CAPBSET_DROP, c, 0, 0, 0);
+        }
+    }
+    return syscall(SYS_capset, &hdr, data) == 0 ? 0 : -1;
+}
+#else
+static int apply_child_capabilities(int cap_addc, char **cap_add, int cap_dropc, char **cap_drop) {
+    (void)cap_add; (void)cap_drop;
+    if (cap_addc > 0 || cap_dropc > 0) { errno = ENOTSUP; return -1; }
+    return 0;
+}
+#endif
 
 static void close_stdio_to_devnull(void) {
     int fd = open("/dev/null", O_RDWR);
@@ -722,8 +983,15 @@ bool hold_start_target_is_within_invoking_home(const struct hold_invocation *inv
     }
     for (int i = 1; i < argc; i++) {
         const char *arg = argv ? argv[i] : NULL;
-        if (!arg || !*arg || arg[0] == '-') {
+        if (!arg || !*arg) {
             continue;
+        }
+        if (arg[0] == '-') {
+            const char *eq = strchr(arg, '=');
+            if (!eq || !eq[1]) {
+                continue;
+            }
+            arg = eq + 1;
         }
         char path[HOLD_PATH_MAX];
         if (hold_resolve_existing_path_from_cwd(arg, cwd[0] ? cwd : NULL, path, sizeof(path)) == 0 &&
@@ -837,6 +1105,65 @@ int hold_perform_start_with_metadata_name_options(const struct hold_invocation *
                                                              restart_policy,
                                                              restart_delay_seconds,
                                                              log_destination,
+                                                             0,
+                                                             NULL,
+                                                             0,
+                                                             NULL,
+                                                             NULL,
+                                                             NULL,
+                                                             NULL,
+                                                             0,
+                                                             NULL);
+}
+
+int hold_perform_start_with_metadata_name_cap_options(const struct hold_invocation *inv,
+                                                       const struct hold_store *store,
+                                                       bool tail,
+                                                       bool console_mode,
+                                                       bool auto_remove,
+                                                       bool interactive_stdin,
+                                                       int argc,
+                                                       char **argv,
+                                                       const char *exec_path,
+                                                       const char *run_alias,
+                                                       const char *requested_run_name,
+                                                       int envc,
+                                                       char **env,
+                                                       int portc,
+                                                       char **ports,
+                                                       int volumec,
+                                                       char **volumes,
+                                                       int cap_addc,
+                                                       char **cap_add,
+                                                       int cap_dropc,
+                                                       char **cap_drop,
+                                                       const char *restart_policy,
+                                                       int restart_delay_seconds,
+                                                       const char *log_destination) {
+    return perform_start_with_metadata_name_options_internal(inv,
+                                                             store,
+                                                             tail,
+                                                             console_mode,
+                                                             auto_remove,
+                                                             interactive_stdin,
+                                                             argc,
+                                                             argv,
+                                                             exec_path,
+                                                             run_alias,
+                                                             requested_run_name,
+                                                             envc,
+                                                             env,
+                                                             portc,
+                                                             ports,
+                                                             volumec,
+                                                             volumes,
+                                                             restart_policy,
+                                                             restart_delay_seconds,
+                                                             log_destination,
+                                                             cap_addc,
+                                                             cap_add,
+                                                             cap_dropc,
+                                                             cap_drop,
                                                              NULL,
                                                              NULL,
                                                              NULL,
@@ -864,6 +1191,10 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
                                                              const char *restart_policy,
                                                              int restart_delay_seconds,
                                                              const char *log_destination,
+                                                             int cap_addc,
+                                                             char **cap_add,
+                                                             int cap_dropc,
+                                                             char **cap_drop,
                                                              const char *existing_id,
                                                              const char *existing_log_path,
                                                              const char *existing_run_name,
@@ -873,6 +1204,8 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         envc < 0 || (envc > 0 && !env) ||
         portc < 0 || (portc > 0 && !ports) ||
         volumec < 0 || (volumec > 0 && !volumes) ||
+        cap_addc < 0 || (cap_addc > 0 && !cap_add) ||
+        cap_dropc < 0 || (cap_dropc > 0 && !cap_drop) ||
         restart_delay_seconds < 0) {
         hold_usage();
         return 5;
@@ -1000,6 +1333,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
     }
 
     int pipefd[2];
+    int target_pid_pipe[2] = {-1, -1};
     int stdout_pipe[2] = {-1, -1};
     int stderr_pipe[2] = {-1, -1};
 #if defined(__linux__) && defined(O_CLOEXEC)
@@ -1060,6 +1394,28 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
             (void)fcntl(stderr_pipe[1], F_SETFD, FD_CLOEXEC);
         }
     }
+    if (!console_mode && !restart_enabled) {
+#if defined(__linux__) && defined(O_CLOEXEC)
+        if (pipe2(target_pid_pipe, O_CLOEXEC) != 0)
+#endif
+        {
+            if (pipe(target_pid_pipe) != 0) {
+                int saved = errno;
+                close(pipefd[0]);
+                close(pipefd[1]);
+                if (stdout_pipe[0] >= 0) close(stdout_pipe[0]);
+                if (stdout_pipe[1] >= 0) close(stdout_pipe[1]);
+                if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
+                if (stderr_pipe[1] >= 0) close(stderr_pipe[1]);
+                unlink_if_nonempty(reserve_path);
+                free_launch_and_observed_argv(launch_argv, observed_argv, argc);
+                errno = saved;
+                hold_die_errno("hold: target pid pipe failed");
+            }
+            (void)fcntl(target_pid_pipe[0], F_SETFD, FD_CLOEXEC);
+            (void)fcntl(target_pid_pipe[1], F_SETFD, FD_CLOEXEC);
+        }
+    }
     pid_t pid = fork();
     if (pid < 0) {
         int saved = errno;
@@ -1069,6 +1425,8 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         if (stdout_pipe[1] >= 0) close(stdout_pipe[1]);
         if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
         if (stderr_pipe[1] >= 0) close(stderr_pipe[1]);
+        if (target_pid_pipe[0] >= 0) close(target_pid_pipe[0]);
+        if (target_pid_pipe[1] >= 0) close(target_pid_pipe[1]);
         unlink_if_nonempty(reserve_path);
         free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         errno = saved;
@@ -1076,6 +1434,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
     }
     if (pid == 0) {
         close(pipefd[0]);
+        if (target_pid_pipe[0] >= 0) close(target_pid_pipe[0]);
         if (stdout_pipe[0] >= 0) close(stdout_pipe[0]);
         if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
         if (restart_enabled) {
@@ -1095,8 +1454,50 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
                                    env,
                                    resolved_exec_path,
                                    launch_argv,
+                                   cap_addc,
+                                   cap_add,
+                                   cap_dropc,
+                                   cap_drop,
                                    restart_policy,
                                    restart_delay_seconds);
+        }
+        if (!console_mode) {
+            pid_t target = fork();
+            if (target < 0) {
+                int e = errno;
+                hold_write_all(pipefd[1], &e, sizeof(e));
+                _exit(127);
+            }
+            if (target != 0) {
+                if (target_pid_pipe[1] >= 0) {
+                    (void)hold_write_all(target_pid_pipe[1], &target, sizeof(target));
+                    close(target_pid_pipe[1]);
+                }
+                if (stdout_pipe[1] >= 0) close(stdout_pipe[1]);
+                if (stderr_pipe[1] >= 0) close(stderr_pipe[1]);
+                close(pipefd[1]);
+                close_stdio_to_devnull();
+                signal(SIGTERM, SIG_IGN);
+                signal(SIGINT, SIG_IGN);
+                signal(SIGHUP, SIG_IGN);
+                int status = 0;
+                while (waitpid(target, &status, 0) < 0) {
+                    if (errno == EINTR) continue;
+                    status = 127 << 8;
+                    break;
+                }
+                for (int i = 0; i < 50; i++) {
+                    if (hold_mark_run_finished(store, id, status) == 0) break;
+                    struct timespec sl = {.tv_sec = 0, .tv_nsec = 100 * 1000000L};
+                    while (nanosleep(&sl, &sl) != 0 && errno == EINTR) {
+                        continue;
+                    }
+                }
+                if (WIFEXITED(status)) _exit(WEXITSTATUS(status));
+                if (WIFSIGNALED(status)) _exit(128 + WTERMSIG(status));
+                _exit(255);
+            }
+            if (target_pid_pipe[1] >= 0) close(target_pid_pipe[1]);
         }
         if (setsid() < 0) {
             int e = errno;
@@ -1104,6 +1505,11 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
             _exit(127);
         }
         if (apply_child_env(envc, env) != 0) {
+            int e = errno;
+            hold_write_all(pipefd[1], &e, sizeof(e));
+            _exit(127);
+        }
+        if (apply_child_capabilities(cap_addc, cap_add, cap_dropc, cap_drop) != 0) {
             int e = errno;
             hold_write_all(pipefd[1], &e, sizeof(e));
             _exit(127);
@@ -1122,6 +1528,8 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
                 close(nullfd);
             }
             hold_run_console_broker(pipefd[1],
+                                      store,
+                                      id,
                                       log_path,
                                       console_sock,
                                       console_owner_uid,
@@ -1159,7 +1567,9 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         _exit(127);
     }
 
+    pid_t supervisor_pid = pid;
     close(pipefd[1]);
+    if (target_pid_pipe[1] >= 0) close(target_pid_pipe[1]);
     if (stdout_pipe[1] >= 0) close(stdout_pipe[1]);
     if (stderr_pipe[1] >= 0) close(stderr_pipe[1]);
     int child_errno = 0;
@@ -1172,6 +1582,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         if (owns_new_log) unlink(log_path);
         if (stdout_pipe[0] >= 0) close(stdout_pipe[0]);
         if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
+        if (target_pid_pipe[0] >= 0) close(target_pid_pipe[0]);
         if (console_sock[0]) {
             unlink(console_sock);
         }
@@ -1193,11 +1604,33 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         if (owns_new_log) unlink(log_path);
         if (stdout_pipe[0] >= 0) close(stdout_pipe[0]);
         if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
+        if (target_pid_pipe[0] >= 0) close(target_pid_pipe[0]);
         if (console_sock[0]) {
             unlink(console_sock);
         }
         free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         return 1;
+    }
+    if (target_pid_pipe[0] >= 0) {
+        pid_t target_pid = -1;
+        ssize_t n = read(target_pid_pipe[0], &target_pid, sizeof(target_pid));
+        close(target_pid_pipe[0]);
+        target_pid_pipe[0] = -1;
+        if (n != (ssize_t)sizeof(target_pid) || target_pid <= 1) {
+            hold_rollback_spawned_group(pid, pid);
+            kill_supervisor_if_distinct(supervisor_pid, pid);
+            unlink_if_nonempty(reserve_path);
+            if (owns_new_log) unlink(log_path);
+            if (stdout_pipe[0] >= 0) close(stdout_pipe[0]);
+            if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
+            if (console_sock[0]) {
+                unlink(console_sock);
+            }
+            free_launch_and_observed_argv(launch_argv, observed_argv, argc);
+            errno = EIO;
+            hold_die_errno("hold: failed to read target pid");
+        }
+        pid = target_pid;
     }
 
     char logger_cmdline[HOLD_PATH_MAX];
@@ -1205,7 +1638,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         snprintf(logger_cmdline, sizeof(logger_cmdline), "?");
     }
     if (!console_mode) {
-        spawn_json_logger(stdout_pipe[0],
+        spawn_log_capture(stdout_pipe[0],
                           stderr_pipe[0],
                           log_path,
                           log_destination,
@@ -1280,6 +1713,17 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
             hold_die_errno("hold: console socket path too long");
         }
     }
+    r.has_stdio_config = true;
+    r.attach_stdin = interactive_stdin || console_mode;
+    r.attach_stdout = true;
+    r.attach_stderr = true;
+    r.tty = console_mode;
+    r.open_stdin = interactive_stdin || console_mode;
+    r.stdin_once = false;
+    r.mode_interactive = interactive_stdin;
+    r.mode_tty = console_mode;
+    r.mode_detach = !tail && !console_mode;
+    r.allow_multi = false;
     if (envc > 0 && hold_copy_argv(&r.env, envc, env) != 0) {
         hold_die_errno("hold: failed to copy env metadata");
     }
@@ -1292,6 +1736,14 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         hold_die_errno("hold: failed to copy volume metadata");
     }
     r.volumec = volumec;
+    if (cap_addc > 0 && hold_copy_argv(&r.cap_add, cap_addc, cap_add) != 0) {
+        hold_die_errno("hold: failed to copy capability add metadata");
+    }
+    r.cap_addc = cap_addc;
+    if (cap_dropc > 0 && hold_copy_argv(&r.cap_drop, cap_dropc, cap_drop) != 0) {
+        hold_die_errno("hold: failed to copy capability drop metadata");
+    }
+    r.cap_dropc = cap_dropc;
     if (restart_enabled) {
         if (hold_checked_snprintf(r.restart_policy, sizeof(r.restart_policy), "%s", restart_policy) != 0) {
             hold_die_errno("hold: restart policy too long");
@@ -1350,6 +1802,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
             if (chown_rc != 0) {
                 int saved = errno ? errno : EIO;
                 hold_rollback_spawned_group(pid, pid);
+                kill_supervisor_if_distinct(supervisor_pid, pid);
                 if (record_path[0] && !restarting_existing) {
                     unlink(record_path);
                 }
@@ -1377,6 +1830,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
                     saved = EIO;
                 }
                 hold_rollback_spawned_group(pid, pid);
+                kill_supervisor_if_distinct(supervisor_pid, pid);
                 if (record_path[0] && !restarting_existing) {
                     unlink(record_path);
                 }
@@ -1431,6 +1885,8 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
             hold_free_argv_alloc(r.env, r.envc);
             hold_free_argv_alloc(r.ports, r.portc);
             hold_free_argv_alloc(r.volumes, r.volumec);
+            hold_free_argv_alloc(r.cap_add, r.cap_addc);
+            hold_free_argv_alloc(r.cap_drop, r.cap_dropc);
             return tail_rc;
         }
         if (auto_remove) {
@@ -1439,12 +1895,15 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         hold_free_argv_alloc(r.env, r.envc);
         hold_free_argv_alloc(r.ports, r.portc);
         hold_free_argv_alloc(r.volumes, r.volumec);
+        hold_free_argv_alloc(r.cap_add, r.cap_addc);
+        hold_free_argv_alloc(r.cap_drop, r.cap_dropc);
         free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         return 0;
     }
     {
         int saved = errno;
         hold_rollback_spawned_group(pid, pid);
+        kill_supervisor_if_distinct(supervisor_pid, pid);
         unlink_if_nonempty(reserve_path);
         if (owns_new_log) unlink(log_path);
         if (console_sock[0]) {
@@ -1772,11 +2231,13 @@ static int hold_perform_profile_start_options(const struct hold_invocation *inv,
     if (!tail && p.mode_detach && !console_mode && !interactive_stdin) {
         eff_tail = false;
     }
-    int rc = hold_perform_start_with_metadata_name_options(inv, store, eff_tail, eff_console, auto_remove, eff_interactive,
+    int rc = hold_perform_start_with_metadata_name_cap_options(inv, store, eff_tail, eff_console, auto_remove, eff_interactive,
                                                            p.argc, p.argv, p.binary_path, alias, NULL,
                                                            p.envc, p.env,
                                                            p.portc, p.ports,
                                                            p.volumec, p.volumes,
+                                                           p.cap_addc, p.cap_add,
+                                                           p.cap_dropc, p.cap_drop,
                                                            restart_policy ? restart_policy : (p.has_restart_policy ? p.restart_policy : NULL),
                                                            restart_policy ? restart_delay_seconds : p.restart_delay_seconds,
                                                            log_destination ? log_destination : (p.has_log_destination ? p.log_destination : NULL));
@@ -1953,7 +2414,7 @@ int hold_cmd_start_action_name_options(const struct hold_invocation *inv,
                         if (!tail && target.recipe.mode_detach && !console_mode && !interactive_stdin) {
                             eff_tail = false;
                         }
-                        start_rc = hold_perform_start_with_metadata_name_options(inv,
+                        start_rc = hold_perform_start_with_metadata_name_cap_options(inv,
                                                  &target.store,
                                                  eff_tail,
                                                  eff_console,
@@ -1970,6 +2431,10 @@ int hold_cmd_start_action_name_options(const struct hold_invocation *inv,
                                                  target.recipe.ports,
                                                  target.recipe.volumec,
                                                  target.recipe.volumes,
+                                                 target.recipe.cap_addc,
+                                                 target.recipe.cap_add,
+                                                 target.recipe.cap_dropc,
+                                                 target.recipe.cap_drop,
                                                  restart_policy ? restart_policy : (target.recipe.has_restart_policy ? target.recipe.restart_policy : NULL),
                                                  restart_policy ? restart_delay_seconds : target.recipe.restart_delay_seconds,
                                                  log_destination ? log_destination : (target.recipe.has_log_destination ? target.recipe.log_destination : NULL));

@@ -2,6 +2,7 @@
 #include "hold/types.h"
 #include "hold/console.h"
 #include "hold/core.h"
+#include "hold/store.h"
 #include "hold/console_internal.h"
 
 /* Set by the SIGWINCH handler below; read by run_native_console in attach.c. */
@@ -13,6 +14,7 @@ static void broker_cleanup_and_exit(int parent_pipe,
                                     int master,
                                     int slave,
                                     int logfd,
+                                    int logidxfd,
                                     pid_t target,
                                     int exit_code);
 static void broker_fail_errno(int parent_pipe,
@@ -21,6 +23,7 @@ static void broker_fail_errno(int parent_pipe,
                               int master,
                               int slave,
                               int logfd,
+                              int logidxfd,
                               pid_t target,
                               int err);
 static bool console_peer_uid_allowed(uid_t peer_uid,
@@ -43,6 +46,7 @@ static void broker_cleanup_and_exit(int parent_pipe,
                                     int master,
                                     int slave,
                                     int logfd,
+                                    int logidxfd,
                                     pid_t target,
                                     int exit_code) {
     if (target > 0) {
@@ -56,6 +60,7 @@ static void broker_cleanup_and_exit(int parent_pipe,
     if (listener >= 0) close(listener);
     if (master >= 0) close(master);
     if (slave >= 0) close(slave);
+    if (logidxfd >= 0) close(logidxfd);
     if (logfd >= 0) close(logfd);
     if (sock_path && *sock_path) unlink(sock_path);
     _exit(exit_code);
@@ -67,13 +72,14 @@ static void broker_fail_errno(int parent_pipe,
                               int master,
                               int slave,
                               int logfd,
+                              int logidxfd,
                               pid_t target,
                               int err) {
     if (err == 0) {
         err = EIO;
     }
     (void)hold_write_all(parent_pipe, &err, sizeof(err));
-    broker_cleanup_and_exit(parent_pipe, sock_path, listener, master, slave, logfd, target, 127);
+    broker_cleanup_and_exit(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, 127);
 }
 
 static bool console_peer_uid_allowed(uid_t peer_uid,
@@ -98,6 +104,8 @@ static bool authorize_console_client(int client,
 }
 
 void hold_run_console_broker(int parent_pipe,
+                               const struct hold_store *store,
+                               const char *run_id,
                                const char *log_path,
                                const char *sock_path,
                                uid_t owner_uid,
@@ -112,22 +120,24 @@ void hold_run_console_broker(int parent_pipe,
     int master = -1;
     int slave = -1;
     int logfd = -1;
+    int logidxfd = -1;
     pid_t target = -1;
 
     if (argc <= 0 || !argv || !argv[0]) {
-        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, EINVAL);
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, EINVAL);
     }
 
     listener = hold_make_console_listener(sock_path);
     if (listener < 0) {
-        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, errno);
     }
     logfd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    logidxfd = logfd >= 0 ? hold_open_log_index_fd(log_path, logfd) : -1;
     if (logfd < 0) {
-        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, errno);
     }
     if (hold_open_console_pty(&master, &slave, init_rows, init_cols) != 0) {
-        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, errno);
     }
 
     int exec_pipe[2];
@@ -136,14 +146,14 @@ void hold_run_console_broker(int parent_pipe,
 #endif
     {
         if (pipe(exec_pipe) != 0) {
-            broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, errno);
+            broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, errno);
         }
         if (fcntl(exec_pipe[0], F_SETFD, FD_CLOEXEC) != 0 ||
             fcntl(exec_pipe[1], F_SETFD, FD_CLOEXEC) != 0) {
             int saved = errno;
             close(exec_pipe[0]);
             close(exec_pipe[1]);
-            broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, saved);
+            broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, saved);
         }
     }
 
@@ -152,7 +162,7 @@ void hold_run_console_broker(int parent_pipe,
         int saved = errno;
         close(exec_pipe[0]);
         close(exec_pipe[1]);
-        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, saved);
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, saved);
     }
     if (target == 0) {
         close(exec_pipe[0]);
@@ -203,10 +213,10 @@ void hold_run_console_broker(int parent_pipe,
     close(slave);
     slave = -1;
     if (handshake < 0) {
-        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, handshake_errno);
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, handshake_errno);
     }
     if (handshake > 0) {
-        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, target, child_errno);
+        broker_fail_errno(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, child_errno);
     }
     close(parent_pipe);
     parent_pipe = -1;
@@ -227,12 +237,17 @@ void hold_run_console_broker(int parent_pipe,
     struct console_replay_buffer replay;
     hold_console_replay_init(&replay);
     bool target_done = false;
+    int target_status = 0;
     while (1) {
         if (!target_done) {
             int st = 0;
             pid_t got = waitpid(target, &st, WNOHANG);
             if (got == target) {
                 target_done = true;
+                target_status = st;
+                if (store && run_id && *run_id) {
+                    (void)hold_mark_run_finished(store, run_id, target_status);
+                }
                 target = -1;
             }
         }
@@ -306,7 +321,7 @@ void hold_run_console_broker(int parent_pipe,
             char buf[4096];
             ssize_t n = read(master, buf, sizeof(buf));
             if (n > 0) {
-                (void)hold_write_json_log_bytes_fd(logfd, "stdout", buf, (size_t)n);
+                (void)hold_write_indexed_log_bytes_fd(logfd, logidxfd, "stdout", buf, (size_t)n);
                 hold_console_replay_append(&replay, buf, (size_t)n);
                 if (client >= 0 && hold_write_all(client, buf, (size_t)n) != 0) {
                     close(client);
@@ -319,10 +334,28 @@ void hold_run_console_broker(int parent_pipe,
         }
     }
 
+    if (!target_done && target > 0) {
+        int st = 0;
+        pid_t got;
+        do {
+            got = waitpid(target, &st, 0);
+        } while (got < 0 && errno == EINTR);
+        if (got == target) {
+            target_done = true;
+            target_status = st;
+            if (store && run_id && *run_id) {
+                (void)hold_mark_run_finished(store, run_id, target_status);
+            }
+            target = -1;
+        } else if (got < 0 && errno == ECHILD) {
+            target = -1;
+        }
+    }
+
     if (client >= 0) close(client);
     hold_console_replay_free(&replay);
     if (have_old_pipe) {
         sigaction(SIGPIPE, &old_pipe, NULL);
     }
-    broker_cleanup_and_exit(parent_pipe, sock_path, listener, master, slave, logfd, target, 0);
+    broker_cleanup_and_exit(parent_pipe, sock_path, listener, master, slave, logfd, logidxfd, target, 0);
 }

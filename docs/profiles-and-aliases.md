@@ -1,6 +1,6 @@
 # Profiles and storage aliases
 
-> Status: This page documents the current alias-to-profile transition behavior. The 0.4.0 profile editor/transcript target and the gaps from the current branch are tracked in [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md).
+> Status: This page is retained as profile reference context. The current 0.4 profile/run/grant object-shape decisions are tracked in [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md), [0.4 object format repair](0.4-object-format-repair.md), and [0.4 release cut](0.4-release-cut.md).
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Target resolution](target-resolution.md) | [Next: Security](security.md) | Related: [Store](store.md), [Launcher](launcher.md)
 
 Outer loop bridge: deep dive for quickstart Step 5, Create a Profile.

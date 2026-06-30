@@ -45,9 +45,10 @@ display=$(printf '%s\n' "$out" | extract_display)
 full=$(printf '%s\n' "$out" | extract_full_from_output)
 [ "${#full}" -eq 64 ] || fail "full 64-hex run id missing from log path"
 log="$HOME/.local/state/hold/$full.log"
-grep -Eq '^\{"log":"smoke-out\\n","stream":"stdout","time":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z"\}$' "$log" ||
-  fail "stdout JSON log entry missing"
-hold logs --plain "$display" | grep -qx 'smoke-out' || fail "logs --plain did not decode JSON"
+grep -qx 'smoke-out' "$log" || fail "stdout raw log line missing"
+test -f "$log.idx" || fail "raw log sidecar index missing"
+head -c 7 "$log.idx" | grep -q '^HLOGIDX' || fail "raw log sidecar magic missing"
+hold logs --plain "$display" | grep -qx 'smoke-out' || fail "logs --plain did not print raw log"
 
 hold profile web -e HELLO=world --log-destination syslog -- /bin/sh -c 'echo $HELLO; sleep 2' >/dev/null
 hold profile web export --json | grep -q '"log_destination": "syslog"' ||
@@ -82,7 +83,7 @@ restart_id=$(extract_display < /tmp/hold-restart.out)
 [ "$restart_id" = "$named" ] || fail "restart did not reuse existing run id"
 sleep 0.3
 [ "$(hold logs --plain named-smoke | grep -c '^named$')" -eq 2 ] ||
-  fail "restart did not append to existing JSON log"
+  fail "restart did not append to existing raw log"
 
 if hold run -p 8080:80 -- /bin/true >/tmp/hold-pub.out 2>/tmp/hold-pub.err; then
   fail "publish unexpectedly succeeded"

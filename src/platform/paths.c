@@ -15,6 +15,73 @@ static int realpath_copy(const char *path, char *out, size_t n) {
     return rc;
 }
 
+static bool parse_passwd_uid_field(const char *s, uid_t *out) {
+    if (!s || !*s || !out) return false;
+    errno = 0;
+    char *end = NULL;
+    uintmax_t v = strtoumax(s, &end, 10);
+    if (errno != 0 || !end || *end != '\0') return false;
+    uid_t narrowed = (uid_t)v;
+    if ((uintmax_t)narrowed != v) return false;
+    *out = narrowed;
+    return true;
+}
+
+int hold_lookup_passwd_by_uid(uid_t uid, struct hold_passwd_entry *out) {
+    if (!out) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    FILE *fp = fopen("/etc/passwd", "r");
+    if (!fp) return -1;
+
+    char line[8192];
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+
+        char *fields[7] = {0};
+        char *p = line;
+        for (int i = 0; i < 7; i++) {
+            fields[i] = p;
+            char *colon = strchr(p, ':');
+            if (!colon) {
+                if (i != 6) fields[0] = NULL;
+                break;
+            }
+            *colon = '\0';
+            p = colon + 1;
+        }
+        if (!fields[0] || !fields[2] || !*fields[0]) continue;
+
+        uid_t parsed_uid = 0;
+        if (!parse_passwd_uid_field(fields[2], &parsed_uid) || parsed_uid != uid) continue;
+
+        int rc = 0;
+        if (fields[0] && *fields[0]) {
+            rc |= hold_checked_snprintf(out->name, sizeof(out->name), "%s", fields[0]);
+        }
+        if (fields[5] && *fields[5]) {
+            rc |= hold_checked_snprintf(out->home, sizeof(out->home), "%s", fields[5]);
+        }
+        if (fields[6] && *fields[6]) {
+            rc |= hold_checked_snprintf(out->shell, sizeof(out->shell), "%s", fields[6]);
+        }
+        fclose(fp);
+        if (rc != 0) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        return 0;
+    }
+
+    fclose(fp);
+    errno = ENOENT;
+    return -1;
+}
+
 int hold_resolve_binary_path(const char *argv0, char *out, size_t n) {
     if (!argv0 || !*argv0) {
         errno = EINVAL;
@@ -83,22 +150,51 @@ int hold_normalize_existing_argv_paths_from_cwd(char **argv, int argc, int first
     }
     for (int i = first_arg; i < argc; i++) {
         const char *arg = argv[i];
-        if (!arg || !*arg || arg[0] == '-') {
+        if (!arg || !*arg) {
             continue;
+        }
+        const char *path_part = arg;
+        size_t prefix_len = 0;
+        if (arg[0] == '-') {
+            const char *eq = strchr(arg, '=');
+            if (!eq || !eq[1]) {
+                continue;
+            }
+            prefix_len = (size_t)(eq + 1 - arg);
+            path_part = eq + 1;
         }
         char resolved[HOLD_PATH_MAX];
-        if (hold_resolve_existing_path_from_cwd(arg, cwd, resolved, sizeof(resolved)) != 0) {
+        if (hold_resolve_existing_path_from_cwd(path_part, cwd, resolved, sizeof(resolved)) != 0) {
             continue;
         }
-        if (!strcmp(arg, resolved)) {
-            continue;
+        if (prefix_len == 0) {
+            if (!strcmp(arg, resolved)) {
+                continue;
+            }
+            char *copy = strdup(resolved);
+            if (!copy) {
+                return -1;
+            }
+            free(argv[i]);
+            argv[i] = copy;
+        } else {
+            if (!strcmp(path_part, resolved)) {
+                continue;
+            }
+            size_t resolved_len = strlen(resolved);
+            if (prefix_len >= SIZE_MAX - resolved_len) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            char *copy = malloc(prefix_len + resolved_len + 1);
+            if (!copy) {
+                return -1;
+            }
+            memcpy(copy, arg, prefix_len);
+            memcpy(copy + prefix_len, resolved, resolved_len + 1);
+            free(argv[i]);
+            argv[i] = copy;
         }
-        char *copy = strdup(resolved);
-        if (!copy) {
-            return -1;
-        }
-        free(argv[i]);
-        argv[i] = copy;
     }
     return 0;
 }

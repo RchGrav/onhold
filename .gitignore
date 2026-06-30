@@ -1,11 +1,16 @@
 # Build output
 /hold
 /hold-dynamic
+/obj/
+/obj-test/
 
 # Local release-artifact staging (scripts/release_build.sh, scripts/linux.sh release)
 /dist/
 /review-builds/
 /review-fixtures/
+
+# Local agent/workflow state
+/.omx/
 
 # Local agent instructions
 
@@ -67,14 +72,17 @@ dkms.conf
 
 # Profile-hash compatibility test binary
 /hash-vector
-/hold
 
 # Viewer filter test binary
 /viewer-filter-test
 
+# Local scratch/test executable
+/hello
+
 # Local demo run IDs
 /.review-demo-runs.env
 
+# Local handoff scratch (never commit)
 HANDOFF.md
 
 # Local agent instructions

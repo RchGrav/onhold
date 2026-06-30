@@ -16,7 +16,7 @@ Version 0.4.0 is intentionally allowed to break the current CLI because the tool
 
 JSON remains the canonical on-disk profile storage format. CLI transcript config is a human Cisco-IOS-style editing/import/export format that compiles to the JSON profile model.
 
-The hardening backlog in section 11 is part of the same 0.4.0 release plan. The redesigned CLI should not be released as stable until the product surface and hardening work are both complete. `VERSION` is still `0.3.9` in the current branch, so wording in this document is branch/spec status unless explicitly tied to implemented source and tests. See [0.4.0 branch alignment and follow-up matrix](0.4.0-alignment.md) for the current implemented/deferred split.
+The hardening backlog in section 11 is part of the same 0.4.0 release plan. The redesigned CLI should not be released as stable until the product surface and hardening work are both complete. `VERSION` is still `0.3.9` in the current branch, so wording in this document is branch/spec status unless explicitly tied to implemented source and tests. See [0.4 release cut](0.4-release-cut.md), [0.4 object format repair](0.4-object-format-repair.md), and the archived [0.4.0 branch alignment matrix](archive/0.4.0-alignment.md) for implementation status and historical split decisions.
 
 ## 2. Core model
 
@@ -1626,7 +1626,7 @@ Starts that detach or background by policy should print only the run ID to stdou
 
 ## 10. Alignment status and decisions
 
-Current branch status is tracked in [0.4.0 branch alignment and follow-up matrix](0.4.0-alignment.md). That matrix is part of this specification: if the matrix says a feature is a follow-up, this document describes the intended product target rather than current release readiness.
+Current release-cut status is tracked in [0.4 release cut](0.4-release-cut.md). The archived [0.4.0 branch alignment matrix](archive/0.4.0-alignment.md) remains historical context; if newer repair/release-cut docs disagree with it, the newer docs win.
 
 Resolved decisions for the current 0.4.0 direction:
 
@@ -1828,11 +1828,11 @@ Acceptance:
 - Release flow is non-destructive.
 - Installer fails closed.
 
-### 11.11 Remove or replace stale `REVIEW.md`
+### 11.11 Archive stale review status
 
 Requirements:
 
-- Delete `REVIEW.md` or replace it with a current review-status document.
+- Archive stale review-status notes or replace them with current verification evidence.
 - If replaced, list actual verification commands and caveats.
 - Do not claim all tests pass unless `make test` completes successfully.
 - Keep any replacement scoped to release-readiness/status. It should not preserve stale test counts, obsolete file names, or claims from previous review rounds.
@@ -1840,7 +1840,7 @@ Requirements:
 Acceptance:
 
 - No stale test counts or obsolete file references remain.
-- `REVIEW.md`, if present, clearly says docs-only checks are not implementation test evidence.
+- Archived review notes clearly say they are historical and not current implementation evidence.
 
 ## 12. 0.4.0 release acceptance summary
 

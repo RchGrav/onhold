@@ -392,7 +392,7 @@ The proposed durable Hold-captured log sidecar format:
 
 #include <stdint.h>
 
-#define HOLD_LOGIDX_MAGIC "HLOGIDX1"
+#define HOLD_LOGIDX_MAGIC "HLOGIDX"
 #define HOLD_LOGIDX_VERSION 1
 #define HOLD_LOGIDX_ENTRY_SIZE 16
 
@@ -423,7 +423,7 @@ The proposed durable Hold-captured log sidecar format:
 #define HOLD_LOGIDX_META_RESERVED_MASK 0xffc0u
 
 struct hold_logidx_header_v1 {
-    char     magic[8];        /* "HLOGIDX1" */
+    char     magic[8];        /* "HLOGIDX" plus NUL */
     uint16_t version;         /* 1 */
     uint16_t header_size;     /* sizeof(struct hold_logidx_header_v1) */
     uint16_t entry_size;      /* 16 */

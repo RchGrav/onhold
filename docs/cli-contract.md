@@ -1,6 +1,6 @@
 # CLI contract
 
-> Status: This page documents the current 0.3.x/legacy parser and scripting contract. The 0.4.0 `hold` command language is tracked separately in [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md) and [0.4.0 branch alignment](0.4.0-alignment.md).
+> Status: This page is retained as parser/scripting reference context. The current 0.4 command language is tracked in [Hold 0.4 UX and CLI specification](HOLD_0_4_UX_SPEC.md), [0.4 object format repair](0.4-object-format-repair.md), and [0.4 release cut](0.4-release-cut.md).
 [Docs index](index.md) | [Quickstart](quickstart.md) | [Previous: Console](console.md) | [Next: Using On Hold in CI](ci.md) | Related: [Launcher](launcher.md), [Target resolution](target-resolution.md)
 
 Outer loop bridge: deep dive for quickstart Step 2, Manage It Later; Step 3, Understand Automatic Choices; and Step 7, Use It In CI.

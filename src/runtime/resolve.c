@@ -7,6 +7,7 @@
 #include "hold/store.h"
 #include "hold/console.h"
 #include "hold/access.h"
+#include <pwd.h>
 
 bool hold_command_accepts_target_tokens(const char *command) {
     return command && (!strcmp(command, "stop") || !strcmp(command, "kill") ||
@@ -130,9 +131,11 @@ int hold_ensure_run_recorded_under_alias(const struct hold_store *store, const c
         return -1;
     }
     if (!r.has_alias || strcmp(r.alias, alias) != 0) {
+        hold_free_run_record(&r);
         errno = EPERM;
         return -1;
     }
+    hold_free_run_record(&r);
     return 0;
 }
 
@@ -450,9 +453,7 @@ static int append_private_run_name_target(struct hold_resolved_target **targets,
         struct hold_run_record r;
         if (hold_load_record(path, &r) != 0 || !hold_valid_record(&r) ||
             strcmp(r.id, file_id) != 0 || !r.has_name || strcmp(r.name, name) != 0) {
-            hold_free_argv_alloc(r.env, r.envc);
-            hold_free_argv_alloc(r.ports, r.portc);
-            hold_free_argv_alloc(r.volumes, r.volumec);
+            hold_free_run_record(&r);
             continue;
         }
         enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
@@ -460,9 +461,7 @@ static int append_private_run_name_target(struct hold_resolved_target **targets,
             matches++;
             snprintf(matched, sizeof(matched), "%s", r.id);
         }
-        hold_free_argv_alloc(r.env, r.envc);
-        hold_free_argv_alloc(r.ports, r.portc);
-        hold_free_argv_alloc(r.volumes, r.volumec);
+        hold_free_run_record(&r);
     }
     closedir(d);
     if (matches == 0) return 0;
@@ -567,6 +566,18 @@ static int append_public_alias_elevation_target(struct hold_resolved_target **ta
             return 0;
         }
         return 1;
+    }
+    if (command && hold_valid_alias(alias)) {
+        struct hold_passwd_entry pw;
+        if (hold_lookup_passwd_by_uid(geteuid(), &pw) == 0 && pw.name[0]) {
+            char grant_hash[PROFILE_HASH_STR_LEN];
+            struct hold_profile grant_probe;
+            if (hold_subject_grant_hash_for(system_store, pw.name, alias, grant_hash) == 0 &&
+                hold_load_subject_grant_profile(system_store, pw.name, alias, grant_hash, command, &grant_probe) == 0) {
+                snprintf(hash, sizeof(hash), "%s", grant_hash);
+                hold_free_profile(&grant_probe);
+            }
+        }
     }
     struct alias_match_list matches;
     if (collect_public_alias_matches(system_store, alias, &matches) != 0) {

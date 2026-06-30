@@ -5,7 +5,7 @@
 static int skip_json_string(const char **pp);
 static int match_json_string(const char *p, const char *lit, const char **endp, bool *matched);
 static int skip_json_value_impl(const char **pp, int depth);
-static int json_get_string_array_alloc(const char *j, const char *key, char ***argv_out, int *argc_out);
+static int json_get_string_array_alloc_impl(const char *j, const char *key, bool allow_empty, char ***argv_out, int *argc_out);
 
 void hold_json_escape(FILE *f, const char *s) {
     for (; *s; s++) {
@@ -359,7 +359,7 @@ void hold_free_argv_alloc(char **argv, int argc) {
     free(argv);
 }
 
-static int json_get_string_array_alloc(const char *j, const char *key, char ***argv_out, int *argc_out) {
+static int json_get_string_array_alloc_impl(const char *j, const char *key, bool allow_empty, char ***argv_out, int *argc_out) {
     *argv_out = NULL;
     *argc_out = 0;
     const char *v;
@@ -403,13 +403,21 @@ static int json_get_string_array_alloc(const char *j, const char *key, char ***a
             return -1;
         }
     }
-    if (*v != ']' || argc == 0) {
+    if (*v != ']' || (!allow_empty && argc == 0)) {
         hold_free_argv_alloc(argv, argc);
         return -1;
+    }
+    if (argc == 0) {
+        free(argv);
+        argv = NULL;
     }
     *argv_out = argv;
     *argc_out = argc;
     return 0;
+}
+
+static int json_get_string_array_alloc(const char *j, const char *key, char ***argv_out, int *argc_out) {
+    return json_get_string_array_alloc_impl(j, key, false, argv_out, argc_out);
 }
 
 int hold_json_get_argv_alloc(const char *j, char ***argv_out, int *argc_out) {
@@ -430,6 +438,53 @@ int hold_json_get_ports_alloc(const char *j, char ***ports_out, int *portc_out) 
 
 int hold_json_get_volumes_alloc(const char *j, char ***volumes_out, int *volumec_out) {
     return json_get_string_array_alloc(j, "volumes", volumes_out, volumec_out);
+}
+
+int hold_json_get_string_array_key_alloc(const char *j, const char *key, char ***items_out, int *count_out) {
+    return json_get_string_array_alloc(j, key, items_out, count_out);
+}
+
+int hold_json_get_string_array_key_allow_empty_alloc(const char *j, const char *key, char ***items_out, int *count_out) {
+    return json_get_string_array_alloc_impl(j, key, true, items_out, count_out);
+}
+
+int hold_json_get_path_args_argv_alloc(const char *j, char ***argv_out, int *argc_out) {
+    *argv_out = NULL;
+    *argc_out = 0;
+    char path[HOLD_PATH_MAX];
+    if (hold_json_get_str(j, "Path", path, sizeof(path)) != 0 || path[0] == '\0') {
+        return -1;
+    }
+    char **args = NULL;
+    int arg_count = 0;
+    if (hold_json_get_string_array_key_allow_empty_alloc(j, "Args", &args, &arg_count) != 0) {
+        args = NULL;
+        arg_count = 0;
+    }
+    char **argv = calloc((size_t)arg_count + 2, sizeof(char *));
+    if (!argv) {
+        hold_free_argv_alloc(args, arg_count);
+        return -1;
+    }
+    argv[0] = strdup(path);
+    if (!argv[0]) {
+        free(argv);
+        hold_free_argv_alloc(args, arg_count);
+        return -1;
+    }
+    for (int i = 0; i < arg_count; i++) {
+        argv[i + 1] = strdup(args[i]);
+        if (!argv[i + 1]) {
+            hold_free_argv_alloc(argv, i + 1);
+            hold_free_argv_alloc(args, arg_count);
+            return -1;
+        }
+    }
+    argv[arg_count + 1] = NULL;
+    hold_free_argv_alloc(args, arg_count);
+    *argv_out = argv;
+    *argc_out = arg_count + 1;
+    return 0;
 }
 
 int hold_copy_argv(char ***out, int argc, char **argv) {

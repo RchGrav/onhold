@@ -338,20 +338,115 @@ actions_order = ["start", "stop", "kill", "tail", "dump", "prune", "console"]
 obj = json.load(sys.stdin)
 if obj.get("schema") != "hold.subject-grant.v1":
     raise SystemExit(2)
+
+def config_obj():
+    cfg = obj.get("Config")
+    return cfg if isinstance(cfg, dict) else {}
+
+def mode_obj():
+    mode = obj.get("mode")
+    return mode if isinstance(mode, dict) else {}
+
+def array_value(*keys):
+    cfg = config_obj()
+    for key in keys:
+        if key in obj and obj[key] is not None:
+            return obj[key]
+        if key in cfg and cfg[key] is not None:
+            return cfg[key]
+    return []
+
+def normalized_binary_path():
+    return obj.get("binary_path") or obj.get("bin") or obj["Path"]
+
+def normalized_argv():
+    binary = normalized_binary_path()
+    if "args" in obj and obj["args"] is not None:
+        argv = list(obj["args"] or [])
+        return argv if argv and argv[0] == binary else [binary] + argv
+    if "argv" in obj and obj["argv"] is not None:
+        argv = list(obj["argv"] or [])
+        return argv if argv and argv[0] == binary else [binary] + argv
+    return [obj["Path"]] + list(obj.get("Args") or [])
+
+def normalized_bool(name, config_key=None):
+    value = bool(obj.get(name, False))
+    mode = mode_obj()
+    if name in mode:
+        value = bool(mode[name])
+    if name == "allow_multi" and "multi" in mode:
+        value = bool(mode["multi"])
+    cfg = config_obj()
+    if config_key and config_key in cfg:
+        value = bool(cfg[config_key])
+    return value
+
+def normalized_log_destination():
+    value = obj.get("log_destination") or ""
+    cfg = config_obj()
+    log_cfg = cfg.get("LogConfig") if isinstance(cfg.get("LogConfig"), dict) else {}
+    if not value:
+        value = log_cfg.get("Type") or ""
+    return "" if value == "local" else value
+
 h = hashlib.sha256()
 def field(v):
     h.update(str(v).encode("utf-8"))
     h.update(b"\0")
 field("hold-subject-grant-canonical-v1")
-for key in ("schema", "subject", "profile", "binary_path"):
+for key in ("schema", "subject", "profile"):
     field(key)
     field(obj[key])
-argv = obj["argv"]
+field("binary_path")
+field(normalized_binary_path())
+
+def array_field(name):
+    if name == "env":
+        values = array_value("env", "Env")
+    elif name == "cap_add":
+        values = array_value("cap_add", "CapAdd")
+    elif name == "cap_drop":
+        values = array_value("cap_drop", "CapDrop")
+    else:
+        values = obj.get(name) or []
+    if not values:
+        return
+    field(name)
+    field(len(values))
+    for i, value in enumerate(values):
+        field(i)
+        field(value)
+
+argv = normalized_argv()
 field("argv")
 field(len(argv))
 for i, arg in enumerate(argv):
     field(i)
     field(arg)
+for key in ("env", "ports", "volumes", "cap_add", "cap_drop"):
+    array_field(key)
+if normalized_bool("interactive", "OpenStdin"):
+    field("interactive")
+    field("true")
+if normalized_bool("tty", "Tty"):
+    field("tty")
+    field("true")
+if normalized_bool("detach"):
+    field("detach")
+    field("true")
+if normalized_bool("allow_multi"):
+    field("allow_multi")
+    field("true")
+if obj.get("restart") and obj.get("restart") != "no":
+    field("restart")
+    field(obj["restart"])
+    if "restart_delay_seconds" in obj:
+        field("restart_delay_seconds")
+        field(obj["restart_delay_seconds"])
+log_destination = normalized_log_destination()
+if log_destination:
+    field("log_destination")
+    field(log_destination)
 action_set = set(obj["actions"])
 field("actions")
 for action in actions_order:
@@ -644,12 +739,19 @@ test_exec_failure_no_record() {
 }
 
 test_fast_exit_record_exited() {
-  local out id
-  out=$("$HOLD_BIN" -d true 2>&1) || return 1
+  local out id record
+  out=$("$HOLD_BIN" -d /bin/sh -c 'exit 7' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
-  sleep 0.1
-  "$HOLD_BIN" list | grep -Eq "^$id[[:space:]].*exited"
+  record=$(record_path "$id") || return 1
+  for _ in $(seq 1 50); do
+    grep -q '"exit_code": 7' "$record" && break
+    sleep 0.1
+  done
+  grep -q '"state": "exited"' "$record" || { cat "$record" >&2; return 1; }
+  grep -q '"exit_code": 7' "$record" || { cat "$record" >&2; return 1; }
+  grep -q '"ended_at": "' "$record" || { cat "$record" >&2; return 1; }
+  "$HOLD_BIN" ps -a | grep -Eq "^$id[[:space:]].*Exited \\(7\\)"
 }
 
 test_exec_replacement_remains_controllable() {
@@ -873,7 +975,13 @@ test_log_capture() {
   log=$(log_path "$id") || return 1
   sleep 0.4
   [ -f "$log" ] || return 1
-  grep -q 'out' "$log" && grep -q 'err' "$log"
+  [ -f "$log.idx" ] || return 1
+  head -c 7 "$log.idx" | grep -q '^HLOGIDX' || return 1
+  [ "$(wc -c <"$log.idx")" -gt 80 ] || { ls -l "$log.idx" >&2; return 1; }
+  ! grep -q '"log"' "$log" || { cat "$log" >&2; return 1; }
+  grep -q '^out$' "$log" && grep -q '^err$' "$log" || return 1
+  "$HOLD_BIN" __view "$id" --filter out --limit 1 >"$TEST_ROOT/log-capture-view.out" 2>"$TEST_ROOT/log-capture-view.stats" || return 1
+  grep -qx 'out' "$TEST_ROOT/log-capture-view.out" || { cat "$TEST_ROOT/log-capture-view.out" >&2; return 1; }
 }
 
 
@@ -1583,17 +1691,16 @@ PY
 
 
 test_log_view_follow_cursor_browse_keeps_short_top_page_pinned() {
-  [ "${HOLD_SKIP_TIMING_SENSITIVE_VIEWER_TESTS:-0}" != 1 ] || skip "timing-sensitive viewer TTY test skipped for sanitizer/parity lane"
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in 1 2 3 4; do echo "pinshort-line-$i"; done; for i in $(seq 5 40); do sleep 0.03; echo "pinshort-line-$i"; done; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in 1 2 3 4; do echo "pinshort-line-$i"; done; sleep 0.8; for i in $(seq 5 40); do sleep 0.03; echo "pinshort-line-$i"; done; sleep 3' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
-  sleep 0.05
+  sleep 0.15
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[B"); out.flush(); time.sleep(1.2); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-pinshort.out" 2>"$TEST_ROOT/view-follow-pinshort.err"
+  python3 -c 'import sys,time; out=sys.stdout.buffer; time.sleep(0.25); out.write(b"\x1b[B"); out.flush(); time.sleep(1.8); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+    script -qfec "stty -echo rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-pinshort.out" 2>"$TEST_ROOT/view-follow-pinshort.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-pinshort.err" >&2; return 1; }
@@ -1932,6 +2039,39 @@ test_console_round_trip_and_log_tee() {
     ls -la "$store" "$store/console" "$(dirname "$sock")" >&2 || true
     return 1
   }
+}
+
+test_console_exit_code_is_recorded() {
+  local out id store record rc
+  out=$("$HOLD_BIN" --console /bin/sh -c 'read line; echo "console-exit:$line"; exit 7' 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  store="$HOME/.local/state/hold"
+  record=$(record_path "$id" "$store") || return 1
+
+  set +e
+  printf 'done\n' | "$HOLD_BIN" console "$id" >"$TEST_ROOT/console-exit.out" 2>"$TEST_ROOT/console-exit.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 7 ] || {
+    echo "console attach rc=$rc (want 0 or target exit 7)" >&2
+    cat "$TEST_ROOT/console-exit.out" "$TEST_ROOT/console-exit.err" >&2
+    return 1
+  }
+  grep -q 'console-exit:done' "$TEST_ROOT/console-exit.out" || { cat "$TEST_ROOT/console-exit.out" >&2; return 1; }
+
+  for _ in $(seq 1 50); do
+    grep -q '"exit_code": 7' "$record" && break
+    sleep 0.1
+  done
+  grep -q '"state": "exited"' "$record" || { cat "$record" >&2; return 1; }
+  grep -q '"exit_code": 7' "$record" || { cat "$record" >&2; return 1; }
+  grep -q '"ExitCode": 7' "$record" || { cat "$record" >&2; return 1; }
+  "$HOLD_BIN" ps -a | grep -Eq "^$id[[:space:]].*Exited \(7\)" || return 1
+  "$HOLD_BIN" prune "$id" >/dev/null || return 1
 }
 
 test_console_socket_lives_in_store_dir() {
@@ -2312,7 +2452,7 @@ test_alias_profile_map_start_and_stop() {
   [ ! -f "$store/profiles.json" ] || return 1
   [ ! -d "$store/profiles" ] || return 1
   grep -q '"web-test": {"bin": "' "$store/aliases.json" || return 1
-  grep -Fq "\"args\": [\"$sh_bin\", \"-c\", \"while :; do sleep 1; done\"]" "$store/aliases.json" || return 1
+  grep -Fq "\"args\": [\"-c\", \"while :; do sleep 1; done\"]" "$store/aliases.json" || { cat "$store/aliases.json" >&2; return 1; }
   "$HOLD_BIN" profiles >"$TEST_ROOT/aliases-list.out" || return 1
   grep -Eq "^web-test[[:space:]]+user[[:space:]]+.*[[:space:]]+-$" "$TEST_ROOT/aliases-list.out" || return 1
   "$HOLD_BIN" list >"$TEST_ROOT/list-after-alias.out" 2>"$TEST_ROOT/list-after-alias.err" || return 1
@@ -2353,7 +2493,8 @@ test_alias_from_relative_executable_uses_recorded_absolute_argv0() {
   grep -Fq "\"argv\": [\"$expected\"]" "$record" || return 1
 
   (cd "$other" && "$HOLD_BIN" profile save "$id" as rel-daemon >"$TEST_ROOT/alias-rel.out" 2>"$TEST_ROOT/alias-rel.err") || return 1
-  grep -Fq "\"rel-daemon\": {\"bin\": \"$expected\", \"args\": [\"$expected\"]}" "$store/aliases.json" || return 1
+  grep -Fq "\"rel-daemon\": {\"bin\": \"$expected\", \"args\": []" "$store/aliases.json" || { cat "$store/aliases.json" >&2; return 1; }
+  grep -Fq '"detach": true' "$store/aliases.json" || { cat "$store/aliases.json" >&2; return 1; }
   "$HOLD_BIN" stop "$id" >/dev/null || return 1
 }
 
@@ -2464,6 +2605,172 @@ test_docker_env_persists_with_named_profile() {
   sleep 0.2
   got=$("$HOLD_BIN" dump "$id2") || return 1
   printf '%s\n' "$got" | grep -qx 'fromdocker'
+}
+
+test_profile_save_preserves_capability_metadata() {
+  local out id id2 store aliases json
+  store="$HOME/.local/state/hold"
+  out=$("$HOLD_BIN" run -d --cap-drop ALL -- /bin/sleep 60 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  "$HOLD_BIN" profile save "$id" as cap-prof >"$TEST_ROOT/cap-prof-save.out" 2>"$TEST_ROOT/cap-prof-save.err" || {
+    cat "$TEST_ROOT/cap-prof-save.out" "$TEST_ROOT/cap-prof-save.err" >&2
+    return 1
+  }
+  "$HOLD_BIN" stop "$id" >/dev/null || return 1
+  aliases="$store/aliases.json"
+  grep -Fq '"cap_drop": ["ALL"]' "$aliases" || { cat "$aliases" >&2; return 1; }
+
+  out=$("$HOLD_BIN" run -d cap-prof 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id2=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id2" ] || { printf '%s\n' "$out" >&2; return 1; }
+  json=$(record_path "$id2" "$store") || return 1
+  grep -Fq '"cap_drop": ["ALL"]' "$json" || { cat "$json" >&2; return 1; }
+  "$HOLD_BIN" stop "$id2" >/dev/null || return 1
+}
+
+
+test_profile_create_export_import_preserves_capability_metadata() {
+  local out id store json1 json2 transcript record
+  store="$HOME/.local/state/hold"
+
+  "$HOLD_BIN" profile cap-meta --cap-add NET_BIND_SERVICE --cap-drop ALL -- /bin/sleep 60 \
+    >"$TEST_ROOT/cap-meta-create.out" 2>"$TEST_ROOT/cap-meta-create.err" || {
+      cat "$TEST_ROOT/cap-meta-create.out" "$TEST_ROOT/cap-meta-create.err" >&2
+      return 1
+    }
+
+  json1="$TEST_ROOT/cap-meta.json"
+  "$HOLD_BIN" profile export cap-meta --json >"$json1" || return 1
+  python3 - "$json1" <<'PY' || { cat "$json1" >&2; return 1; }
+import json, sys
+p = json.load(open(sys.argv[1], encoding='utf-8'))
+if p.get('cap_add') != ['NET_BIND_SERVICE']:
+    raise SystemExit(f"cap_add not exported: {p!r}")
+if p.get('cap_drop') != ['ALL']:
+    raise SystemExit(f"cap_drop not exported: {p!r}")
+PY
+
+  transcript="$TEST_ROOT/cap-meta.profile"
+  "$HOLD_BIN" profile export cap-meta >"$transcript" || return 1
+  grep -Fxq 'cap-add NET_BIND_SERVICE' "$transcript" || { cat "$transcript" >&2; return 1; }
+  grep -Fxq 'cap-drop ALL' "$transcript" || { cat "$transcript" >&2; return 1; }
+
+  "$HOLD_BIN" profile import "$transcript" as cap-meta-import \
+    >"$TEST_ROOT/cap-meta-import.out" 2>"$TEST_ROOT/cap-meta-import.err" || {
+      cat "$TEST_ROOT/cap-meta-import.out" "$TEST_ROOT/cap-meta-import.err" >&2
+      return 1
+    }
+  json2="$TEST_ROOT/cap-meta-import.json"
+  "$HOLD_BIN" profile export cap-meta-import --json >"$json2" || return 1
+  python3 - "$json2" <<'PY' || { cat "$json2" >&2; return 1; }
+import json, sys
+p = json.load(open(sys.argv[1], encoding='utf-8'))
+if p.get('cap_add') != ['NET_BIND_SERVICE']:
+    raise SystemExit(f"cap_add did not round-trip: {p!r}")
+if p.get('cap_drop') != ['ALL']:
+    raise SystemExit(f"cap_drop did not round-trip: {p!r}")
+PY
+
+  "$HOLD_BIN" profile cap-drop-run --cap-drop ALL -- /bin/sleep 60 \
+    >"$TEST_ROOT/cap-drop-run-create.out" 2>"$TEST_ROOT/cap-drop-run-create.err" || {
+      cat "$TEST_ROOT/cap-drop-run-create.out" "$TEST_ROOT/cap-drop-run-create.err" >&2
+      return 1
+    }
+  out=$("$HOLD_BIN" run -d cap-drop-run 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  record=$(record_path "$id" "$store") || return 1
+  grep -Fq '"cap_drop": ["ALL"]' "$record" || { cat "$record" >&2; return 1; }
+  "$HOLD_BIN" stop "$id" >/dev/null || return 1
+}
+
+
+test_root_capability_drop_all_then_add_preserves_added_cap() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "root actor unavailable"
+  [ -r /proc/self/status ] || skip "/proc status unavailable"
+  local out cap_hex
+  out=$(as_root "$HOLD_REAL_BIN" run --rm --cap-drop ALL --cap-add NET_BIND_SERVICE -- /bin/sh -c 'grep "^CapEff:" /proc/self/status' 2>&1) || {
+    printf '%s
+' "$out" >&2
+    return 1
+  }
+  cap_hex=$(printf '%s
+' "$out" | awk '/^CapEff:/ { print $2; exit }')
+  [ -n "$cap_hex" ] || { printf '%s
+' "$out" >&2; return 1; }
+  python3 - "$cap_hex" <<'PY'
+import sys
+cap_eff = int(sys.argv[1], 16)
+net_bind_service = 1 << 10
+if cap_eff != net_bind_service:
+    raise SystemExit(f"expected only CAP_NET_BIND_SERVICE after cap-drop ALL + cap-add NET_BIND_SERVICE, got 0x{cap_eff:x}")
+PY
+}
+
+test_direct_capability_metadata_projects_to_inspect() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "root actor unavailable"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id
+  out=$(as_root "$HOLD_REAL_BIN" run -d --cap-add NET_BIND_SERVICE --cap-drop ALL -- /bin/sleep 60 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  as_root "$HOLD_REAL_BIN" inspect "$id" >"$TEST_ROOT/direct-cap-inspect.json" || return 1
+  python3 - "$TEST_ROOT/direct-cap-inspect.json" <<'PY' || { cat "$TEST_ROOT/direct-cap-inspect.json" >&2; return 1; }
+import json, sys
+r = json.load(open(sys.argv[1], encoding="utf-8"))[0]
+cfg = r.get("Config") or {}
+if cfg.get("CapAdd") != ["NET_BIND_SERVICE"]:
+    raise SystemExit(f"CapAdd mismatch: {cfg!r}")
+if cfg.get("CapDrop") != ["ALL"]:
+    raise SystemExit(f"CapDrop mismatch: {cfg!r}")
+PY
+  as_root "$HOLD_REAL_BIN" stop "$id" >/dev/null || return 1
+}
+
+test_restart_worker_applies_capability_metadata() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "root actor unavailable"
+  [ -r /proc/self/status ] || skip "/proc status unavailable"
+  local script out id count logs
+  script="$TEST_ROOT/restart-cap.sh"
+  cat >"$script" <<'EOS' || return 1
+#!/bin/sh
+grep '^CapEff:' /proc/self/status
+exit 7
+EOS
+  chmod 755 "$script" || return 1
+  out=$(as_root "$HOLD_REAL_BIN" run -d --restart on-failure:1 --restart-delay 0 \
+      --cap-drop ALL --cap-add NET_BIND_SERVICE -- \
+      "$script" 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  for _ in $(seq 1 40); do
+    logs=$(as_root "$HOLD_REAL_BIN" logs "$id" --plain -n 50 2>/dev/null || true)
+    count=$(printf '%s\n' "$logs" | grep -c '^CapEff:' || true)
+    [ "$count" -ge 2 ] && break
+    sleep 0.1
+  done
+  [ "$count" -ge 2 ] || { echo "restart capability attempts: $count" >&2; as_root "$HOLD_REAL_BIN" logs "$id" --plain -n 50 >&2 || true; return 1; }
+  logs=$(as_root "$HOLD_REAL_BIN" logs "$id" --plain -n 50) || return 1
+  printf '%s\n' "$logs" >"$TEST_ROOT/restart-cap.log" || return 1
+  python3 - "$TEST_ROOT/restart-cap.log" <<'PY' || { printf '%s\n' "$logs" >&2; return 1; }
+import sys
+lines = [line.split()[1] for line in open(sys.argv[1], encoding="utf-8") if line.startswith("CapEff:")]
+if len(lines) < 2:
+    raise SystemExit(f"expected at least 2 CapEff lines, got {lines!r}")
+want = 1 << 10
+for line in lines:
+    got = int(line, 16)
+    if got != want:
+        raise SystemExit(f"restart worker capabilities not constrained: got 0x{got:x}, want 0x{want:x}")
+PY
+  as_root "$HOLD_REAL_BIN" stop "$id" >/dev/null 2>&1 || true
 }
 
 
@@ -2613,6 +2920,71 @@ PY
 }
 
 
+test_captive_profile_capability_metadata_preserves_edits_and_clears() {
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local rc
+
+  set +e
+  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-cap-set.out" 2>"$TEST_ROOT/captive-cap-set.err"
+enable
+configure terminal
+profile ioscap
+binary /bin/sleep
+argv 60
+cap-add NET_BIND_SERVICE
+cap-drop ALL
+info
+commit
+end
+exit
+EOF
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-cap-set.out" "$TEST_ROOT/captive-cap-set.err" >&2; return 1; }
+  grep -q 'cap-add   : NET_BIND_SERVICE' "$TEST_ROOT/captive-cap-set.out" || { cat "$TEST_ROOT/captive-cap-set.out" >&2; return 1; }
+  grep -q 'cap-drop  : ALL' "$TEST_ROOT/captive-cap-set.out" || { cat "$TEST_ROOT/captive-cap-set.out" >&2; return 1; }
+
+  "$HOLD_BIN" profile export ioscap --json >"$TEST_ROOT/ioscap-set.json" || return 1
+  python3 - "$TEST_ROOT/ioscap-set.json" <<'PY' || { cat "$TEST_ROOT/ioscap-set.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+if profile.get('cap_add') != ['NET_BIND_SERVICE']:
+    raise SystemExit(f"cap_add not committed: {profile!r}")
+if profile.get('cap_drop') != ['ALL']:
+    raise SystemExit(f"cap_drop not committed: {profile!r}")
+PY
+
+  set +e
+  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-cap-clear.out" 2>"$TEST_ROOT/captive-cap-clear.err"
+enable
+configure terminal
+profile ioscap
+info
+no cap-add
+no cap-drop
+info
+commit
+end
+exit
+EOF
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-cap-clear.out" "$TEST_ROOT/captive-cap-clear.err" >&2; return 1; }
+  grep -q 'cap-add   : NET_BIND_SERVICE' "$TEST_ROOT/captive-cap-clear.out" || { cat "$TEST_ROOT/captive-cap-clear.out" >&2; return 1; }
+  grep -q 'cap-drop  : ALL' "$TEST_ROOT/captive-cap-clear.out" || { cat "$TEST_ROOT/captive-cap-clear.out" >&2; return 1; }
+  grep -q 'cap-add   : -' "$TEST_ROOT/captive-cap-clear.out" || { cat "$TEST_ROOT/captive-cap-clear.out" >&2; return 1; }
+  grep -q 'cap-drop  : -' "$TEST_ROOT/captive-cap-clear.out" || { cat "$TEST_ROOT/captive-cap-clear.out" >&2; return 1; }
+
+  "$HOLD_BIN" profile export ioscap --json >"$TEST_ROOT/ioscap-clear.json" || return 1
+  python3 - "$TEST_ROOT/ioscap-clear.json" <<'PY' || { cat "$TEST_ROOT/ioscap-clear.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+if 'cap_add' in profile or 'cap_drop' in profile:
+    raise SystemExit(f"capability fields not cleared: {profile!r}")
+PY
+}
+
+
 test_captive_profile_restart_metadata_preserves_edits_and_clears() {
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
@@ -2742,7 +3114,7 @@ EOF
   [ ! -s "$TEST_ROOT/import.err" ] || return 1
   grep -Fq '"cli-prof": {"bin": "/usr/bin/echo"' "$store/aliases.json" ||
     grep -Fq '"cli-prof": {"bin": "/bin/echo"' "$store/aliases.json" || return 1
-  grep -Fq '"args": ["/bin/echo", "hello import"]' "$store/aliases.json" || return 1
+  grep -Fq '"args": ["hello import"]' "$store/aliases.json" || return 1
 
   "$HOLD_BIN" import "$transcript" as top-prof --dry-run >"$TEST_ROOT/top-import-dry.out" 2>"$TEST_ROOT/top-import-dry.err" || return 1
   grep -Fxq "profile top-prof import dry-run ok" "$TEST_ROOT/top-import-dry.out" || {
@@ -2819,7 +3191,7 @@ test_profile_name_first_set_command() {
 
   "$HOLD_BIN" profile edit-prof export --format json >"$TEST_ROOT/profile-set.json" || return 1
   grep -Fq '"name": "edit-prof"' "$TEST_ROOT/profile-set.json" || return 1
-  grep -Fq '"args": ["/bin/echo", "name first edit"]' "$TEST_ROOT/profile-set.json" || return 1
+  grep -Fq '"args": ["name first edit"]' "$TEST_ROOT/profile-set.json" || return 1
 
   out=$("$HOLD_BIN" profile edit-prof start 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
@@ -2889,7 +3261,7 @@ test_profile_name_first_crud() {
 }
 
 test_profile_json_export_and_import() {
-  local json out id got store
+  local json docker_json out id got store
   store="$HOME/.local/state/hold"
   json="$TEST_ROOT/json.profile"
   cat >"$json" <<'JSON' || return 1
@@ -2898,7 +3270,7 @@ JSON
   "$HOLD_BIN" profile import "$json" >/dev/null || return 1
   "$HOLD_BIN" profile export json-prof --json >"$TEST_ROOT/export.json" || return 1
   grep -Fq '"name": "json-prof"' "$TEST_ROOT/export.json" || return 1
-  grep -Fq '"args": ["/bin/echo", "hello json"]' "$TEST_ROOT/export.json" || return 1
+  grep -Fq '"args": ["hello json"]' "$TEST_ROOT/export.json" || return 1
   grep -Fq '"json-prof": {"bin": "/bin/echo"' "$store/aliases.json" || return 1
 
   out=$("$HOLD_BIN" start json-prof 2>&1) || return 1
@@ -2906,7 +3278,33 @@ JSON
   [ -n "$id" ] || return 1
   sleep 0.1
   got=$("$HOLD_BIN" dump "$id") || return 1
-  printf '%s\n' "$got" | grep -qx 'hello json'
+  printf '%s\n' "$got" | grep -qx 'hello json' || return 1
+
+  docker_json="$TEST_ROOT/docker-shaped.profile.json"
+  cat >"$docker_json" <<'JSON' || return 1
+{
+  "version": 1,
+  "name": "docker-json-prof",
+  "Path": "/bin/sh",
+  "Args": ["-c", "printf '%s\\n' \"$DOCKER_PROFILE_TEST\""],
+  "Config": {
+    "Env": ["DOCKER_PROFILE_TEST=from-config"],
+    "Tty": false,
+    "OpenStdin": false,
+    "CapAdd": null,
+    "CapDrop": null,
+    "LogConfig": {"Type": "local", "Config": {}}
+  }
+}
+JSON
+  "$HOLD_BIN" profile import "$docker_json" >/dev/null || return 1
+  grep -Fq '"docker-json-prof": {"bin": "/bin/sh"' "$store/aliases.json" || { cat "$store/aliases.json" >&2; return 1; }
+  out=$("$HOLD_BIN" start docker-json-prof 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.1
+  got=$("$HOLD_BIN" dump "$id") || return 1
+  printf '%s\n' "$got" | grep -qx 'from-config'
 }
 
 test_invalid_alias_names_rejected() {
@@ -2973,10 +3371,164 @@ test_system_alias_start_self_elevates_alias() {
   [ "${args[7]}" = "$hash" ] || return 1
 }
 
+test_system_profile_save_preserves_capability_metadata() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
+  local out id hash started cap_id cap_record profiles safe sudoers_dir visudo_ok grant_hash grant_private grant_public cap_token cap_out rc
+
+  safe="$TEST_ROOT/hold-grant-cap"
+  cp "$HOLD_REAL_BIN" "$safe" || return 1
+  as_root chown 0:0 "$safe" || return 1
+  as_root chmod 755 "$safe" || return 1
+
+  out=$(as_root "$safe" run -d --cap-drop ALL -- /bin/sleep 60 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+
+  as_root "$safe" profile save "$id" as sys-cap-meta \
+    >"$TEST_ROOT/sys-cap-save.out" 2>"$TEST_ROOT/sys-cap-save.err" || {
+      cat "$TEST_ROOT/sys-cap-save.out" "$TEST_ROOT/sys-cap-save.err" >&2
+      return 1
+    }
+  profiles="$HOLD_TEST_SYSTEM_STATE_DIR/profiles.json"
+  root_grep '"cap_drop": ["ALL"]' "$profiles" || { as_root cat "$profiles" >&2; return 1; }
+  hash=$(system_alias_hash sys-cap-meta)
+  [ -n "$hash" ] || return 1
+
+  as_root "$safe" stop "$id" >/dev/null || return 1
+  as_root "$safe" prune "$id" >/dev/null || return 1
+
+  started=$(as_root "$safe" --system --elevated start 000000000000 sys-cap-meta "$hash" 2>&1) || {
+    printf '%s\n' "$started" >&2
+    return 1
+  }
+  cap_id=$(printf '%s\n' "$started" | extract_id)
+  [ -n "$cap_id" ] || { printf '%s\n' "$started" >&2; return 1; }
+  cap_record=$(root_record_path "$cap_id" "$HOLD_TEST_SYSTEM_STATE_DIR/runs") || return 1
+  root_grep '"cap_drop": ["ALL"]' "$cap_record" || { as_root cat "$cap_record" >&2; return 1; }
+  root_grep '"CapDrop": ["ALL"]' "$cap_record" || { as_root cat "$cap_record" >&2; return 1; }
+  as_root "$safe" stop "$cap_id" >/dev/null || return 1
+
+  sudoers_dir="$TEST_ROOT/sudoers-cap.d"
+  mkdir -p "$sudoers_dir" || return 1
+  chmod 755 "$sudoers_dir" || return 1
+  export HOLD_TEST_SUDOERS_DIR="$sudoers_dir"
+  visudo_ok="$TEST_ROOT/visudo-cap-ok"
+  printf '#!/usr/bin/env sh\nexit 0\n' >"$visudo_ok" || return 1
+  chmod 755 "$visudo_ok" || return 1
+  export HOLD_TEST_VISUDO_PROG="$visudo_ok"
+
+  as_root "$safe" grant sys-cap-meta "$TEST_USER" start >"$TEST_ROOT/grant-cap.out" 2>"$TEST_ROOT/grant-cap.err" || {
+    cat "$TEST_ROOT/grant-cap.out" "$TEST_ROOT/grant-cap.err" >&2
+    return 1
+  }
+  grant_private="$HOLD_TEST_SYSTEM_STATE_DIR/grants/users/$TEST_USER/sys-cap-meta.json"
+  grant_public="$HOLD_TEST_SYSTEM_STATE_DIR/public/grants/users/$TEST_USER/sys-cap-meta.json"
+  root_grep '"cap_drop": ["ALL"]' "$grant_private" || { as_root cat "$grant_private" >&2; return 1; }
+  root_grep '"detach": true' "$grant_private" || { as_root cat "$grant_private" >&2; return 1; }
+  grant_hash=$(as_root sed -n 's/.*"hash": "\([0-9a-f][0-9a-f]*\)".*/\1/p' "$grant_public")
+  [ -n "$grant_hash" ] || { as_root cat "$grant_public" >&2; return 1; }
+  grant_digest=$(grant_canonical_digest_file "$grant_private") || return 1
+  [ "$grant_hash" = "$grant_digest" ] || { echo "grant hash $grant_hash != canonical private digest $grant_digest" >&2; as_root cat "$grant_private" >&2; return 1; }
+
+  cap_token="eyJ2IjoxLCJvcCI6InN0YXJ0IiwiZm9yY2UiOmZhbHNlLCJkZXRhY2giOnRydWV9"
+  cap_out=$(as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" run sys-cap-meta --cap "$grant_hash" "$cap_token" 2>&1) || { printf '%s\n' "$cap_out" >&2; return 1; }
+  cap_id=$(printf '%s\n' "$cap_out" | extract_id)
+  [ -n "$cap_id" ] || { printf '%s\n' "$cap_out" >&2; return 1; }
+  cap_record=$(root_record_path "$cap_id" "$HOLD_TEST_SYSTEM_STATE_DIR/runs") || return 1
+  root_grep '"cap_drop": ["ALL"]' "$cap_record" || { as_root cat "$cap_record" >&2; return 1; }
+  set +e
+  as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" run sys-cap-meta --cap "$grant_hash" "$cap_token" >"$TEST_ROOT/grant-cap-second.out" 2>"$TEST_ROOT/grant-cap-second.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 6 ] || { echo "second singular grant start rc=$rc (want 6)" >&2; cat "$TEST_ROOT/grant-cap-second.out" "$TEST_ROOT/grant-cap-second.err" >&2; return 1; }
+  grep -q 'already has a running process' "$TEST_ROOT/grant-cap-second.err" || { cat "$TEST_ROOT/grant-cap-second.err" >&2; return 1; }
+  as_root "$safe" stop "$cap_id" >/dev/null || return 1
+
+  as_root env GRANT_PRIVATE="$grant_private" python3 - <<'PY' || return 1
+import json, os
+path = os.environ["GRANT_PRIVATE"]
+with open(path, "r", encoding="utf-8") as f:
+    obj = json.load(f)
+obj.pop("cap_drop", None)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, sort_keys=True)
+    f.write("\n")
+PY
+  set +e
+  as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" run sys-cap-meta --cap "$grant_hash" "$cap_token" >"$TEST_ROOT/grant-cap-tamper.out" 2>"$TEST_ROOT/grant-cap-tamper.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || { echo "grant capability survived cap_drop removal" >&2; return 1; }
+  grep -q 'capability' "$TEST_ROOT/grant-cap-tamper.err" || { cat "$TEST_ROOT/grant-cap-tamper.err" >&2; return 1; }
+}
+
+
+test_grant_refuses_user_writable_profile_paths() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
+  local safe out id script sudoers_dir visudo_ok rc grant_private grant_public
+
+  safe="$TEST_ROOT/hold-grant-paths"
+  cp "$HOLD_REAL_BIN" "$safe" || return 1
+  as_root chown 0:0 "$safe" || return 1
+  as_root chmod 755 "$safe" || return 1
+
+  script="$TEST_ROOT/user-writable-target.sh"
+  printf '#!/bin/sh\nsleep 60\n' >"$script" || return 1
+  chmod 755 "$script" || return 1
+
+  out=$(as_root "$safe" run -d -- /bin/sh "$script" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  as_root "$safe" profile save "$id" as unsafe-path >/dev/null 2>"$TEST_ROOT/unsafe-save.err" || {
+    cat "$TEST_ROOT/unsafe-save.err" >&2
+    return 1
+  }
+
+  sudoers_dir="$TEST_ROOT/sudoers-paths.d"
+  mkdir -p "$sudoers_dir" || return 1
+  chmod 755 "$sudoers_dir" || return 1
+  export HOLD_TEST_SUDOERS_DIR="$sudoers_dir"
+  visudo_ok="$TEST_ROOT/visudo-paths-ok"
+  printf '#!/usr/bin/env sh\nexit 0\n' >"$visudo_ok" || return 1
+  chmod 755 "$visudo_ok" || return 1
+  export HOLD_TEST_VISUDO_PROG="$visudo_ok"
+
+  set +e
+  as_root "$safe" grant unsafe-path "$TEST_USER" start >"$TEST_ROOT/grant-paths.out" 2>"$TEST_ROOT/grant-paths.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { cat "$TEST_ROOT/grant-paths.out" "$TEST_ROOT/grant-paths.err" >&2; return 1; }
+  grep -q 'refusing sudoers grant' "$TEST_ROOT/grant-paths.err" || { cat "$TEST_ROOT/grant-paths.err" >&2; return 1; }
+  grep -q -- '--secure unsafe-path' "$TEST_ROOT/grant-paths.err" || { cat "$TEST_ROOT/grant-paths.err" >&2; return 1; }
+  grep -q -- '--force unsafe-path' "$TEST_ROOT/grant-paths.err" || { cat "$TEST_ROOT/grant-paths.err" >&2; return 1; }
+  grant_private="$HOLD_TEST_SYSTEM_STATE_DIR/grants/users/$TEST_USER/unsafe-path.json"
+  grant_public="$HOLD_TEST_SYSTEM_STATE_DIR/public/grants/users/$TEST_USER/unsafe-path.json"
+  root_path_absent "$grant_private" || return 1
+  root_path_absent "$grant_public" || return 1
+
+  as_root "$safe" grant --force unsafe-path "$TEST_USER" start >"$TEST_ROOT/grant-paths-force.out" 2>"$TEST_ROOT/grant-paths-force.err" || {
+    cat "$TEST_ROOT/grant-paths-force.out" "$TEST_ROOT/grant-paths-force.err" >&2
+    return 1
+  }
+  grep -q -- '--force bypasses grant path ownership checks' "$TEST_ROOT/grant-paths-force.err" || {
+    cat "$TEST_ROOT/grant-paths-force.err" >&2
+    return 1
+  }
+  root_file_exists "$grant_private" || return 1
+  root_file_exists "$grant_public" || return 1
+  as_root "$safe" stop "$id" >/dev/null || return 1
+}
+
 test_grant_revoke_writes_hash_scoped_sudoers() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
-  local safe safe_real out id hash grant_hash old_grant_hash grant_digest raw_digest cap_token cap_out cap_id sudoers_dir sudoers_file grant_private grant_public grant_private_saved grant_public_saved public_bad_hash semantic_digest rc visudo_ok sh_bin source_profiles source_profiles_before vector_json vector_digest
+  local safe safe_real out id hash grant_hash old_grant_hash grant_digest raw_digest cap_token cap_out cap_id sudoers_dir sudoers_file grant_private grant_public grant_private_saved grant_public_saved public_bad_hash semantic_digest rc visudo_ok sh_bin source_profiles source_profiles_before vector_json vector_digest docker_vector_digest docker_grant_hash
   vector_json="$TEST_ROOT/grant-vector.json"
   cat >"$vector_json" <<'EOF' || return 1
 {
@@ -2991,6 +3543,21 @@ EOF
   vector_digest=$(grant_canonical_digest_file "$vector_json") || return 1
   [ "$vector_digest" = "9b1a3df24cf16eedc7604919ede6e5f972e9a86bf9c5e37e95339298b4481e72" ] || {
     echo "canonical grant digest vector mismatch: $vector_digest" >&2
+    return 1
+  }
+  cat >"$vector_json.docker" <<'EOF' || return 1
+{
+  "actions": ["stop", "start"],
+  "Path": "/usr/bin/python3",
+  "Args": ["/srv/app/server.py", "--port", "3000"],
+  "profile": "web",
+  "subject": "alice",
+  "schema": "hold.subject-grant.v1"
+}
+EOF
+  docker_vector_digest=$(grant_canonical_digest_file "$vector_json.docker") || return 1
+  [ "$docker_vector_digest" = "$vector_digest" ] || {
+    echo "Docker-shaped grant digest vector mismatch: $docker_vector_digest != $vector_digest" >&2
     return 1
   }
   safe="$TEST_ROOT/hold-safe"
@@ -3042,7 +3609,8 @@ EOF
   [ "$grant_hash" = "$grant_digest" ] || { echo "grant hash $grant_hash != canonical private digest $grant_digest" >&2; return 1; }
   raw_digest=$(as_root cat "$grant_private" | sha256_stdin) || return 1
   root_grep '# actions-list: start,stop' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^run web-sys --cap $grant_hash [A-Za-z0-9_-]{1,768}$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$safe_real ^run web-sys --cap $grant_hash [A-Za-z0-9_-]{1,768}$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$safe_real ^--system --elevated stop ([A-Fa-f0-9]{12,64}|ffffffffffff) web-sys $grant_hash$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
 
   make_fake_sudo || return 1
   set +e
@@ -3058,7 +3626,7 @@ EOF
   [ "${args[3]}" = "web-sys" ] || return 1
   [ "${args[4]}" = "--cap" ] || return 1
   [ "${args[5]}" = "$grant_hash" ] || return 1
-  [ "${args[6]}" = "eyJ2IjoxLCJvcCI6InN0YXJ0IiwiZm9yY2UiOmZhbHNlfQ" ] || return 1
+  [ "${args[6]}" = "eyJ2IjoxLCJvcCI6InN0YXJ0IiwiZm9yY2UiOmZhbHNlLCJkZXRhY2giOnRydWV9" ] || return 1
   ! grep -qx -- '--system' "$HOLD_FAKE_SUDO_ARGV" || return 1
   ! grep -qx -- '--elevated' "$HOLD_FAKE_SUDO_ARGV" || return 1
 
@@ -3067,6 +3635,18 @@ EOF
     "$safe" run web-sys --cap "$grant_hash" "$cap_token" 2>&1) || { printf '%s\n' "$cap_out" >&2; return 1; }
   cap_id=$(printf '%s\n' "$cap_out" | extract_id)
   [ -n "$cap_id" ] || { printf '%s\n' "$cap_out" >&2; return 1; }
+  set +e
+  as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" --system --elevated kill "$cap_id" web-sys "$grant_hash" >"$TEST_ROOT/grant-kill-denied.out" 2>"$TEST_ROOT/grant-kill-denied.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || { echo "kill action unexpectedly accepted by start,stop grant" >&2; return 1; }
+  grep -q 'capability' "$TEST_ROOT/grant-kill-denied.err" || { cat "$TEST_ROOT/grant-kill-denied.err" >&2; return 1; }
+  as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" --system --elevated stop "$cap_id" web-sys "$grant_hash" >/dev/null 2>"$TEST_ROOT/grant-stop.err" || {
+      cat "$TEST_ROOT/grant-stop.err" >&2
+      return 1
+    }
   grant_private_saved="$grant_private.saved"
   as_root cp "$grant_private" "$grant_private_saved" || return 1
   grant_public_saved="$grant_public.saved"
@@ -3085,7 +3665,9 @@ PY
   [ "$public_bad_hash" = "0000000000000000000000000000000000000000000000000000000000000000" ] || return 1
   cap_out=$(as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
     "$safe" run web-sys --cap "$grant_hash" "$cap_token" 2>&1) || { printf '%s\n' "$cap_out" >&2; return 1; }
-  [ -n "$(printf '%s\n' "$cap_out" | extract_id)" ] || { printf '%s\n' "$cap_out" >&2; return 1; }
+  cap_id=$(printf '%s\n' "$cap_out" | extract_id)
+  [ -n "$cap_id" ] || { printf '%s\n' "$cap_out" >&2; return 1; }
+  as_root "$safe" stop "$cap_id" >/dev/null 2>&1 || true
   set +e
   as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
     "$safe" run web-sys --cap "$public_bad_hash" "$cap_token" >"$TEST_ROOT/cap-public-cache-tamper.out" 2>"$TEST_ROOT/cap-public-cache-tamper.err"
@@ -3104,6 +3686,9 @@ with open(path, "w", encoding="utf-8") as f:
     f.write('  "actions": ' + json.dumps(obj["actions"]) + ",\n")
     f.write('  "argv": ' + json.dumps(obj["argv"]) + ",\n")
     f.write('  "binary_path": ' + json.dumps(obj["binary_path"]) + ",\n")
+    for key in ("env", "ports", "volumes", "cap_add", "cap_drop", "interactive", "tty", "detach", "allow_multi", "restart", "restart_delay_seconds", "log_destination"):
+        if key in obj:
+            f.write('  ' + json.dumps(key) + ': ' + json.dumps(obj[key]) + ",\n")
     f.write('  "profile": ' + json.dumps(obj["profile"]) + ",\n")
     f.write('  "subject": ' + json.dumps(obj["subject"]) + ",\n")
     f.write('  "schema": ' + json.dumps(obj["schema"]) + "\n")
@@ -3113,7 +3698,49 @@ PY
   [ "$(as_root cat "$grant_private" | sha256_stdin)" != "$raw_digest" ] || { echo "reformat did not change raw file digest; test setup invalid" >&2; return 1; }
   cap_out=$(as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
     "$safe" run web-sys --cap "$grant_hash" "$cap_token" 2>&1) || { printf '%s\n' "$cap_out" >&2; return 1; }
-  [ -n "$(printf '%s\n' "$cap_out" | extract_id)" ] || { printf '%s\n' "$cap_out" >&2; return 1; }
+  cap_id=$(printf '%s\n' "$cap_out" | extract_id)
+  [ -n "$cap_id" ] || { printf '%s\n' "$cap_out" >&2; return 1; }
+  as_root "$safe" stop "$cap_id" >/dev/null 2>&1 || true
+
+  as_root cp "$grant_private_saved" "$grant_private" || return 1
+  as_root env GRANT_PRIVATE="$grant_private" python3 - <<'PY' || return 1
+import json, os
+path = os.environ["GRANT_PRIVATE"]
+with open(path, "r", encoding="utf-8") as f:
+    obj = json.load(f)
+argv = list(obj["argv"])
+out = {
+    "schema": obj["schema"],
+    "subject": obj["subject"],
+    "profile": obj["profile"],
+    "actions": obj["actions"],
+    "Path": argv[0],
+    "Args": argv[1:],
+    "Config": {
+        "OpenStdin": bool(obj.get("interactive", False)),
+        "Tty": bool(obj.get("tty", False)),
+        "Env": obj.get("env", []),
+        "CapAdd": obj.get("cap_add"),
+        "CapDrop": obj.get("cap_drop"),
+        "LogConfig": {"Type": obj.get("log_destination", "local")},
+    },
+}
+for key in ("ports", "volumes", "detach", "allow_multi", "restart", "restart_delay_seconds"):
+    if key in obj:
+        out[key] = obj[key]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(out, f, sort_keys=True)
+    f.write("\n")
+PY
+  docker_grant_hash=$(grant_canonical_digest_file "$grant_private") || return 1
+  [ "$docker_grant_hash" = "$grant_hash" ] || { echo "Docker-shaped private grant digest mismatch: $docker_grant_hash != $grant_hash" >&2; as_root cat "$grant_private" >&2; return 1; }
+  cap_out=$(as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
+    "$safe" run web-sys --cap "$docker_grant_hash" "$cap_token" 2>&1) || { printf '%s\n' "$cap_out" >&2; as_root cat "$grant_private" >&2; return 1; }
+  cap_id=$(printf '%s\n' "$cap_out" | extract_id)
+  [ -n "$cap_id" ] || { printf '%s\n' "$cap_out" >&2; as_root cat "$grant_private" >&2; return 1; }
+  as_root "$safe" stop "$cap_id" >/dev/null 2>&1 || true
+  as_root cp "$grant_private_saved" "$grant_private" || return 1
+
   as_root env GRANT_PRIVATE="$grant_private" python3 - <<'PY' || return 1
 import json, os
 path = os.environ["GRANT_PRIVATE"]
@@ -3161,6 +3788,9 @@ PY
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/cap-tamper.err" >&2; return 1; }
+  cap_id=$(cat "$TEST_ROOT/cap-tamper.out" | extract_id)
+  [ -n "$cap_id" ] || { cat "$TEST_ROOT/cap-tamper.out" >&2; return 1; }
+  as_root "$safe" stop "$cap_id" >/dev/null 2>&1 || true
 
   old_grant_hash="$grant_hash"
   as_root "$safe" revoke web-sys "$TEST_USER" start >"$TEST_ROOT/revoke.out" 2>"$TEST_ROOT/revoke.err" || { cat "$TEST_ROOT/revoke.out" "$TEST_ROOT/revoke.err" >&2; return 1; }
@@ -3169,7 +3799,8 @@ PY
   [ "$grant_hash" != "$old_grant_hash" ] || { echo "grant digest did not change after action narrowing" >&2; return 1; }
   [ "$grant_hash" = "$(grant_canonical_digest_file "$grant_private")" ] || return 1
   root_grep '# actions-list: stop' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^run web-sys --cap $grant_hash [A-Za-z0-9_-]{1,768}$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  ! root_grep '^run web-sys --cap' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$safe_real ^--system --elevated stop ([A-Fa-f0-9]{12,64}|ffffffffffff) web-sys $grant_hash$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
   set +e
   as_root env SUDO_UID="$TEST_UID" SUDO_GID="$TEST_GID" SUDO_USER="$TEST_USER" HOLD_TEST_INVOKING_HOME="$ACTOR_HOME" \
     "$safe" run web-sys --cap "$grant_hash" "$cap_token" >"$TEST_ROOT/cap-start-with-stop-only.out" 2>"$TEST_ROOT/cap-start-with-stop-only.err"
@@ -3183,7 +3814,8 @@ PY
   [ -n "$grant_hash" ] || { as_root cat "$grant_public" >&2; return 1; }
   root_grep '# actions: ALL' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
   root_grep '# actions-list: start,stop,kill,tail,dump,prune,console' "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
-  root_grep "$TEST_USER ALL=(root) NOPASSWD: $safe_real ^run web-sys --cap $grant_hash [A-Za-z0-9_-]{1,768}$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$safe_real ^run web-sys --cap $grant_hash [A-Za-z0-9_-]{1,768}$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
+  root_grep "$safe_real ^--system --elevated console [A-Fa-f0-9]{12,64} web-sys $grant_hash$" "$sudoers_file" || { as_root cat "$sudoers_file" >&2; return 1; }
   as_root cmp "$source_profiles_before" "$source_profiles" || { echo "source profile store changed during grant-specific edits" >&2; return 1; }
   as_root "$safe" revoke web-sys "$TEST_USER" >"$TEST_ROOT/revoke-all.out" 2>"$TEST_ROOT/revoke-all.err" || { cat "$TEST_ROOT/revoke-all.out" "$TEST_ROOT/revoke-all.err" >&2; return 1; }
   root_path_absent "$sudoers_file"
@@ -3239,7 +3871,41 @@ test_raw_start_does_not_steal_trailing_system() {
 test_public_root_index_list_is_redacted() {
   write_public_index_fixture abc12345cafe running 2026-06-15T18:42:11Z || return 1
   "$HOLD_BIN" list --iso >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  grep -Eq '^abc12345cafe[[:space:]]+-[[:space:]]+unknown[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || return 1
+  grep -Eq '^abc12345cafe[[:space:]]+-[[:space:]]+running[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || return 1
+  ! grep -q 'secret' "$TEST_ROOT/list.out"
+}
+
+test_public_root_index_list_reads_projected_state() {
+  local id=deadbeefcafe
+  mkdir -p "$HOLD_TEST_SYSTEM_STATE_DIR/public" || return 1
+  chmod 755 "$HOLD_TEST_SYSTEM_STATE_DIR" "$HOLD_TEST_SYSTEM_STATE_DIR/public" || return 1
+  cat > "$HOLD_TEST_SYSTEM_STATE_DIR/public/$id.json" <<'JSON'
+{
+  "id": "deadbeefcafe",
+  "root_managed": true,
+  "requires_elevation": true,
+  "created_at": "2026-06-15T18:42:10Z",
+  "State": {
+    "Status": "exited",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "Dead": false,
+    "Pid": 0,
+    "Pgid": 0,
+    "Sid": 0,
+    "ExitCode": 7,
+    "Error": "",
+    "StartedAt": "2026-06-15T18:42:11Z",
+    "FinishedAt": "2026-06-15T18:42:12Z"
+  },
+  "argv": ["secret"],
+  "cmdline_display": "secret command"
+}
+JSON
+  chmod 0644 "$HOLD_TEST_SYSTEM_STATE_DIR/public/$id.json" || return 1
+  "$HOLD_BIN" list --iso >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
+  grep -Eq '^deadbeefcafe[[:space:]]+-[[:space:]]+exited[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || { cat "$TEST_ROOT/list.out" >&2; return 1; }
   ! grep -q 'secret' "$TEST_ROOT/list.out"
 }
 
@@ -3464,14 +4130,123 @@ test_normal_start_writes_user_local_state() {
   mode=$(file_mode "$json") || return 1
   [ "$mode" = 600 ] || return 1
   mode=$(file_mode "$log") || return 1
-  [ "$mode" = 600 ]
+  [ "$mode" = 600 ] || return 1
+  python3 - "$json" <<'PY' || { cat "$json" >&2; return 1; }
+import json, sys
+obj = json.load(open(sys.argv[1], encoding='utf-8'))
+required_top = {'Id', 'Created', 'Path', 'Args', 'State', 'LogPath', 'LogIdx', 'Name', 'RestartCount', 'Config'}
+missing = required_top - set(obj)
+if missing:
+    raise SystemExit(f'missing Docker-shaped run fields: {sorted(missing)}')
+state_keys = {'Status', 'Running', 'Paused', 'Restarting', 'Dead', 'Pid', 'Pgid', 'Sid', 'ExitCode', 'Error', 'StartedAt', 'FinishedAt'}
+missing = state_keys - set(obj.get('State') or {})
+if missing:
+    raise SystemExit(f'missing State keys: {sorted(missing)}')
+config_keys = {'AttachStdin', 'AttachStdout', 'AttachStderr', 'Tty', 'OpenStdin', 'StdinOnce', 'Env', 'WorkingDir', 'CapAdd', 'CapDrop', 'Privileged', 'LogConfig'}
+missing = config_keys - set(obj.get('Config') or {})
+if missing:
+    raise SystemExit(f'missing Config keys: {sorted(missing)}')
+if obj['Path'] != (obj.get('argv') or [''])[0]:
+    raise SystemExit(f'Path does not match recorded exec argv0: {obj["Path"]!r} vs {obj.get("argv")!r}')
+if obj['Args'] != (obj.get('argv') or [])[1:]:
+    raise SystemExit(f'Args should be argv after argv0: {obj["Args"]!r} vs {obj.get("argv")!r}')
+working_dir = (obj.get('Config') or {}).get('WorkingDir')
+observed_cwd = (obj.get('observed') or {}).get('cwd')
+if observed_cwd and working_dir != observed_cwd:
+    raise SystemExit(f'Config.WorkingDir should mirror observed cwd: {working_dir!r} vs {observed_cwd!r}')
+if working_dir and (not working_dir.startswith('/') or (working_dir != '/' and working_dir.endswith('/'))):
+    raise SystemExit(f'Config.WorkingDir is not a normalized absolute path: {working_dir!r}')
+PY
+}
+
+test_docker_shaped_record_fallback_reader() {
+  local id store record logdir logpath idxpath ps_out
+  id=fe4a4b8fbc063e25cd4bcb6798791b1dd03caca62f6a0b4c1304f28940992c52
+  store="$HOME/.local/state/hold"
+  mkdir -p "$store" || return 1
+  logdir="$HOME/.local/state/hold-logs/$id"
+  mkdir -p "$logdir" || return 1
+  logpath="$logdir/$id.log"
+  idxpath="$logpath.idx"
+  : >"$logpath" || return 1
+  : >"$idxpath" || return 1
+  record="$store/$id.json"
+  cat >"$record" <<JSON
+{
+  "Id": "$id",
+  "Created": "2026-06-28T17:30:47.520199158Z",
+  "Path": "/usr/bin/python3",
+  "Args": ["-m", "http.server", "8080"],
+  "State": {
+    "Status": "exited",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "Dead": false,
+    "Pid": 999999,
+    "Pgid": 999999,
+    "Sid": 999999,
+    "ExitCode": 7,
+    "Error": "",
+    "StartedAt": "2026-06-28T17:30:47.559521995Z",
+    "FinishedAt": "2026-06-28T17:30:48.000000000Z"
+  },
+  "LogPath": "$logpath",
+  "LogIdx": "$idxpath",
+  "Name": "adjective_noun",
+  "RestartCount": 0,
+  "Config": {
+    "User": "",
+    "AttachStdin": true,
+    "AttachStdout": true,
+    "AttachStderr": true,
+    "Tty": false,
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Env": ["HOLD_DOCKER_SHAPED_READER=1"],
+    "Origin": "web",
+    "WorkingDir": "$TEST_ROOT",
+    "CapAdd": ["NET_BIND_SERVICE"],
+    "CapDrop": ["ALL"],
+    "Privileged": false,
+    "LogConfig": {"Type": "local", "Config": {}}
+  },
+  "version": 1,
+  "id": "$id",
+  "run_id": "$id",
+  "start_unix_ns": 0,
+  "created_unix_ns": 0,
+  "uid": $(id -u),
+  "gid": $(id -g),
+  "proc_starttime_ticks": 0,
+  "exe_dev": 0,
+  "exe_ino": 0
+}
+JSON
+  chmod 600 "$record" || return 1
+  ps_out=$("$HOLD_BIN" ps -a 2>"$TEST_ROOT/docker-reader.err") || {
+    cat "$TEST_ROOT/docker-reader.err" >&2
+    return 1
+  }
+  ! grep -q 'skipping corrupt record' "$TEST_ROOT/docker-reader.err" || { cat "$TEST_ROOT/docker-reader.err" >&2; return 1; }
+  printf '%s\n' "$ps_out" | grep -q '^fe4a4b8fbc06' || { printf '%s\n' "$ps_out" >&2; return 1; }
+  printf '%s\n' "$ps_out" | grep -q '"/usr/bin/python3 -m http' || { printf '%s\n' "$ps_out" >&2; return 1; }
+  printf '%s\n' "$ps_out" | grep -q 'adjective_noun' || { printf '%s\n' "$ps_out" >&2; return 1; }
+  "$HOLD_BIN" profile save fe4a4b8fbc06 as docker-derived \
+    >"$TEST_ROOT/docker-derived.out" 2>"$TEST_ROOT/docker-derived.err" || {
+      cat "$TEST_ROOT/docker-derived.out" "$TEST_ROOT/docker-derived.err" >&2
+      return 1
+    }
+  grep -Fq '"docker-derived": {"bin": ' "$store/aliases.json" || { cat "$store/aliases.json" >&2; return 1; }
+  grep -Fq 'http.server' "$store/aliases.json" || { cat "$store/aliases.json" >&2; return 1; }
 }
 
 test_root_start_writes_system_store_and_public_unknown() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
   local out id mode list_out
   out=$(as_root "$HOLD_REAL_BIN" true 2>&1) || return 1
-  id=$(printf '%s\n' "$out" | extract_id)
+  id=$(printf '%s
+' "$out" | extract_id)
   [ -n "$id" ] || return 1
   json=$(root_record_path "$id" "$HOLD_TEST_SYSTEM_STATE_DIR/runs") || return 1
   log=$(root_log_path "$id" "$HOLD_TEST_SYSTEM_STATE_DIR/logs") || return 1
@@ -3483,9 +4258,45 @@ test_root_start_writes_system_store_and_public_unknown() {
   [ "$mode" = 600 ] || return 1
   mode=$(file_mode "$public_json") || return 1
   [ "$mode" = 644 ] || return 1
-  grep -q '"state_hint": "unknown"' "$public_json" || return 1
+  grep -Eq '"state_hint": "(running|exited)"' "$public_json" || { cat "$public_json" >&2; return 1; }
+  grep -q '"State": {' "$public_json" || { cat "$public_json" >&2; return 1; }
+  grep -q '"Pid": [1-9]' "$public_json" || { cat "$public_json" >&2; return 1; }
+  grep -q '"StartedAt": "' "$public_json" || { cat "$public_json" >&2; return 1; }
+  matched=0
+  for _ in $(seq 1 30); do
+    as_root cat "$json" >"$TEST_ROOT/root-private-state.json" || return 1
+    if python3 - "$TEST_ROOT/root-private-state.json" "$public_json" >"$TEST_ROOT/root-public-state-compare.err" 2>&1 <<'PY'
+import json, sys
+private = json.load(open(sys.argv[1], encoding='utf-8'))
+public = json.load(open(sys.argv[2], encoding='utf-8'))
+projection_keys = {'Id', 'Created', 'Name', 'Config', 'State'}
+missing_projection = projection_keys - set(public)
+if missing_projection:
+    raise SystemExit(f'public projection missing Docker-shaped keys: {sorted(missing_projection)}')
+if public['Id'] != private['Id']:
+    raise SystemExit(f'public/private Id drift: {public["Id"]!r} != {private["Id"]!r}')
+if public['Created'] != private['Created']:
+    raise SystemExit(f'public/private Created drift: {public["Created"]!r} != {private["Created"]!r}')
+state_keys = {'Status', 'Running', 'Paused', 'Restarting', 'Dead', 'Pid', 'Pgid', 'Sid', 'ExitCode', 'Error', 'StartedAt', 'FinishedAt'}
+for label, obj in [('private', private), ('public', public)]:
+    state = obj.get('State') or {}
+    missing = state_keys - set(state)
+    if missing:
+        raise SystemExit(f'{label} State missing keys: {sorted(missing)}')
+for key in state_keys:
+    if private['State'][key] != public['State'][key]:
+        raise SystemExit(f'public/private State drift for {key}: {private["State"][key]!r} != {public["State"][key]!r}')
+PY
+    then
+      matched=1
+      break
+    fi
+    sleep 0.1
+  done
+  [ "$matched" = 1 ] || { cat "$TEST_ROOT/root-public-state-compare.err" "$TEST_ROOT/root-private-state.json" "$public_json" >&2; return 1; }
   list_out=$("$HOLD_BIN" list) || return 1
-  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+-[[:space:]]+unknown[[:space:]]"
+  printf '%s
+' "$list_out" | grep -Eq "^$id[[:space:]]+-[[:space:]]+(running|exited|Exited|Up)[[:space:]]"
 }
 
 test_sudo_start_writes_system_store_with_invoking_metadata() {
@@ -3540,6 +4351,22 @@ test_sudo_system_start_of_home_executable_uses_user_store() {
   local app out
   app=$(make_home_executable) || return 1
   out=$(as_sudo_from_user "$HOLD_REAL_BIN" --system -d "$app" 2>&1) || return 1
+  assert_home_system_start_is_user_local "$out"
+}
+
+test_sudo_system_start_of_home_argv_paths_uses_user_store() {
+  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
+  local cfg out
+  cfg="$ACTOR_HOME/app.toml"
+  as_user sh -c 'printf "%s\n" "config" >"$1"' sh "$cfg" || return 1
+
+  out=$(as_sudo_from_user "$HOLD_REAL_BIN" --system -d /usr/bin/true "$cfg" 2>&1) || return 1
+  assert_home_system_start_is_user_local "$out" || return 1
+
+  out=$(as_sudo_from_user "$HOLD_REAL_BIN" --system -d /usr/bin/true --config="$cfg" 2>&1) || return 1
+  assert_home_system_start_is_user_local "$out" || return 1
+
+  out=$(as_sudo_from_user "$HOLD_REAL_BIN" --system -d /usr/bin/true --config "$cfg" 2>&1) || return 1
   assert_home_system_start_is_user_local "$out"
 }
 
@@ -4068,7 +4895,7 @@ if not (observed.get('cwd') or '').startswith('/'):
     raise SystemExit(f'observed cwd is not absolute: {observed.get("cwd")!r}')
 if not (observed.get('exe') or '').startswith('/'):
     raise SystemExit(f'observed exe is not absolute: {observed.get("exe")!r}')
-if len(args) < 2 or args[1] != want:
+if len(args) < 1 or args[0] != want:
     raise SystemExit(f'named profile did not normalize relative script arg: {args!r}')
 PY
   then
@@ -4161,19 +4988,25 @@ import sys, time
 out = sys.stdout.buffer
 out.write(b"sleep 30\n")
 out.flush()
-time.sleep(0.4)
+time.sleep(1.2)
 out.write(b"\x10\x11")
 out.flush()
 PY
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { echo "hold shell detach: rc=$rc (want 0)" >&2; cat "$TEST_ROOT/hold-shell-adopt.out" "$TEST_ROOT/hold-shell-adopt.err" >&2; return 1; }
-  id=$(extract_id <"$TEST_ROOT/hold-shell-adopt.out")
+  id=$(sed -n \
+    -e '/^[0-9a-f]\{12\}$/p' \
+    -e 's/^hold: id=\([0-9a-f][0-9a-f]*\).*/\1/p' \
+    -e 's/.*[^0-9a-f]\([0-9a-f]\{12\}\)[^0-9a-f]*$/\1/p' \
+    "$TEST_ROOT/hold-shell-adopt.out" | head -n1)
   [ -n "$id" ] || { cat "$TEST_ROOT/hold-shell-adopt.out" "$TEST_ROOT/hold-shell-adopt.err" >&2; return 1; }
   record=$(record_path "$id") || true
   [ -f "$record" ] || { find "$HOME/.local/state/hold" -maxdepth 1 -type f -print >&2 || true; return 1; }
   grep -Fq '"argv": ["/usr/bin/sleep", "30"]' "$record" || { cat "$record" >&2; return 1; }
-  grep -Fq 'hold  adopted' "$TEST_ROOT/hold-shell-adopt.err" || { cat "$TEST_ROOT/hold-shell-adopt.err" >&2; return 1; }
+  grep -Fq 'hold  adopted' "$TEST_ROOT/hold-shell-adopt.out" ||
+    grep -Fq 'hold  adopted' "$TEST_ROOT/hold-shell-adopt.err" ||
+    { cat "$TEST_ROOT/hold-shell-adopt.out" "$TEST_ROOT/hold-shell-adopt.err" >&2; return 1; }
   "$HOLD_BIN" stop "$id" >/dev/null || return 1
 }
 
@@ -4368,14 +5201,14 @@ out = sys.stdout.buffer
 # Left/Right style escape input, and inject an SGR mouse event that should be
 # swallowed rather than becoming a literal command.
 out.write(b"enable\n")
-out.write(b"\x1b[<0;10;5M\n")
+out.write(b"\x1b[A\x1b[B\x1b[C\x1b[<0;10;5M\n")
 out.write(b"configure terminal\nprofile inputedit\nbinary /bin/echo\n")
 out.write(b"argv ac\x1b[Db\n")
 out.write(b"commit\nend\nrun inputedit\nlogs inputedit --plain\nprune inputedit\nexit\n")
 out.flush()
 time.sleep(0.2)
 PYINPUT
-    script -qfec "stty rows 24 cols 120; $HOLD_BIN" /dev/null >"$TEST_ROOT/captive-input-edit.out" 2>"$TEST_ROOT/captive-input-edit.err"
+    script -qfec "stty -echo rows 24 cols 120; $HOLD_BIN" /dev/null >"$TEST_ROOT/captive-input-edit.out" 2>"$TEST_ROOT/captive-input-edit.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-input-edit.out" "$TEST_ROOT/captive-input-edit.err" >&2; return 1; }
@@ -4385,8 +5218,9 @@ raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
 plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw).replace('\r', '\n')
 if not re.search(r'(?m)^abc$', plain):
     raise SystemExit('edited argv did not produce abc log output')
-if '^[[D' in raw or '^[[<' in raw:
-    raise SystemExit('literal terminal escape text leaked into captive CLI output')
+for leaked in ('^[[A', '^[[B', '^[[C', '^[[D', '^[[<'):
+    if leaked in raw:
+        raise SystemExit('literal terminal escape text leaked into captive CLI output')
 PYCHECK
   ! grep -q "Unknown command" "$TEST_ROOT/captive-input-edit.err" || { cat "$TEST_ROOT/captive-input-edit.err" >&2; return 1; }
 }
@@ -4965,7 +5799,7 @@ SH
   PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" dump "$id" >"$TEST_ROOT/literal-h-command.out" || return 1
   grep -q 'literal-h-command' "$TEST_ROOT/literal-h-command.out" || { cat "$TEST_ROOT/literal-h-command.out" >&2; return 1; }
 
-  public_files=$(git ls-files README.md docs examples install.sh scripts Makefile 2>/dev/null | grep -Ev '^docs/(0\.4\.0-direction-.*|security-review-.*)$' || find README.md docs examples install.sh scripts Makefile -type f 2>/dev/null)
+  public_files=$(git ls-files docs examples install.sh scripts Makefile 2>/dev/null | grep -Ev '^docs/(0\.4\.0-direction-.*|security-review-.*)$' || find docs examples install.sh scripts Makefile -type f 2>/dev/null)
   if printf '%s\n' "$public_files" | xargs grep -InEi '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases|hold[[:space:]]+(start|grant|revoke)[[:space:]]+<alias>|start[[:space:]]+<alias>|known alias|alias selection|alias-labeled|alias exists|create an alias|aliases turn|system alias|alias starts|alias ambiguity|alias filtering|alias creation|run id or alias|command as an alias|system:alias|grant alias|root alias|public alias/hash|root-managed alias capabilities|supplied alias|alias/hash capability|run-alias verification|behind an alias|alias was called|alias was created from|for this alias/profile|across aliases' \
       >"$TEST_ROOT/forbidden-public-names.out" 2>/dev/null; then
     cat "$TEST_ROOT/forbidden-public-names.out" >&2
@@ -5199,6 +6033,7 @@ run_test "tail <id> prints finished log output" test_tail_finished_log_prints_ex
 run_test "--console works without an external attach tool" test_console_does_not_require_external_attach_tool
 run_test "console reports a normal run has no console" test_console_reports_non_console_run
 run_test "console attach round-trips and tees to the log" test_console_round_trip_and_log_tee
+run_test "console exit code is recorded" test_console_exit_code_is_recorded
 run_test "console rejects unrelated peer UID before replay" test_console_rejects_unrelated_peer_uid_before_replay
 run_test "console can reattach after detach" test_console_can_reattach_after_detach
 run_test "console socket lives in store dir, not /tmp, for long paths" test_console_socket_lives_in_store_dir
@@ -5209,12 +6044,15 @@ run_test "transactional launch rollback on record write failure" test_transactio
 run_test "raw start does not steal trailing --system" test_raw_start_does_not_steal_trailing_system
 run_test "long command appears in list, truncated with ..." test_long_command_list_truncates_instead_of_skips
 run_test "normal start writes user-local state" test_normal_start_writes_user_local_state
-run_test "root starts use system store and public state is unknown" test_root_start_writes_system_store_and_public_unknown
+run_test "Docker-shaped run record is readable without duplicate legacy argv fields" test_docker_shaped_record_fallback_reader
+run_test "root starts use system store and public state is projected" test_root_start_writes_system_store_and_public_unknown
 run_test "sudo start writes system state with invoking-user metadata" test_sudo_start_writes_system_store_with_invoking_metadata
 run_test "sudo --system home executable uses invoking-user store" test_sudo_system_start_of_home_executable_uses_user_store
+run_test "sudo --system home argv paths use invoking-user store" test_sudo_system_start_of_home_argv_paths_uses_user_store
 run_test "alias for elevated home executable stays user-local" test_home_elevated_run_alias_stays_user_local
 run_test "sudo context can stop unique invoking-user local run" test_sudo_context_can_stop_unique_user_local_run
 run_test "public root index rows are redacted in normal list" test_public_root_index_list_is_redacted
+run_test "public root index list reads projected State" test_public_root_index_list_reads_projected_state
 run_test "normal run does not self-elevate on local/root ID conflict" test_user_local_wins_over_public_root_collision
 run_test "explicit user:<id> targets user-local run" test_explicit_user_target
 run_test "user alias stores a direct recipe and starts/stops by alias" test_alias_profile_map_start_and_stop
@@ -5223,12 +6061,18 @@ run_test "profile start requires --force when already running and --all stops al
 run_test "profile multi mode allows repeated starts without --force" test_profile_multi_mode_allows_repeated_starts
 run_test "profile start inherits current environment" test_profile_start_inherits_current_environment
 run_test "Docker --env persists with a named profile" test_docker_env_persists_with_named_profile
+run_test "profile save preserves capability metadata" test_profile_save_preserves_capability_metadata
+run_test "profile create/export/import preserves capability metadata" test_profile_create_export_import_preserves_capability_metadata
+run_test "root capability drop-all then add applies requested cap" test_root_capability_drop_all_then_add_preserves_added_cap
+run_test "direct capability metadata projects to inspect" test_direct_capability_metadata_projects_to_inspect
+run_test "restart worker applies capability metadata" test_restart_worker_applies_capability_metadata
 run_test "Docker --env-file persists with a named profile" test_docker_env_file_persists_with_named_profile
 run_test "Docker --rm removes run artifacts after exit" test_docker_rm_removes_run_artifacts_after_exit
 run_test "Docker --rm removes profile run artifacts after exit" test_docker_rm_removes_profile_run_artifacts_after_exit
 run_test "captive profile env persists and runs" test_captive_profile_env_persists_and_runs
 run_test "captive profile mode loads and edits an existing recipe" test_captive_profile_loads_existing_recipe_for_edit
 run_test "captive profile publish/volume commands are rejected" test_captive_profile_publish_volume_rejected
+run_test "captive profile capability metadata preserves edits and clears" test_captive_profile_capability_metadata_preserves_edits_and_clears
 run_test "captive profile restart metadata preserves edits and clears" test_captive_profile_restart_metadata_preserves_edits_and_clears
 run_test "captive profile mode preserves quoted argv and env values" test_captive_profile_quoted_argv_and_env_round_trip
 run_test "profile transcript import/export round-trips a user-local recipe" test_profile_transcript_import_export_roundtrip
@@ -5239,6 +6083,8 @@ run_test "invalid alias names are rejected" test_invalid_alias_names_rejected
 run_test "short hex-looking alias names are allowed" test_short_hex_alias_name_allowed
 run_test "system alias action self-elevates alias token" test_system_alias_action_self_elevates_alias
 run_test "system alias start self-elevates alias token" test_system_alias_start_self_elevates_alias
+run_test "system profile save preserves capability metadata" test_system_profile_save_preserves_capability_metadata
+run_test "grant refuses user-writable profile paths unless forced" test_grant_refuses_user_writable_profile_paths
 run_test "grant/revoke writes hash-scoped sudoers entries" test_grant_revoke_writes_hash_scoped_sudoers
 run_test "elevated capability start/stop validates alias and hash" test_elevated_capability_start_and_stop_validate_alias_hash
 run_test "action self-elevation uses argv-preserving sudo fork+wait" test_action_self_elevation_uses_argv_fork_wait

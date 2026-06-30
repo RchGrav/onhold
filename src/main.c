@@ -9,13 +9,32 @@
 #include "hold/core.h"
 
 static void print_command_usage_stderr(const char *command);
-static int build_cap_request_token(const char *op, bool force, char *out, size_t n);
+static int build_cap_request_token(const char *op, bool force, bool detach, char *out, size_t n);
 static bool parse_docker_run_flag(const char *arg,
                                   bool *detach,
                                   bool *interactive,
                                   bool *tty,
                                   bool *privileged);
 static int append_env_assignment(const char *arg, char ***env_out, int *envc_out);
+static int append_string_option(const char *what, const char *arg, char ***items_out, int *count_out);
+static int append_string_option(const char *what, const char *arg, char ***items_out, int *count_out) {
+    if (!arg || !*arg) {
+        fprintf(stderr, "hold: error: %s requires a value\n", what);
+        return 5;
+    }
+    char *copy = strdup(arg);
+    if (!copy) return 3;
+    char **next = realloc(*items_out, ((size_t)*count_out + 1) * sizeof(*next));
+    if (!next) {
+        free(copy);
+        return 3;
+    }
+    next[*count_out] = copy;
+    *items_out = next;
+    (*count_out)++;
+    return 0;
+}
+
 static int reject_publish_option(void);
 static int reject_volume_option(void);
 static int parse_restart_policy_arg(const char *arg, char out[64]);
@@ -32,15 +51,21 @@ static bool token_names_detached_profile(const struct hold_store *user_store,
 static bool is_legacy_run_namespace_verb(const char *arg);
 static bool command_supports_multiplicity(const char *command);
 
-static int build_cap_request_token(const char *op, bool force, char *out, size_t n) {
+static int build_cap_request_token(const char *op, bool force, bool detach, char *out, size_t n) {
     if (!op || !*op) {
         errno = EINVAL;
         return -1;
     }
-    char json[128];
-    if (hold_checked_snprintf(json, sizeof(json),
-                              "{\"v\":1,\"op\":\"%s\",\"force\":%s}",
-                              op, force ? "true" : "false") != 0) {
+    char json[160];
+    if (detach) {
+        if (hold_checked_snprintf(json, sizeof(json),
+                                  "{\"v\":1,\"op\":\"%s\",\"force\":%s,\"detach\":true}",
+                                  op, force ? "true" : "false") != 0) {
+            return -1;
+        }
+    } else if (hold_checked_snprintf(json, sizeof(json),
+                                     "{\"v\":1,\"op\":\"%s\",\"force\":%s}",
+                                     op, force ? "true" : "false") != 0) {
         return -1;
     }
     return hold_base64url_encode((const unsigned char *)json, strlen(json), out, n);
@@ -367,6 +392,10 @@ int main(int argc, char **argv) {
     int docker_portc = 0;
     char **docker_volumes = NULL;
     int docker_volumec = 0;
+    char **docker_cap_add = NULL;
+    int docker_cap_addc = 0;
+    char **docker_cap_drop = NULL;
+    int docker_cap_dropc = 0;
     char docker_restart_policy[64] = {0};
     int docker_restart_delay_seconds = 0;
     bool docker_restart_delay_seen = false;
@@ -448,6 +477,32 @@ int main(int argc, char **argv) {
             hold_free_argv_alloc(docker_ports, docker_portc);
             hold_free_argv_alloc(docker_volumes, docker_volumec);
             return reject_volume_option();
+        }
+        if (!strcmp(argv[argi], "--cap-add")) {
+            if (argi + 1 >= argc) { fprintf(stderr, "hold: error: --cap-add requires a capability\n"); return 5; }
+            int cap_rc = append_string_option("--cap-add", argv[argi + 1], &docker_cap_add, &docker_cap_addc);
+            if (cap_rc != 0) return cap_rc;
+            argi += 2;
+            continue;
+        }
+        if (!strncmp(argv[argi], "--cap-add=", 10)) {
+            int cap_rc = append_string_option("--cap-add", argv[argi] + 10, &docker_cap_add, &docker_cap_addc);
+            if (cap_rc != 0) return cap_rc;
+            argi++;
+            continue;
+        }
+        if (!strcmp(argv[argi], "--cap-drop")) {
+            if (argi + 1 >= argc) { fprintf(stderr, "hold: error: --cap-drop requires a capability\n"); return 5; }
+            int cap_rc = append_string_option("--cap-drop", argv[argi + 1], &docker_cap_drop, &docker_cap_dropc);
+            if (cap_rc != 0) return cap_rc;
+            argi += 2;
+            continue;
+        }
+        if (!strncmp(argv[argi], "--cap-drop=", 11)) {
+            int cap_rc = append_string_option("--cap-drop", argv[argi] + 11, &docker_cap_drop, &docker_cap_dropc);
+            if (cap_rc != 0) return cap_rc;
+            argi++;
+            continue;
         }
         if (!strcmp(argv[argi], "--detach-keys")) {
             if (argi + 1 >= argc) {
@@ -723,6 +778,28 @@ int main(int argc, char **argv) {
                 hold_free_argv_alloc(docker_ports, docker_portc);
                 hold_free_argv_alloc(docker_volumes, docker_volumec);
                 return reject_volume_option();
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strcmp(argv[i], "--cap-add")) {
+                if (i + 1 >= argc) { fprintf(stderr, "hold: error: --cap-add requires a capability\n"); free(cmd_argv); return 5; }
+                int cap_rc = append_string_option("--cap-add", argv[++i], &docker_cap_add, &docker_cap_addc);
+                if (cap_rc != 0) { free(cmd_argv); return cap_rc; }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strncmp(argv[i], "--cap-add=", 10)) {
+                int cap_rc = append_string_option("--cap-add", argv[i] + 10, &docker_cap_add, &docker_cap_addc);
+                if (cap_rc != 0) { free(cmd_argv); return cap_rc; }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strcmp(argv[i], "--cap-drop")) {
+                if (i + 1 >= argc) { fprintf(stderr, "hold: error: --cap-drop requires a capability\n"); free(cmd_argv); return 5; }
+                int cap_rc = append_string_option("--cap-drop", argv[++i], &docker_cap_drop, &docker_cap_dropc);
+                if (cap_rc != 0) { free(cmd_argv); return cap_rc; }
+                continue;
+            }
+            if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) && !strncmp(argv[i], "--cap-drop=", 11)) {
+                int cap_rc = append_string_option("--cap-drop", argv[i] + 11, &docker_cap_drop, &docker_cap_dropc);
+                if (cap_rc != 0) { free(cmd_argv); return cap_rc; }
+                continue;
             }
             if (!literal_owned_arg && (!strcmp(command, "start") || !strcmp(command, "run")) &&
                 !strcmp(argv[i], "--detach-keys")) {
@@ -1004,14 +1081,14 @@ int main(int argc, char **argv) {
                 char hash[PROFILE_HASH_STR_LEN];
                 if (hold_resolve_public_profile_token(&pre_system_store, atom, hash) == 1) {
                     if (hold_valid_alias(atom)) {
-                        struct passwd *pw = getpwuid(geteuid());
+                        struct hold_passwd_entry pw;
                         char subject[128];
-                        if (pw && pw->pw_name && *pw->pw_name &&
-                            hold_checked_snprintf(subject, sizeof(subject), "%s", pw->pw_name) == 0) {
+                        if (hold_lookup_passwd_by_uid(geteuid(), &pw) == 0 && pw.name[0] &&
+                            hold_checked_snprintf(subject, sizeof(subject), "%s", pw.name) == 0) {
                             char grant_hash[PROFILE_HASH_STR_LEN];
                             if (hold_subject_grant_hash_for(&pre_system_store, subject, atom, grant_hash) == 0) {
                                 char token[1024];
-                                if (build_cap_request_token("start", multi, token, sizeof(token)) != 0) {
+                                if (build_cap_request_token("start", multi, !tail, token, sizeof(token)) != 0) {
                                     free(cmd_argv);
                                     return 3;
                                 }
@@ -1110,7 +1187,7 @@ int main(int argc, char **argv) {
             token_names_detached_profile(&user_store, &system_store, cmd_argv[0])) {
             run_tail = false;
         }
-        if (docker_name && !saw_owned_delimiter && docker_envc == 0 && docker_portc == 0 && docker_volumec == 0) {
+        if (docker_name && !saw_owned_delimiter && docker_envc == 0 && docker_portc == 0 && docker_volumec == 0 && docker_cap_addc == 0 && docker_cap_dropc == 0) {
             rc = hold_cmd_start_action_name_options(&inv, &user_store, &system_store, argv[0], &start_store,
                                                     run_tail, console_mode, docker_rm, interactive_stdin,
                                                     multi, multi_count,
@@ -1121,17 +1198,19 @@ int main(int argc, char **argv) {
                                                     false,
                                                     cmd_argc, cmd_argv);
         } else if (docker_name) {
-            rc = hold_perform_start_with_metadata_name_options(&inv, &start_store, run_tail, console_mode, docker_rm, interactive_stdin,
+            rc = hold_perform_start_with_metadata_name_cap_options(&inv, &start_store, run_tail, console_mode, docker_rm, interactive_stdin,
                                                                cmd_argc, cmd_argv, NULL, NULL, docker_name,
                                                                docker_envc, docker_env,
                                                                docker_portc, docker_ports,
                                                                docker_volumec, docker_volumes,
+                                                               docker_cap_addc, docker_cap_add,
+                                                               docker_cap_dropc, docker_cap_drop,
                                                                docker_restart_policy[0] ? docker_restart_policy : NULL,
                                                                docker_restart_delay_seconds,
                                                                docker_log_destination);
-        } else if (saw_owned_delimiter || docker_envc > 0 || docker_portc > 0 || docker_volumec > 0 || docker_log_destination) {
+        } else if (saw_owned_delimiter || docker_envc > 0 || docker_portc > 0 || docker_volumec > 0 || docker_cap_addc > 0 || docker_cap_dropc > 0 || docker_log_destination) {
             if (!saw_owned_delimiter && cmd_argc == 1 && token_names_existing_profile(&user_store, &system_store, cmd_argv[0]) &&
-                (docker_envc > 0 || docker_portc > 0 || docker_volumec > 0)) {
+                (docker_envc > 0 || docker_portc > 0 || docker_volumec > 0 || docker_cap_addc > 0 || docker_cap_dropc > 0)) {
                 fprintf(stderr,
                         "hold: error: -e runtime overrides for existing profiles are not supported yet; edit the profile or use -- to force an executable\n");
                 rc = 5;
@@ -1161,11 +1240,13 @@ int main(int argc, char **argv) {
                     start_argc = 3;
                     start_argv = shell_argv;
                 }
-                rc = hold_perform_start_with_metadata_name_options(&inv, &start_store, run_tail, console_mode, docker_rm, interactive_stdin,
+                rc = hold_perform_start_with_metadata_name_cap_options(&inv, &start_store, run_tail, console_mode, docker_rm, interactive_stdin,
                                                               start_argc, start_argv, NULL, NULL, NULL,
                                                               docker_envc, docker_env,
                                                               docker_portc, docker_ports,
                                                               docker_volumec, docker_volumes,
+                                                              docker_cap_addc, docker_cap_add,
+                                                              docker_cap_dropc, docker_cap_drop,
                                                               docker_restart_policy[0] ? docker_restart_policy : NULL,
                                                               docker_restart_delay_seconds,
                                                               docker_log_destination);
@@ -1185,6 +1266,8 @@ int main(int argc, char **argv) {
         hold_free_argv_alloc(docker_env, docker_envc);
         hold_free_argv_alloc(docker_ports, docker_portc);
         hold_free_argv_alloc(docker_volumes, docker_volumec);
+        hold_free_argv_alloc(docker_cap_add, docker_cap_addc);
+        hold_free_argv_alloc(docker_cap_drop, docker_cap_dropc);
         return rc;
     }
 
@@ -1426,6 +1509,10 @@ int main(int argc, char **argv) {
                 int p_envc = 0;
                 char **p_volumes = NULL;
                 int p_volumec = 0;
+                char **p_cap_add = NULL;
+                int p_cap_addc = 0;
+                char **p_cap_drop = NULL;
+                int p_cap_dropc = 0;
                 char p_restart_policy[64] = {0};
                 int p_restart_delay_seconds = 0;
                 bool p_restart_delay_seen = false;
@@ -1494,6 +1581,36 @@ int main(int argc, char **argv) {
                     if (!strncmp(a, "--volume=", 9)) {
                         parse_rc = reject_volume_option();
                         break;
+                    }
+                    if (!strcmp(a, "--cap-add")) {
+                        if (pi + 1 >= cmd_argc) {
+                            fprintf(stderr, "hold: error: --cap-add requires a capability\n");
+                            parse_rc = 5;
+                            break;
+                        }
+                        parse_rc = append_string_option("--cap-add", cmd_argv[++pi], &p_cap_add, &p_cap_addc);
+                        if (parse_rc != 0) break;
+                        continue;
+                    }
+                    if (!strncmp(a, "--cap-add=", 10)) {
+                        parse_rc = append_string_option("--cap-add", a + 10, &p_cap_add, &p_cap_addc);
+                        if (parse_rc != 0) break;
+                        continue;
+                    }
+                    if (!strcmp(a, "--cap-drop")) {
+                        if (pi + 1 >= cmd_argc) {
+                            fprintf(stderr, "hold: error: --cap-drop requires a capability\n");
+                            parse_rc = 5;
+                            break;
+                        }
+                        parse_rc = append_string_option("--cap-drop", cmd_argv[++pi], &p_cap_drop, &p_cap_dropc);
+                        if (parse_rc != 0) break;
+                        continue;
+                    }
+                    if (!strncmp(a, "--cap-drop=", 11)) {
+                        parse_rc = append_string_option("--cap-drop", a + 11, &p_cap_drop, &p_cap_dropc);
+                        if (parse_rc != 0) break;
+                        continue;
                     }
                     if (!strcmp(a, "--restart")) {
                         if (pi + 1 >= cmd_argc) {
@@ -1607,6 +1724,10 @@ int main(int argc, char **argv) {
                                                              p_env,
                                                              p_volumec,
                                                              p_volumes,
+                                                             p_cap_addc,
+                                                             p_cap_add,
+                                                             p_cap_dropc,
+                                                             p_cap_drop,
                                                              p_interactive,
                                                              p_tty,
                                                              p_detach,
@@ -1618,6 +1739,8 @@ int main(int argc, char **argv) {
                 }
                 hold_free_argv_alloc(p_env, p_envc);
                 hold_free_argv_alloc(p_volumes, p_volumec);
+                hold_free_argv_alloc(p_cap_add, p_cap_addc);
+                hold_free_argv_alloc(p_cap_drop, p_cap_dropc);
                 free(cmd_argv);
                 return rc;
             }

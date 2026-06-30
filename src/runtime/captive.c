@@ -28,6 +28,10 @@ struct captive_profile_stage {
     size_t port_count;
     char *volumes[CAPTIVE_MAX_ARGS];
     size_t volume_count;
+    char *cap_add[CAPTIVE_MAX_ARGS];
+    size_t cap_add_count;
+    char *cap_drop[CAPTIVE_MAX_ARGS];
+    size_t cap_drop_count;
     bool mode_interactive;
     bool mode_tty;
     bool mode_detach;
@@ -63,6 +67,8 @@ static void stage_clear(struct captive_profile_stage *stage) {
     for (size_t i = 0; i < stage->env_count; i++) free(stage->env[i]);
     for (size_t i = 0; i < stage->port_count; i++) free(stage->ports[i]);
     for (size_t i = 0; i < stage->volume_count; i++) free(stage->volumes[i]);
+    for (size_t i = 0; i < stage->cap_add_count; i++) free(stage->cap_add[i]);
+    for (size_t i = 0; i < stage->cap_drop_count; i++) free(stage->cap_drop[i]);
     memset(stage, 0, sizeof(*stage));
 }
 
@@ -134,6 +140,36 @@ static int stage_load_recipe(struct captive_profile_stage *stage, const struct h
                 goto done;
             }
             stage->volume_count++;
+        }
+    }
+    if (recipe.cap_addc > 0) {
+        if ((size_t)recipe.cap_addc > CAPTIVE_MAX_ARGS) {
+            fprintf(stderr, "%% Existing profile has too many cap-add entries for captive editing\n");
+            rc = 5;
+            goto done;
+        }
+        for (int i = 0; i < recipe.cap_addc; i++) {
+            stage->cap_add[stage->cap_add_count] = strdup(recipe.cap_add[i]);
+            if (!stage->cap_add[stage->cap_add_count]) {
+                rc = 3;
+                goto done;
+            }
+            stage->cap_add_count++;
+        }
+    }
+    if (recipe.cap_dropc > 0) {
+        if ((size_t)recipe.cap_dropc > CAPTIVE_MAX_ARGS) {
+            fprintf(stderr, "%% Existing profile has too many cap-drop entries for captive editing\n");
+            rc = 5;
+            goto done;
+        }
+        for (int i = 0; i < recipe.cap_dropc; i++) {
+            stage->cap_drop[stage->cap_drop_count] = strdup(recipe.cap_drop[i]);
+            if (!stage->cap_drop[stage->cap_drop_count]) {
+                rc = 3;
+                goto done;
+            }
+            stage->cap_drop_count++;
         }
     }
     stage->mode_interactive = recipe.mode_interactive;
@@ -504,6 +540,8 @@ static void help_profile(void) {
     printf("  tty           Allocate a pseudo-TTY for profile runs\n");
     printf("  console       Alias for tty\n");
     printf("  detach        Run profile in background by default\n");
+    printf("  cap-add       Add a Linux capability to the profile launch config\n");
+    printf("  cap-drop      Drop a Linux capability from the profile launch config\n");
     printf("  restart       Set restart policy (no|always|unless-stopped|on-failure[:N])\n");
     printf("  restart-delay Set restart delay seconds\n");
     printf("  pty-shim      Start under the PTY shim (reserved)\n");
@@ -593,6 +631,20 @@ static void profile_info(const struct captive_profile_stage *stage) {
         for (size_t i = 0; i < stage->volume_count; i++) printf(" %s", stage->volumes[i]);
     }
     printf("\n");
+    printf("  cap-add   :");
+    if (stage->cap_add_count == 0) {
+        printf(" -");
+    } else {
+        for (size_t i = 0; i < stage->cap_add_count; i++) printf(" %s", stage->cap_add[i]);
+    }
+    printf("\n");
+    printf("  cap-drop  :");
+    if (stage->cap_drop_count == 0) {
+        printf(" -");
+    } else {
+        for (size_t i = 0; i < stage->cap_drop_count; i++) printf(" %s", stage->cap_drop[i]);
+    }
+    printf("\n");
     printf("  modes     :%s%s%s%s%s\n",
            stage->mode_interactive ? " interactive" : "",
            stage->mode_tty ? " tty" : "",
@@ -628,6 +680,28 @@ static void profile_clear_metadata(char **items, size_t *count, bool *dirty) {
     memset(items, 0, sizeof(items[0]) * CAPTIVE_MAX_ARGS);
     *count = 0;
     *dirty = true;
+}
+
+static int profile_append_metadata(char **items, size_t *count, const char *kind, int argc, char **argv, bool *dirty) {
+    if (argc < 2) {
+        fprintf(stderr, "%% Usage: %s <value> [value...]\n", kind);
+        return 5;
+    }
+    for (int i = 1; i < argc; i++) {
+        if (!argv[i] || !*argv[i]) {
+            fprintf(stderr, "%% Usage: %s <value> [value...]\n", kind);
+            return 5;
+        }
+        if (*count >= CAPTIVE_MAX_ARGS) {
+            fprintf(stderr, "%% Too many %s entries\n", kind);
+            return 5;
+        }
+        items[*count] = strdup(argv[i]);
+        if (!items[*count]) return 3;
+        (*count)++;
+    }
+    *dirty = true;
+    return 0;
 }
 
 static int profile_remove_metadata(char **items, size_t *count, const char *kind, int argc, char **argv, bool *dirty) {
@@ -867,6 +941,10 @@ static int profile_commit(struct captive_session *s) {
                                       stage->ports,
                                       (int)stage->volume_count,
                                       stage->volumes,
+                                      (int)stage->cap_add_count,
+                                      stage->cap_add,
+                                      (int)stage->cap_drop_count,
+                                      stage->cap_drop,
                                       stage->mode_interactive,
                                       stage->mode_tty,
                                       stage->mode_detach,
@@ -924,6 +1002,14 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  WORD       Long flag to expose (e.g. --port)\n");
             return 0;
         }
+        if (!strcmp(argv[0], "cap-add") || !strcmp(argv[0], "cap_add")) {
+            printf("  WORD       Capability to add, e.g. NET_BIND_SERVICE\n");
+            return 0;
+        }
+        if (!strcmp(argv[0], "cap-drop") || !strcmp(argv[0], "cap_drop")) {
+            printf("  WORD       Capability to drop, or ALL\n");
+            return 0;
+        }
         if (!strcmp(argv[0], "restart")) {
             printf("  WORD       no | always | unless-stopped | on-failure[:N]\n");
             return 0;
@@ -936,6 +1022,8 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  env         Remove an environment variable or all env\n");
             printf("  publish     Clear legacy publish metadata\n");
             printf("  volume      Clear legacy volume metadata\n");
+            printf("  cap-add     Clear one or all added capabilities\n");
+            printf("  cap-drop    Clear one or all dropped capabilities\n");
             printf("  argv        Clear base argv tokens\n");
             printf("  interactive Disable stdin-open profile mode\n");
             printf("  tty         Disable pseudo-TTY profile mode\n");
@@ -951,6 +1039,8 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  env         Clear environment entries\n");
             printf("  publish     Clear legacy publish metadata\n");
             printf("  volume      Clear legacy volume metadata\n");
+            printf("  cap-add     Clear added capabilities\n");
+            printf("  cap-drop    Clear dropped capabilities\n");
             printf("  interactive Reset stdin-open mode to default\n");
             printf("  tty         Reset pseudo-TTY mode to default\n");
             printf("  console     Alias for default tty\n");
@@ -978,6 +1068,12 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     if (!strcmp(argv[0], "volume")) {
         return reject_volume_config();
     }
+    if (!strcmp(argv[0], "cap-add") || !strcmp(argv[0], "cap_add")) {
+        return profile_append_metadata(s->profile.cap_add, &s->profile.cap_add_count, "cap-add", argc, argv, &s->profile.dirty);
+    }
+    if (!strcmp(argv[0], "cap-drop") || !strcmp(argv[0], "cap_drop")) {
+        return profile_append_metadata(s->profile.cap_drop, &s->profile.cap_drop_count, "cap-drop", argc, argv, &s->profile.dirty);
+    }
     if (!strcmp(argv[0], "restart")) return profile_set_restart(&s->profile, argc, argv);
     if (!strcmp(argv[0], "restart-delay") || !strcmp(argv[0], "restart_delay_seconds")) return profile_set_restart_delay(&s->profile, argc, argv);
     if (!strcmp(argv[0], "alias") || !strcmp(argv[0], "param") || !strcmp(argv[0], "pty-shim")) {
@@ -990,6 +1086,12 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     }
     if (!strcmp(argv[0], "no") && argc >= 2 && !strcmp(argv[1], "volume")) {
         return profile_remove_metadata(s->profile.volumes, &s->profile.volume_count, "volume", argc, argv, &s->profile.dirty);
+    }
+    if (!strcmp(argv[0], "no") && argc >= 2 && (!strcmp(argv[1], "cap-add") || !strcmp(argv[1], "cap_add"))) {
+        return profile_remove_metadata(s->profile.cap_add, &s->profile.cap_add_count, "cap-add", argc, argv, &s->profile.dirty);
+    }
+    if (!strcmp(argv[0], "no") && argc >= 2 && (!strcmp(argv[1], "cap-drop") || !strcmp(argv[1], "cap_drop"))) {
+        return profile_remove_metadata(s->profile.cap_drop, &s->profile.cap_drop_count, "cap-drop", argc, argv, &s->profile.dirty);
     }
     if (!strcmp(argv[0], "no") && argc == 2 && !strcmp(argv[1], "argv")) {
         profile_clear_argv(&s->profile);
@@ -1024,6 +1126,14 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
         }
         if (!strcmp(argv[1], "volume")) {
             profile_clear_metadata(s->profile.volumes, &s->profile.volume_count, &s->profile.dirty);
+            return 0;
+        }
+        if (!strcmp(argv[1], "cap-add") || !strcmp(argv[1], "cap_add")) {
+            profile_clear_metadata(s->profile.cap_add, &s->profile.cap_add_count, &s->profile.dirty);
+            return 0;
+        }
+        if (!strcmp(argv[1], "cap-drop") || !strcmp(argv[1], "cap_drop")) {
+            profile_clear_metadata(s->profile.cap_drop, &s->profile.cap_drop_count, &s->profile.dirty);
             return 0;
         }
         if (!strcmp(argv[1], "restart")) {
