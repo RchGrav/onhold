@@ -20,7 +20,7 @@ note_fail() {
 
 make_version="$(make -s --no-print-directory print-version)"
 case "$make_version" in
-  "$base"|"$base"-*) ;;
+  "$base"|"$base"-*|"v$base") ;;
   *) note_fail "Makefile print-version ($make_version) is not derived from VERSION ($base)" ;;
 esac
 

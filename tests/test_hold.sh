@@ -66,10 +66,17 @@ trap suite_cleanup EXIT
 remove_tree() {
   local path="$1"
   [ -n "$path" ] || return 0
+  [ -e "$path" ] || return 0
   if [ "$(id -u)" -eq 0 ]; then
+    chmod -R u+rwX "$path" 2>/dev/null || true
     rm -rf "$path"
   elif [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] && [ -n "$SUDO_BIN" ]; then
-    "$SUDO_BIN" -n rm -rf "$path" || rm -rf "$path"
+    # Some tests intentionally create root-owned system-store artifacts under
+    # the per-test temp tree. Normalize ownership/modes before deletion so the
+    # non-root suite never fails after the assertions have already passed.
+    "$SUDO_BIN" -n chmod -R u+rwX "$path" 2>/dev/null || true
+    "$SUDO_BIN" -n chown -R "$(id -u):$(id -g)" "$path" 2>/dev/null || true
+    rm -rf "$path" || "$SUDO_BIN" -n rm -rf "$path"
   else
     rm -rf "$path"
   fi
@@ -5808,8 +5815,13 @@ SH
     { git ls-files docs examples install.sh scripts Makefile 2>/dev/null || find docs examples install.sh scripts Makefile -type f 2>/dev/null; } |
       grep -Ev '^docs/(archive/.*|0\.4-repair-ledger\.md|0\.4\.0-direction-.*|security-review-.*)$' || true
   )
-  if printf '%s\n' "$public_files" | xargs grep -InEi '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases|hold[[:space:]]+(start|grant|revoke)[[:space:]]+<alias>|start[[:space:]]+<alias>|known alias|alias selection|alias-labeled|alias exists|create an alias|aliases turn|system alias|alias starts|alias ambiguity|alias filtering|alias creation|run id or alias|command as an alias|system:alias|grant alias|root alias|public alias/hash|root-managed alias capabilities|supplied alias|alias/hash capability|run-alias verification|behind an alias|alias was called|alias was created from|for this alias/profile|across aliases' \
-      >"$TEST_ROOT/forbidden-public-names.out" 2>/dev/null; then
+  # The live GitHub repository is still RchGrav/sigmund during the 0.4.0
+  # rename window, so the installer needs that repository default. Treat that
+  # exact source-location line as an allowed repo-coordinate exception while
+  # still rejecting leaked legacy branding or alias/run-namespace docs.
+  if printf '%s\n' "$public_files" | xargs grep -InEi '(^|[^[:alnum:]_])(sigmund|mund)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])hold[[:space:]]+aliases?([^[:alnum:]_]|$)|["'\'']?[$]HOLD_BIN["'\'']?[[:space:]]+aliases?([^[:alnum:]_]|$)|alias aliases|hold[[:space:]]+(start|grant|revoke)[[:space:]]+<alias>|start[[:space:]]+<alias>|known alias|alias selection|alias-labeled|alias exists|create an alias|aliases turn|system alias|alias starts|alias ambiguity|alias filtering|alias creation|run id or alias|command as an alias|system:alias|grant alias|root alias|public alias/hash|root-managed alias capabilities|supplied alias|alias/hash capability|run-alias verification|behind an alias|alias was called|alias was created from|for this alias/profile|across aliases' 2>/dev/null |
+      grep -Ev '^install\.sh:[0-9]+:REPO_NAME="[$][{]HOLD_REPO_NAME:-sigmund[}]"$' \
+      >"$TEST_ROOT/forbidden-public-names.out"; then
     cat "$TEST_ROOT/forbidden-public-names.out" >&2
     return 1
   fi

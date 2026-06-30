@@ -42,6 +42,7 @@ run_installer() {
   local root="$1" install_dir="$2" extra_env="${3:-}"
   env \
     HOLD_GITHUB_BASE="file://$root" \
+    HOLD_REPO_NAME=hold \
     HOLD_INSTALL_TEST_OS=linux \
     HOLD_INSTALL_TEST_ARCH=amd64 \
     HOLD_INSTALL_TEST_LIBC=gnu \
