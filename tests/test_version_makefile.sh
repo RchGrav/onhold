@@ -80,7 +80,7 @@ cp .github/scripts/resolve_version.sh "$gitcase/.github/scripts/"
     printf 'dirty exact tag Makefile version mismatch: got %s want v9.8.7-dirty\n' "$dirty_make" >&2
     exit 1
   fi
-  dirty_resolved="$(bash .github/scripts/resolve_version.sh)"
+  dirty_resolved="$(env -u GITHUB_SHA bash .github/scripts/resolve_version.sh)"
   short="$(git rev-parse --short HEAD)"
   if [ "$dirty_resolved" != "9.8.7-$short-dirty" ]; then
     printf 'dirty exact tag resolver mismatch: got %s want 9.8.7-%s-dirty\n' "$dirty_resolved" "$short" >&2
@@ -183,21 +183,21 @@ SHSTUB
 chmod +x "$releasecase/bin/file"
 (
   cd "$releasecase"
-  PATH="$releasecase/bin:$PATH" FAKE_GIT_MODE=tag-clean bash scripts/release_build.sh >tag-clean.out 2>tag-clean.err
+  env -u GITHUB_SHA PATH="$releasecase/bin:$PATH" FAKE_GIT_MODE=tag-clean bash scripts/release_build.sh >tag-clean.out 2>tag-clean.err
   grep -qx 'linux-amd64-gnu-static 9.8.7 hold' dist/packages.log
   grep -qx 'linux-amd64-gnu-dynamic 9.8.7 hold-dynamic' dist/packages.log
 )
 (
   cd "$releasecase"
   rm -rf dist
-  PATH="$releasecase/bin:$PATH" FAKE_GIT_MODE=branch-clean bash scripts/release_build.sh >branch-clean.out 2>branch-clean.err
+  env -u GITHUB_SHA PATH="$releasecase/bin:$PATH" FAKE_GIT_MODE=branch-clean bash scripts/release_build.sh >branch-clean.out 2>branch-clean.err
   grep -qx 'linux-amd64-gnu-static 9.8.7-abcdef1 hold' dist/packages.log
   grep -qx 'linux-amd64-gnu-dynamic 9.8.7-abcdef1 hold-dynamic' dist/packages.log
 )
 (
   cd "$releasecase"
   rm -rf dist
-  if PATH="$releasecase/bin:$PATH" FAKE_GIT_MODE=tag-dirty bash scripts/release_build.sh >tag-dirty.out 2>tag-dirty.err; then
+  if env -u GITHUB_SHA PATH="$releasecase/bin:$PATH" FAKE_GIT_MODE=tag-dirty bash scripts/release_build.sh >tag-dirty.out 2>tag-dirty.err; then
     printf 'release_build unexpectedly allowed dirty tagged worktree\n' >&2
     exit 1
   fi
