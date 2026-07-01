@@ -24,6 +24,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -101,9 +102,17 @@ jobs:
           git tag -a "${NEXT}" -m "Release ${NEXT}"
           git push origin "refs/tags/${NEXT}"
 
+      - name: Start release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.semver.outputs.next }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --ref "${NEXT}"
+
       - name: Summary
         env:
           NEXT: ${{ steps.semver.outputs.next }}
         run: |
           echo "Created tag: ${NEXT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "The Multi-arch Release workflow should now run on this tag." >> "$GITHUB_STEP_SUMMARY"
+          echo "Started the Multi-arch Release workflow on this tag." >> "$GITHUB_STEP_SUMMARY"
