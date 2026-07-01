@@ -5226,6 +5226,71 @@ PY
 }
 
 
+test_captive_profile_log_destination_persists_and_clears() {
+  local rc
+  set +e
+  printf 'enable
+configure terminal
+profile iolog
+binary /bin/echo
+argv hello
+log-destination syslog
+info
+commit
+end
+exit
+' |
+    "$HOLD_BIN" >"$TEST_ROOT/captive-logdest-set.out" 2>"$TEST_ROOT/captive-logdest-set.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-logdest-set.out" "$TEST_ROOT/captive-logdest-set.err" >&2; return 1; }
+  grep -q 'log-dest  : syslog' "$TEST_ROOT/captive-logdest-set.out" || {
+    cat "$TEST_ROOT/captive-logdest-set.out" >&2
+    return 1
+  }
+  "$HOLD_BIN" profile export iolog --json >"$TEST_ROOT/iolog-set.json" || return 1
+  "$HOLD_BIN" profile export iolog >"$TEST_ROOT/iolog-set.profile" || return 1
+  grep -Fxq "log-destination syslog" "$TEST_ROOT/iolog-set.profile" || { cat "$TEST_ROOT/iolog-set.profile" >&2; return 1; }
+  python3 - "$TEST_ROOT/iolog-set.json" <<'PY' || { cat "$TEST_ROOT/iolog-set.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+if profile.get('log_destination') != 'syslog':
+    raise SystemExit(f'missing syslog destination: {profile!r}')
+PY
+
+  set +e
+  printf 'enable
+configure terminal
+profile iolog
+info
+default log-destination
+info
+commit
+end
+exit
+' |
+    "$HOLD_BIN" >"$TEST_ROOT/captive-logdest-clear.out" 2>"$TEST_ROOT/captive-logdest-clear.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-logdest-clear.out" "$TEST_ROOT/captive-logdest-clear.err" >&2; return 1; }
+  grep -q 'log-dest  : syslog' "$TEST_ROOT/captive-logdest-clear.out" || {
+    cat "$TEST_ROOT/captive-logdest-clear.out" >&2
+    return 1
+  }
+  grep -q 'log-dest  : -' "$TEST_ROOT/captive-logdest-clear.out" || {
+    cat "$TEST_ROOT/captive-logdest-clear.out" >&2
+    return 1
+  }
+  "$HOLD_BIN" profile export iolog --json >"$TEST_ROOT/iolog-clear.json" || return 1
+  python3 - "$TEST_ROOT/iolog-clear.json" <<'PY' || { cat "$TEST_ROOT/iolog-clear.json" >&2; return 1; }
+import json, sys
+profile = json.load(open(sys.argv[1], encoding='utf-8'))
+if 'log_destination' in profile:
+    raise SystemExit(f'log_destination should be omitted after default log-destination: {profile!r}')
+PY
+}
+
+
 test_captive_cli_ios_contextual_help_and_reserved_words() {
   local rc
   set +e
@@ -5266,6 +5331,7 @@ exit
   grep -q 'alias         Define a profile-local alias (reserved)' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'param         Expose a validated optional parameter (reserved)' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'multi         Allow multiple concurrent instances' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
+  grep -q 'log-destination Mirror logs to syslog' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'pty-shim      Start under the PTY shim (reserved)' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'WORD       Absolute path to the executable' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
   grep -q 'WORD       Long flag to expose' "$TEST_ROOT/captive-ios-help.out" || { cat "$TEST_ROOT/captive-ios-help.out" >&2; return 1; }
@@ -6121,6 +6187,7 @@ run_test "hold shell Ctrl-P Ctrl-Q adopts the foreground process group" test_hol
 run_test "captive CLI shows Cisco prompts and commits a profile" test_captive_cli_cisco_prompts_and_profile_commit
 run_test "captive CLI noninteractive transcript is script-safe" test_captive_cli_noninteractive_transcript_is_script_safe
 run_test "captive CLI profile mode flags commit and clear" test_captive_cli_profile_mode_flags_commit_and_clear
+run_test "captive CLI edits profile log destination" test_captive_profile_log_destination_persists_and_clears
 run_test "captive CLI IOS contextual help and reserved words" test_captive_cli_ios_contextual_help_and_reserved_words
 run_test "captive CLI IOS operational commands" test_captive_cli_ios_operational_commands
 run_test "captive CLI rejects ping pseudo-command" test_captive_cli_rejects_ping_pseudo_command

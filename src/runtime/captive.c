@@ -40,6 +40,8 @@ struct captive_profile_stage {
     bool has_restart_delay;
     char restart_policy[64];
     int restart_delay_seconds;
+    bool has_log_destination;
+    char log_destination[32];
     bool dirty;
 };
 
@@ -182,6 +184,10 @@ static int stage_load_recipe(struct captive_profile_stage *stage, const struct h
         snprintf(stage->restart_policy, sizeof(stage->restart_policy), "%s", recipe.recipe.restart_policy);
     }
     stage->restart_delay_seconds = recipe.recipe.restart_delay_seconds;
+    stage->has_log_destination = recipe.recipe.has_log_destination;
+    if (recipe.recipe.has_log_destination) {
+        snprintf(stage->log_destination, sizeof(stage->log_destination), "%s", recipe.recipe.log_destination);
+    }
     stage->dirty = false;
 done:
     hold_free_profile(&recipe);
@@ -546,6 +552,7 @@ static void help_profile(void) {
     printf("  cap-drop      Drop a Linux capability from the profile launch config\n");
     printf("  restart       Set restart policy (no|always|unless-stopped|on-failure[:N])\n");
     printf("  restart-delay Set restart delay seconds\n");
+    printf("  log-destination Mirror logs to syslog, or reset to local/json-file\n");
     printf("  pty-shim      Start under the PTY shim (reserved)\n");
     printf("  no            Negate a command\n");
     printf("  default       Reset a command to default\n");
@@ -656,6 +663,7 @@ static void profile_info(const struct captive_profile_stage *stage) {
     printf("  restart   : %s", stage->has_restart_policy ? stage->restart_policy : "-");
     if (stage->has_restart_delay) printf(" delay=%d", stage->restart_delay_seconds);
     printf("\n");
+    printf("  log-dest  : %s\n", stage->has_log_destination ? stage->log_destination : "-");
     printf("  staged    : %s\n", stage->dirty ? "uncommitted changes present" : "clean");
 }
 
@@ -896,6 +904,33 @@ static void profile_clear_restart(struct captive_profile_stage *stage) {
     stage->dirty = true;
 }
 
+static int profile_set_log_destination(struct captive_profile_stage *stage, int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "%% Usage: log-destination <syslog|local|json-file>\n");
+        return 5;
+    }
+    if (!strcmp(argv[1], "syslog")) {
+        snprintf(stage->log_destination, sizeof(stage->log_destination), "%s", argv[1]);
+        stage->has_log_destination = true;
+        stage->dirty = true;
+        return 0;
+    }
+    if (!strcmp(argv[1], "local") || !strcmp(argv[1], "json-file")) {
+        stage->log_destination[0] = '\0';
+        stage->has_log_destination = false;
+        stage->dirty = true;
+        return 0;
+    }
+    fprintf(stderr, "%% Unsupported log destination '%s'\n", argv[1]);
+    return 5;
+}
+
+static void profile_clear_log_destination(struct captive_profile_stage *stage) {
+    stage->log_destination[0] = '\0';
+    stage->has_log_destination = false;
+    stage->dirty = true;
+}
+
 static int profile_set_mode(struct captive_profile_stage *stage, const char *name, bool enabled) {
     bool *slot = NULL;
     if (!strcmp(name, "interactive")) {
@@ -953,7 +988,7 @@ static int profile_commit(struct captive_session *s) {
                                       stage->allow_multi,
                                       stage->has_restart_policy ? stage->restart_policy : NULL,
                                       stage->has_restart_delay ? stage->restart_delay_seconds : 0,
-                                      NULL) != 0) {
+                                      stage->has_log_destination ? stage->log_destination : NULL) != 0) {
         free(argv);
         hold_die_errno("hold: failed to commit profile");
     }
@@ -1020,6 +1055,10 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  WORD       Delay in seconds before restart\n");
             return 0;
         }
+        if (!strcmp(argv[0], "log-destination") || !strcmp(argv[0], "log_destination")) {
+            printf("  WORD       syslog | local | json-file\n");
+            return 0;
+        }
         if (!strcmp(argv[0], "no")) {
             printf("  env         Remove an environment variable or all env\n");
             printf("  publish     Clear legacy publish metadata\n");
@@ -1034,6 +1073,7 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  multi       Disable multi-instance profile mode\n");
             printf("  restart     Clear restart policy and delay\n");
             printf("  restart-delay Clear restart delay only\n");
+            printf("  log-destination Clear log mirroring\n");
             return 0;
         }
         if (!strcmp(argv[0], "default")) {
@@ -1050,6 +1090,7 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             printf("  multi       Reset multi-instance mode to default\n");
             printf("  restart     Reset restart policy and delay to default\n");
             printf("  restart-delay Reset restart delay to default\n");
+            printf("  log-destination Reset log destination to local/json-file\n");
             return 0;
         }
     }
@@ -1078,6 +1119,7 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
     }
     if (!strcmp(argv[0], "restart")) return profile_set_restart(&s->profile, argc, argv);
     if (!strcmp(argv[0], "restart-delay") || !strcmp(argv[0], "restart_delay_seconds")) return profile_set_restart_delay(&s->profile, argc, argv);
+    if (!strcmp(argv[0], "log-destination") || !strcmp(argv[0], "log_destination")) return profile_set_log_destination(&s->profile, argc, argv);
     if (!strcmp(argv[0], "alias") || !strcmp(argv[0], "param") || !strcmp(argv[0], "pty-shim")) {
         return unsupported_reserved_profile_command(argv[0]);
     }
@@ -1107,6 +1149,10 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
         s->profile.restart_delay_seconds = 0;
         s->profile.has_restart_delay = false;
         s->profile.dirty = true;
+        return 0;
+    }
+    if (!strcmp(argv[0], "no") && argc == 2 && (!strcmp(argv[1], "log-destination") || !strcmp(argv[1], "log_destination"))) {
+        profile_clear_log_destination(&s->profile);
         return 0;
     }
     if (!strcmp(argv[0], "no") && argc == 2) {
@@ -1146,6 +1192,10 @@ static int handle_profile(struct captive_session *s, int argc, char **argv) {
             s->profile.restart_delay_seconds = 0;
             s->profile.has_restart_delay = false;
             s->profile.dirty = true;
+            return 0;
+        }
+        if (!strcmp(argv[1], "log-destination") || !strcmp(argv[1], "log_destination")) {
+            profile_clear_log_destination(&s->profile);
             return 0;
         }
         int mode_rc = profile_set_mode(&s->profile, argv[1], false);

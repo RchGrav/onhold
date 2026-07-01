@@ -19,10 +19,20 @@
 set -uo pipefail
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
+ver="$(bash .github/scripts/resolve_version.sh)"
+
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  exact_tag="$(git describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+  if [ -n "$exact_tag" ] && [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+    echo "release_build: refusing to build clean release artifacts from dirty tagged worktree ($exact_tag)" >&2
+    echo "release_build: commit or stash changes, then rerun from the clean tag/CI checkout" >&2
+    exit 1
+  fi
+fi
+
 out="${1:-dist}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
-ver="$(bash .github/scripts/resolve_version.sh --base)"
 os="$(uname -s)"
 hostm="$(uname -m)"
 pkg="./.github/scripts/package_tarball.sh"
@@ -31,7 +41,17 @@ log="${TMPDIR:-/tmp}/release_build.$$.log"
 ok=0; fail=0; skip=0
 section() { printf '\n----- %s -----\n' "$*"; }
 show()    { file "$1" | sed 's/^/    /'; }
-runv()    { ./"$1" --version | sed "s|^|    runs ($1): |"; }
+runv() { # binary
+  local out
+  out="${log}.run"
+  if ./"$1" --version >"$out" 2>&1; then
+    sed "s|^|    runs ($1): |" "$out"
+    return 0
+  fi
+  printf '    RUN FAILED (%s):\n' "$1" >&2
+  sed 's/^/      /' "$out" >&2
+  return 1
+}
 emit() { # target  binary
   if "$pkg" "$1" "$ver" "$2" "$out" >/dev/null; then
     printf '    packaged: hold-%s-%s.tar.gz\n' "$ver" "$1"; ok=$((ok + 1))
@@ -40,6 +60,13 @@ emit() { # target  binary
   fi
 }
 bfail() { printf '    BUILD FAILED:\n'; tail -15 "$log" | sed 's/^/      /'; fail=$((fail + 1)); }
+verify_emit() { # target binary should_run
+  if [ "$3" = 1 ] && ! runv "$2"; then
+    fail=$((fail + 1))
+    return
+  fi
+  emit "$1" "$2"
+}
 
 case "$os" in
 Darwin)
@@ -47,7 +74,7 @@ Darwin)
   make clean >/dev/null
   if make CC=clang STATIC_LDFLAGS='' \
        CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -O2' >"$log" 2>&1; then
-    show hold; runv hold; emit "macos-$hostm" hold
+    show hold; verify_emit "macos-$hostm" hold 1
   else bfail; fi
   ;;
 Linux)
@@ -60,13 +87,13 @@ Linux)
   section "Linux gnu native ($hostm -> $gnu_arch) static"
   make clean >/dev/null
   if make hold STATIC_LDFLAGS='-static' >"$log" 2>&1; then
-    show hold; runv hold; emit "linux-$gnu_arch-gnu-static" hold
+    show hold; verify_emit "linux-$gnu_arch-gnu-static" hold 1
   else bfail; fi
 
   section "Linux gnu native ($gnu_arch) dynamic"
   make clean >/dev/null
   if make hold-dynamic STATIC_LDFLAGS='' >"$log" 2>&1; then
-    show hold-dynamic; emit "linux-$gnu_arch-gnu-dynamic" hold-dynamic
+    show hold-dynamic; verify_emit "linux-$gnu_arch-gnu-dynamic" hold-dynamic 1
   else bfail; fi
 
   if command -v zig >/dev/null 2>&1; then
@@ -83,8 +110,11 @@ Linux)
            CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -O2 -s' \
            STATIC_LDFLAGS='-static' >"$log" 2>&1; then
         show hold
-        [ "$target" = "linux-$gnu_arch-musl-static" ] && runv hold
-        emit "$target" hold
+        if [ "$target" = "linux-$gnu_arch-musl-static" ]; then
+          verify_emit "$target" hold 1
+        else
+          emit "$target" hold
+        fi
       else bfail; fi
     done
   else
@@ -99,7 +129,7 @@ Linux)
   ;;
 esac
 
-rm -f "$log"
+rm -f "$log" "${log}.run"
 section "artifacts in $out"
 ls -la "$out"/hold-"$ver"-*.tar.gz 2>/dev/null | awk '{print "   ", $NF, $5"B"}'
 printf '\n===== release build: %d ok, %d failed, %d skipped =====\n' "$ok" "$fail" "$skip"
