@@ -4419,6 +4419,21 @@ SH
   printf '%s\n' "$app"
 }
 
+make_sleeping_home_executable() {
+  local app="$ACTOR_HOME/bin/home-tool"
+  mkdir -p "$ACTOR_HOME/bin" || return 1
+  cat > "$app" <<'SH'
+#!/bin/sh
+printf 'home-tool\n'
+sleep 5
+SH
+  chmod 755 "$app" || return 1
+  if [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ]; then
+    as_root chown "$TEST_UID:$TEST_GID" "$ACTOR_HOME/bin" "$app" || return 1
+  fi
+  printf '%s\n' "$app"
+}
+
 assert_home_system_start_is_user_local() {
   local out="$1" id json log owner
   id=$(printf '%s\n' "$out" | extract_id)
@@ -4466,11 +4481,15 @@ test_sudo_system_start_of_home_argv_paths_uses_user_store() {
 test_home_elevated_run_alias_stays_user_local() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
   local app out id aliases
-  app=$(make_home_executable) || return 1
+  app=$(make_sleeping_home_executable) || return 1
   out=$(as_sudo_from_user "$HOLD_REAL_BIN" --system -d "$app" 2>&1) || return 1
   assert_home_system_start_is_user_local "$out" || return 1
   id=$(printf '%s\n' "$out" | extract_id)
-  as_user "$HOLD_REAL_BIN" profile save "$id" as home-elevated >/dev/null || return 1
+  as_user "$HOLD_REAL_BIN" profile save "$id" as home-elevated >/dev/null || {
+    as_sudo_from_user "$HOLD_REAL_BIN" stop "$id" >/dev/null 2>&1 || true
+    return 1
+  }
+  as_sudo_from_user "$HOLD_REAL_BIN" stop "$id" >/dev/null 2>&1 || true
   aliases="$ACTOR_HOME/.local/state/hold/aliases.json"
   root_file_exists "$aliases" || return 1
   root_grep '"home-elevated"' "$aliases" || return 1
