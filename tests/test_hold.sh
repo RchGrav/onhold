@@ -973,7 +973,7 @@ test_argument_edges() {
   grep -q -- '--privileged' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
   "$HOLD_BIN" stop -h | grep -q 'usage: hold stop' || return 1
   out=$("$HOLD_BIN" --version) || return 1
-  printf '%s\n' "$out" | grep -Eq '^(dev|[0-9a-f]{7,40}|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
+  printf '%s\n' "$out" | grep -Eq '^(dev(-[0-9a-f]{7,40}(-dirty)?)?|[0-9a-f]{7,40}|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
   set +e
   "$HOLD_BIN" -l >/dev/null 2>&1
   rc=$?
