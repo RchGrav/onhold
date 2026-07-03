@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.4
+
+### Added
+
+- The installer is now also the uninstaller: `install.sh --uninstall` (or
+  `-u`) removes the binary and the installer's PATH block, keeps hold state,
+  and hints when hold is installed at a different location. Every successful
+  install prints the exact matching uninstall one-liner.
+
 ## 0.5.3
 
 ### Changed

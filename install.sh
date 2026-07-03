@@ -20,10 +20,14 @@ die() {
 usage() {
   cat >&2 <<'EOF'
 usage: install.sh [version] [--system]
+       install.sh --uninstall [--system]
 
 Options:
-  --system    Install to /usr/local/bin, using sudo if needed.
-  -h, --help  Show this help.
+  --system         Install to (or uninstall from) /usr/local/bin, using sudo
+                   if needed.
+  -u, --uninstall  Remove the installed hold binary and the installer's PATH
+                   block. Hold state (your calls, logs, records) is kept.
+  -h, --help       Show this help.
 
 Environment:
   HOLD_VERSION         Version or tag to install.
@@ -363,10 +367,14 @@ maybe_update_profile() {
 }
 
 version_arg=
+UNINSTALL=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --system)
       INSTALL_SYSTEM=1
+      ;;
+    -u|--uninstall)
+      UNINSTALL=1
       ;;
     -h|--help)
       usage
@@ -387,24 +395,6 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-
-tag=${version_arg:-${HOLD_VERSION:-$INSTALLER_VERSION}}
-if [ "$tag" = latest ]; then
-  tag=$(latest_tag)
-  [ -n "$tag" ] || die "could not resolve latest release tag"
-else
-  tag=$(normalize_tag "$tag")
-fi
-version_no_v=${tag#v}
-
-os=$(normalize_os)
-arch=$(normalize_arch)
-libc=
-if [ "$os" = linux ]; then
-  libc=$(detect_libc)
-fi
-artifact=$(select_artifact "$version_no_v" "$os" "$arch" "$libc")
-url="$GITHUB_BASE/$REPO_OWNER/$REPO_NAME/releases/download/$tag/$artifact"
 
 if [ "${HOLD_INSTALL_DIR:-}" ] && truthy "$INSTALL_SYSTEM"; then
   die "HOLD_INSTALL_DIR cannot be combined with --system or HOLD_INSTALL_SYSTEM=1"
@@ -432,6 +422,59 @@ privilege_note=
 if [ "$use_sudo" -eq 1 ]; then
   privilege_note=" with sudo"
 fi
+
+if [ "$UNINSTALL" -eq 1 ]; then
+  [ -z "$version_arg" ] || die "--uninstall does not take a version"
+  if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+    note "hold is not installed at $target; nothing to remove"
+    for other in /usr/local/bin/hold "${HOME:-/nonexistent}/.local/bin/hold"; do
+      if [ "$other" != "$target" ] && [ -e "$other" ]; then
+        note "note: found hold at $other (rerun with --system or HOLD_INSTALL_DIR to target it)"
+      fi
+    done
+    exit 0
+  fi
+  if [ "$use_sudo" -eq 1 ]; then
+    sudo rm -f "$target"
+  else
+    rm -f "$target"
+  fi
+  note "removed $target"
+  if [ "$(current_uid)" -ne 0 ] && [ -n "${HOME:-}" ]; then
+    profile=$(profile_path)
+    marker="# hold installer"
+    if [ -f "$profile" ] && grep -Fq "$marker" "$profile"; then
+      tmp_profile="$profile.hold-uninstall.$$"
+      awk -v marker="$marker" '
+        $0 == marker { skip = 2 }
+        skip > 0 { skip--; next }
+        { print }
+      ' "$profile" >"$tmp_profile" && mv "$tmp_profile" "$profile"
+      note "removed the installer PATH block from $profile"
+    fi
+  fi
+  note "kept hold state (your calls, logs, records); remove manually if you"
+  note "really mean it: ~/.local/state/hold (user), /var/lib/hold (system)"
+  exit 0
+fi
+
+tag=${version_arg:-${HOLD_VERSION:-$INSTALLER_VERSION}}
+if [ "$tag" = latest ]; then
+  tag=$(latest_tag)
+  [ -n "$tag" ] || die "could not resolve latest release tag"
+else
+  tag=$(normalize_tag "$tag")
+fi
+version_no_v=${tag#v}
+
+os=$(normalize_os)
+arch=$(normalize_arch)
+libc=
+if [ "$os" = linux ]; then
+  libc=$(detect_libc)
+fi
+artifact=$(select_artifact "$version_no_v" "$os" "$arch" "$libc")
+url="$GITHUB_BASE/$REPO_OWNER/$REPO_NAME/releases/download/$tag/$artifact"
 
 note "hold installer"
 note "  detected: $os $arch${libc:+ $libc}"
@@ -503,6 +546,12 @@ else
   note "run now: $target on"
   note "or export: PATH=$install_dir:\$PATH"
 fi
+installer_url="$GITHUB_BASE/$REPO_OWNER/$REPO_NAME/releases/latest/download/install.sh"
+case "$install_mode" in
+  system) note "uninstall: curl -LsSf $installer_url | sh -s -- --uninstall --system" ;;
+  custom) note "uninstall: curl -LsSf $installer_url | HOLD_INSTALL_DIR=$(shell_quote "$install_dir") sh -s -- --uninstall" ;;
+  *)      note "uninstall: curl -LsSf $installer_url | sh -s -- --uninstall" ;;
+esac
 
 # Machine handoff for scripts capturing stdout; humans already saw the path.
 if [ ! -t 1 ]; then

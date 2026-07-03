@@ -86,6 +86,22 @@ curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh
 "$HOLD_BIN" --help
 ```
 
+## Uninstall
+
+The installer is also the uninstaller — add `--uninstall` (or `-u`) with the
+same mode flags the install used. Every successful install prints the exact
+matching command.
+
+```sh
+curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh -s -- --uninstall
+curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh -s -- --uninstall --system
+```
+
+This removes the binary and the installer's marked PATH block from your shell
+profile. Hold state — your calls, logs, and records — is deliberately kept
+(`~/.local/state/hold` for user calls, `/var/lib/hold` for root-managed);
+remove those directories manually only if you really mean it.
+
 ## Pinned version
 
 By default the installer uses the latest GitHub release. Pin a release when reproducibility matters:

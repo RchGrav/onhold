@@ -151,6 +151,41 @@ test_release_notes_fallback() {
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+test_installer_uninstall_round_trip() {
+  local root artifact release_dir sum install_dir fake_home
+  artifact="hold-1.2.3-linux-amd64-gnu-static.tar.gz"
+  root="$tmp/uninstall"
+  install_dir="$tmp/uninstall-bin"
+  fake_home="$tmp/uninstall-home"
+  mkdir -p "$fake_home"
+  make_fake_release "$root" "$artifact" good
+  release_dir="$root/RchGrav/hold/releases/download/v1.2.3"
+  sum="$(sha256_file "$release_dir/$artifact")"
+  printf '%s  %s\n' "$sum" "$artifact" >"$release_dir/SHA256SUMS"
+
+  # Install with profile updates on so the PATH block exists to reverse.
+  env HOLD_GITHUB_BASE="file://$root" HOLD_REPO_NAME=hold \
+    HOLD_INSTALL_TEST_OS=linux HOLD_INSTALL_TEST_ARCH=amd64 HOLD_INSTALL_TEST_LIBC=gnu \
+    HOLD_INSTALL_DIR="$install_dir" HOME="$fake_home" SHELL=/bin/bash \
+    sh ./install.sh 1.2.3 >"$tmp/uninstall-install.out" 2>"$tmp/uninstall-install.err"
+  [ -x "$install_dir/hold" ]
+  grep -q '# hold installer' "$fake_home/.bashrc"
+  # The send-off prints the exact matching uninstall command.
+  grep -q -- '--uninstall' "$tmp/uninstall-install.err"
+
+  env HOLD_INSTALL_DIR="$install_dir" HOME="$fake_home" SHELL=/bin/bash \
+    sh ./install.sh --uninstall >"$tmp/uninstall-run.out" 2>"$tmp/uninstall-run.err"
+  [ ! -e "$install_dir/hold" ]
+  ! grep -q '# hold installer' "$fake_home/.bashrc"
+  grep -q 'kept hold state' "$tmp/uninstall-run.err"
+
+  # Idempotent: a second uninstall reports and exits 0.
+  env HOLD_INSTALL_DIR="$install_dir" HOME="$fake_home" SHELL=/bin/bash \
+    sh ./install.sh -u >"$tmp/uninstall-again.out" 2>"$tmp/uninstall-again.err"
+  grep -q 'nothing to remove' "$tmp/uninstall-again.err"
+}
+
 test_installer_fail_closed
 test_package_tarball_deterministic_when_gnu_tar
 test_release_notes_fallback
+test_installer_uninstall_round_trip
