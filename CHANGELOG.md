@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2
+
+### Fixed
+
+- The installer no longer installs the same binary to the same path twice.
+  A leftover duplicate install lane from an old rename made every step run
+  and print twice (`install:`, `binary:`, `HOLD_BIN=`); the second lane is
+  gone and the output is single-lined.
+
 ## 0.5.1 - On Hold
 
 The repository is renamed to `RchGrav/onhold` to match the tool. No code

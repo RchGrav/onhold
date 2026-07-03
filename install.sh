@@ -321,11 +321,9 @@ shell_quote() {
 write_env_file() {
   env_file=$1
   hold_bin_path=$2
-  hold_bin_path=$3
-  install_dir=$4
+  install_dir=$3
   mkdir -p "$(dirname "$env_file")"
   {
-    printf 'export HOLD_BIN=%s\n' "$(shell_quote "$hold_bin_path")"
     printf 'export HOLD_BIN=%s\n' "$(shell_quote "$hold_bin_path")"
     printf 'export PATH=%s:"$PATH"\n' "$(shell_quote "$install_dir")"
   } >"$env_file"
@@ -426,7 +424,6 @@ else
   fi
 fi
 target="$install_dir/hold"
-hold_target="$install_dir/hold"
 use_sudo=0
 if [ "$install_mode" = system ] && install_needs_sudo "$install_dir"; then
   use_sudo=1
@@ -442,7 +439,6 @@ note "  version:  $tag"
 note "  artifact: $artifact"
 note "  mode:     $install_mode$privilege_note"
 note "  install:  $target"
-note "            $hold_target"
 
 if [ "${HOLD_INSTALL_DRY_RUN:-0}" = 1 ]; then
   note "dry run: no files changed"
@@ -479,25 +475,19 @@ extract="$tmp/extract"
 mkdir -p "$extract"
 tar -xzf "$archive" -C "$extract"
 bin="$extract/hold"
-hold_bin="$extract/hold"
 [ -f "$bin" ] && [ ! -L "$bin" ] || die "archive did not contain expected root hold binary"
-[ -f "$hold_bin" ] && [ ! -L "$hold_bin" ] || die "archive did not contain expected root hold binary"
 
 if [ "$use_sudo" -eq 1 ]; then
   install_binary_sudo "$bin" "$target" "$install_dir"
-  install_binary_sudo "$hold_bin" "$hold_target" "$install_dir"
 else
   install_binary_user "$bin" "$target" "$install_dir"
-  install_binary_user "$hold_bin" "$hold_target" "$install_dir"
 fi
 
 version=$("$target" --version 2>/dev/null || true)
 [ -n "$version" ] || die "installed binary did not run: $target --version"
-hold_version=$("$hold_target" --version 2>/dev/null || true)
-[ -n "$hold_version" ] || die "installed binary did not run: $hold_target --version"
 
 if [ "${HOLD_ENV_FILE:-}" ]; then
-  write_env_file "$HOLD_ENV_FILE" "$target" "$hold_target" "$install_dir"
+  write_env_file "$HOLD_ENV_FILE" "$target" "$install_dir"
   note "wrote environment handoff: $HOLD_ENV_FILE"
 fi
 
@@ -507,14 +497,12 @@ fi
 
 note "installed hold $version"
 note "binary: $target"
-note "binary: $hold_target"
 if path_contains_dir "$install_dir"; then
   note "run: hold --help"
 else
   note "current shell PATH does not include $install_dir"
-  note "run now: $hold_target --help"
+  note "run now: $target --help"
   note "or export: PATH=$install_dir:\$PATH"
 fi
 
 printf 'HOLD_BIN=%s\n' "$target"
-printf 'HOLD_BIN=%s\n' "$hold_target"
