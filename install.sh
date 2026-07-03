@@ -2,7 +2,7 @@
 set -eu
 
 REPO_OWNER="${HOLD_REPO_OWNER:-RchGrav}"
-REPO_NAME="${HOLD_REPO_NAME:-sigmund}"
+REPO_NAME="${HOLD_REPO_NAME:-onhold}"
 GITHUB_BASE="${HOLD_GITHUB_BASE:-https://github.com}"
 GITHUB_API="${HOLD_GITHUB_API:-https://api.github.com}"
 INSTALLER_VERSION="${HOLD_INSTALLER_VERSION:-latest}"

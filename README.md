@@ -22,13 +22,13 @@ hold end web                          # end it politely
 ## Install
 
 ```sh
-curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh
+curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh
 ```
 
 System-wide (installs to `/usr/local/bin` with sudo):
 
 ```sh
-curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh -s -- --system
+curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh -s -- --system
 ```
 
 Or build from source with any C11 compiler:
