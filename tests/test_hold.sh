@@ -577,7 +577,7 @@ setup_suite_actors
 require_tools
 
 extract_id() {
-  sed -n -e '/^[0-9a-f]\{12\}$/p' -e 's/^hold: id=\([0-9a-f][0-9a-f]*\).*/\1/p' | head -n1
+  sed -n -e '/^[0-9a-f]\{12\}$/p' -e '/^[0-9a-f]\{64\}$/p' -e 's/^hold: id=\([0-9a-f][0-9a-f]*\).*/\1/p' | head -n1 | cut -c1-12
 }
 
 find_prefixed_artifact() {
@@ -954,6 +954,13 @@ test_argument_edges() {
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/bare-hold.out" "$TEST_ROOT/bare-hold.err" >&2; return 1; }
+  grep -q 'USAGE' "$TEST_ROOT/bare-hold.out" || { cat "$TEST_ROOT/bare-hold.out" >&2; return 1; }
+  set +e
+  "$HOLD_BIN" prune -all >/dev/null 2>"$TEST_ROOT/prune-flag.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || return 1
+  grep -q "unknown flag '-all'" "$TEST_ROOT/prune-flag.err" || return 1
   set +e
   "$HOLD_BIN" stop >/dev/null 2>&1
   rc=$?
@@ -2623,14 +2630,14 @@ test_docker_env_persists_with_named_profile() {
   "$HOLD_BIN" profile envpersist -e HOLD_DOCKER_ENV=fromdocker -- /bin/sh -c 'printf "%s\n" "$HOLD_DOCKER_ENV"' >"$TEST_ROOT/envpersist-create.out" || return 1
   "$HOLD_BIN" profile export envpersist --json >"$TEST_ROOT/envpersist-profile.json" || return 1
   grep -Fq '"env": ["HOLD_DOCKER_ENV=fromdocker"]' "$TEST_ROOT/envpersist-profile.json" || { cat "$TEST_ROOT/envpersist-profile.json" >&2; return 1; }
-  out=$("$HOLD_BIN" run envpersist 2>&1) || return 1
+  out=$("$HOLD_BIN" run -d envpersist 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
   got=$("$HOLD_BIN" dump "$id") || return 1
   printf '%s\n' "$got" | grep -qx 'fromdocker' || return 1
 
-  out2=$("$HOLD_BIN" run envpersist 2>&1) || return 1
+  out2=$("$HOLD_BIN" run -d --force envpersist 2>&1) || return 1
   id2=$(printf '%s\n' "$out2" | extract_id)
   [ -n "$id2" ] || return 1
   sleep 0.2
@@ -2816,7 +2823,7 @@ EOF
   "$HOLD_BIN" profile envfile -e HOLD_INLINE=inline --env-file "$envfile" -- /usr/bin/env >"$TEST_ROOT/envfile-create.out" || return 1
   "$HOLD_BIN" profile export envfile --json >"$TEST_ROOT/envfile-profile.json" || return 1
   grep -Fq '"env": ["HOLD_INLINE=inline", "HOLD_ENV_FILE_ONE=alpha", "HOLD_ENV_FILE_TWO=value with spaces"]' "$TEST_ROOT/envfile-profile.json" || { cat "$TEST_ROOT/envfile-profile.json" >&2; return 1; }
-  out=$("$HOLD_BIN" run envfile 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  out=$("$HOLD_BIN" run -d envfile 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   sleep 0.2
@@ -2861,7 +2868,7 @@ test_docker_rm_removes_profile_run_artifacts_after_exit() {
 test_captive_profile_env_persists_and_runs() {
   local out id got store
   store="$HOME/.local/state/hold"
-  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-env.out" 2>"$TEST_ROOT/captive-env.err" || { cat "$TEST_ROOT/captive-env.out" "$TEST_ROOT/captive-env.err" >&2; return 1; }
+  cat <<'EOF' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-env.out" 2>"$TEST_ROOT/captive-env.err" || { cat "$TEST_ROOT/captive-env.out" "$TEST_ROOT/captive-env.err" >&2; return 1; }
 enable
 configure terminal
 profile envcap
@@ -2886,12 +2893,12 @@ test_captive_profile_loads_existing_recipe_for_edit() {
   local out id edit_id got store
   store="$HOME/.local/state/hold"
   "$HOLD_BIN" profile iosedit -e HOLD_OLD_ENV=old -- /usr/bin/env >"$TEST_ROOT/iosedit-create.out" || return 1
-  out=$("$HOLD_BIN" run iosedit 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  out=$("$HOLD_BIN" run -d iosedit 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   sleep 0.2
 
-  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-edit-existing.out" 2>"$TEST_ROOT/captive-edit-existing.err" || { cat "$TEST_ROOT/captive-edit-existing.out" "$TEST_ROOT/captive-edit-existing.err" >&2; return 1; }
+  cat <<'EOF' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-edit-existing.out" 2>"$TEST_ROOT/captive-edit-existing.err" || { cat "$TEST_ROOT/captive-edit-existing.out" "$TEST_ROOT/captive-edit-existing.err" >&2; return 1; }
 enable
 configure terminal
 profile iosedit
@@ -2922,7 +2929,7 @@ test_captive_profile_publish_volume_rejected() {
   local rc
 
   set +e
-  cat <<EOF | "$HOLD_BIN" >"$TEST_ROOT/captive-meta-reject.out" 2>"$TEST_ROOT/captive-meta-reject.err"
+  cat <<EOF | "$HOLD_BIN" cli >"$TEST_ROOT/captive-meta-reject.out" 2>"$TEST_ROOT/captive-meta-reject.err"
 enable
 configure terminal
 profile iosmeta
@@ -2956,7 +2963,7 @@ test_captive_profile_capability_metadata_preserves_edits_and_clears() {
   local rc
 
   set +e
-  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-cap-set.out" 2>"$TEST_ROOT/captive-cap-set.err"
+  cat <<'EOF' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-cap-set.out" 2>"$TEST_ROOT/captive-cap-set.err"
 enable
 configure terminal
 profile ioscap
@@ -2986,7 +2993,7 @@ if profile.get('cap_drop') != ['ALL']:
 PY
 
   set +e
-  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-cap-clear.out" 2>"$TEST_ROOT/captive-cap-clear.err"
+  cat <<'EOF' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-cap-clear.out" 2>"$TEST_ROOT/captive-cap-clear.err"
 enable
 configure terminal
 profile ioscap
@@ -3028,7 +3035,7 @@ test_captive_profile_restart_metadata_preserves_edits_and_clears() {
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   "$HOLD_BIN" stop "$id" >/dev/null 2>&1 || true
 
-  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-restart-preserve.out" 2>"$TEST_ROOT/captive-restart-preserve.err" || { cat "$TEST_ROOT/captive-restart-preserve.out" "$TEST_ROOT/captive-restart-preserve.err" >&2; return 1; }
+  cat <<'EOF' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-restart-preserve.out" 2>"$TEST_ROOT/captive-restart-preserve.err" || { cat "$TEST_ROOT/captive-restart-preserve.out" "$TEST_ROOT/captive-restart-preserve.err" >&2; return 1; }
 enable
 configure terminal
 profile iosrestart
@@ -3054,7 +3061,7 @@ if 'HOLD_CISCO_TOUCHED=yes' not in profile.get('env', []):
     raise SystemExit(f"env edit missing after commit: {profile.get('env')!r}")
 PY
 
-  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-restart-edit.out" 2>"$TEST_ROOT/captive-restart-edit.err" || { cat "$TEST_ROOT/captive-restart-edit.out" "$TEST_ROOT/captive-restart-edit.err" >&2; return 1; }
+  cat <<'EOF' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-restart-edit.out" 2>"$TEST_ROOT/captive-restart-edit.err" || { cat "$TEST_ROOT/captive-restart-edit.out" "$TEST_ROOT/captive-restart-edit.err" >&2; return 1; }
 enable
 configure terminal
 profile iosrestart
@@ -3074,7 +3081,7 @@ if profile.get('restart_delay_seconds') != 4:
     raise SystemExit(f"restart delay not edited: {profile.get('restart_delay_seconds')!r}")
 PY
 
-  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-restart-clear.out" 2>"$TEST_ROOT/captive-restart-clear.err"
+  cat <<'EOF' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-restart-clear.out" 2>"$TEST_ROOT/captive-restart-clear.err"
 enable
 configure terminal
 profile iosrestart
@@ -3099,7 +3106,7 @@ test_captive_profile_quoted_argv_and_env_round_trip() {
   local rc id got store
   store="$HOME/.local/state/hold"
   set +e
-  cat <<'EOF' | "$HOLD_BIN" >"$TEST_ROOT/captive-quoted.out" 2>"$TEST_ROOT/captive-quoted.err"
+  cat <<'EOF' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-quoted.out" 2>"$TEST_ROOT/captive-quoted.err"
 enable
 configure terminal
 profile quoted
@@ -4621,15 +4628,19 @@ test_docker_run_foreground_follows_output_by_default() {
     cat "$TEST_ROOT/docker-foreground.err" >&2
     return 1
   }
-  id=$(printf '%s\n' "$out" | extract_id)
-  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   grep -q '^docker-foreground-ok$' <<<"$out" || { printf '%s\n' "$out" >&2; return 1; }
+  # Docker parity: foreground run prints only the process output, no id line.
+  if grep -Eq '^[0-9a-f]{12}$|^[0-9a-f]{64}$' <<<"$out"; then
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
 
   out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo docker-detached-hidden; sleep 0.1' 2>"$TEST_ROOT/docker-detached.err") || {
     cat "$TEST_ROOT/docker-detached.err" >&2
     return 1
   }
-  id=$(printf '%s\n' "$out" | extract_id)
+  # Docker parity: detach prints the full 64-hex id alone.
+  id=$(printf '%s\n' "$out" | sed -n '/^[0-9a-f]\{64\}$/p')
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   if grep -q '^docker-detached-hidden$' <<<"$out"; then
     printf '%s\n' "$out" >&2
@@ -4859,8 +4870,6 @@ test_docker_interactive_stdin_pipes_to_child() {
     cat "$TEST_ROOT/docker-i.err" >&2
     return 1
   }
-  id=$(printf '%s\n' "$out" | extract_id)
-  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   grep -q '^stdin-i-ok$' <<<"$out" || { printf '%s\n' "$out" >&2; return 1; }
 
   out=$(printf 'stdin-no-i\n' | "$HOLD_BIN" run -f -- /bin/cat 2>"$TEST_ROOT/docker-no-i.err") || {
@@ -4900,8 +4909,9 @@ PY
   set -e
   [ "$rc" -eq 0 ] || { echo "run -it rc=$rc" >&2; cat "$TEST_ROOT/docker-tty.out" "$TEST_ROOT/docker-tty.err" >&2; return 1; }
   grep -q 'tty:hello-tty' "$TEST_ROOT/docker-tty.out" || { cat "$TEST_ROOT/docker-tty.out" >&2; return 1; }
-  id=$(tr -d '\r' <"$TEST_ROOT/docker-tty.out" | extract_id)
-  [ -n "$id" ] || { cat "$TEST_ROOT/docker-tty.out" >&2; return 1; }
+  # Docker parity: foreground -it prints no id; the detached run is found via listing.
+  id=$("$HOLD_BIN" list | awk '/docker-tty-child/ {print $1; exit}')
+  [ -n "$id" ] || { "$HOLD_BIN" list >&2; return 1; }
   record=$(record_path "$id") || { find "$HOME/.local/state/hold" -maxdepth 1 -type f -print >&2 || true; return 1; }
   grep -q '"console_sock": "' "$record" || { cat "$record" >&2; return 1; }
   "$HOLD_BIN" ps >"$TEST_ROOT/docker-tty-ps.out" || return 1
@@ -4935,8 +4945,9 @@ PY
   [ "$rc" -eq 0 ] || { echo "run -it custom detach rc=$rc" >&2; cat "$TEST_ROOT/docker-tty-custom.out" "$TEST_ROOT/docker-tty-custom.err" >&2; return 1; }
   grep -q 'custom-ready' "$TEST_ROOT/docker-tty-custom.out" || { cat "$TEST_ROOT/docker-tty-custom.out" >&2; return 1; }
   ! grep -q 'custom-line:' "$TEST_ROOT/docker-tty-custom.out" || { cat "$TEST_ROOT/docker-tty-custom.out" >&2; return 1; }
-  id=$(tr -d '\r' <"$TEST_ROOT/docker-tty-custom.out" | extract_id)
-  [ -n "$id" ] || { cat "$TEST_ROOT/docker-tty-custom.out" >&2; return 1; }
+  # Docker parity: foreground -it prints no id; the detached run is found via listing.
+  id=$("$HOLD_BIN" list | awk '/docker-tty-custom-child/ {print $1; exit}')
+  [ -n "$id" ] || { "$HOLD_BIN" list >&2; return 1; }
   "$HOLD_BIN" ps >"$TEST_ROOT/docker-tty-custom-ps.out" || return 1
   grep -Eq "^$id[[:space:]]+-[[:space:]].*Up " "$TEST_ROOT/docker-tty-custom-ps.out" || { cat "$TEST_ROOT/docker-tty-custom-ps.out" >&2; return 1; }
   "$HOLD_BIN" stop "$id" >/dev/null || return 1
@@ -5159,7 +5170,7 @@ test_captive_cli_cisco_prompts_and_profile_commit() {
   local rc id
   set +e
   python3 -c 'import sys,time; sys.stdout.write("?\nenable\nconfigure ?\nconfigure terminal\nprofile web\nbinary /usr/bin/sleep\nargv 30\ninfo\ncommit\nend\nshow profiles\nexit\n"); sys.stdout.flush(); time.sleep(0.1)' |
-    script -qfec "$HOLD_BIN" /dev/null >"$TEST_ROOT/captive-cli.out" 2>"$TEST_ROOT/captive-cli.err"
+    script -qfec "$HOLD_BIN cli" /dev/null >"$TEST_ROOT/captive-cli.out" 2>"$TEST_ROOT/captive-cli.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-cli.out" "$TEST_ROOT/captive-cli.err" >&2; return 1; }
@@ -5177,7 +5188,7 @@ test_captive_cli_noninteractive_transcript_is_script_safe() {
   local rc id
   set +e
   printf 'enable\nconfigure terminal\nprofile batch\nbinary /usr/bin/sleep\nargv 30\ncommit\nend\nrun batch\nexit\n' |
-    "$HOLD_BIN" >"$TEST_ROOT/captive-batch.out" 2>"$TEST_ROOT/captive-batch.err"
+    "$HOLD_BIN" cli >"$TEST_ROOT/captive-batch.out" 2>"$TEST_ROOT/captive-batch.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-batch.out" "$TEST_ROOT/captive-batch.err" >&2; return 1; }
@@ -5193,7 +5204,7 @@ test_captive_cli_profile_mode_flags_commit_and_clear() {
   local rc
   set +e
   printf 'enable\nconfigure terminal\nprofile iosmode\nbinary /usr/bin/sleep\nargv 30\ninteractive\ntty\ndetach\nmulti\ninfo\ncommit\nend\nexit\n' |
-    "$HOLD_BIN" >"$TEST_ROOT/captive-mode-set.out" 2>"$TEST_ROOT/captive-mode-set.err"
+    "$HOLD_BIN" cli >"$TEST_ROOT/captive-mode-set.out" 2>"$TEST_ROOT/captive-mode-set.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-mode-set.out" "$TEST_ROOT/captive-mode-set.err" >&2; return 1; }
@@ -5227,7 +5238,7 @@ PY
 
   set +e
   printf 'enable\nconfigure terminal\nprofile iosmode\nno interactive\nno console\nno detach\nno multi\ninfo\ncommit\nend\nexit\n' |
-    "$HOLD_BIN" >"$TEST_ROOT/captive-mode-clear.out" 2>"$TEST_ROOT/captive-mode-clear.err"
+    "$HOLD_BIN" cli >"$TEST_ROOT/captive-mode-clear.out" 2>"$TEST_ROOT/captive-mode-clear.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-mode-clear.out" "$TEST_ROOT/captive-mode-clear.err" >&2; return 1; }
@@ -5259,7 +5270,7 @@ commit
 end
 exit
 ' |
-    "$HOLD_BIN" >"$TEST_ROOT/captive-logdest-set.out" 2>"$TEST_ROOT/captive-logdest-set.err"
+    "$HOLD_BIN" cli >"$TEST_ROOT/captive-logdest-set.out" 2>"$TEST_ROOT/captive-logdest-set.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-logdest-set.out" "$TEST_ROOT/captive-logdest-set.err" >&2; return 1; }
@@ -5288,7 +5299,7 @@ commit
 end
 exit
 ' |
-    "$HOLD_BIN" >"$TEST_ROOT/captive-logdest-clear.out" 2>"$TEST_ROOT/captive-logdest-clear.err"
+    "$HOLD_BIN" cli >"$TEST_ROOT/captive-logdest-clear.out" 2>"$TEST_ROOT/captive-logdest-clear.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-logdest-clear.out" "$TEST_ROOT/captive-logdest-clear.err" >&2; return 1; }
@@ -5335,7 +5346,7 @@ write
 disable
 exit
 ' |
-    "$HOLD_BIN" >"$TEST_ROOT/captive-ios-help.out" 2>"$TEST_ROOT/captive-ios-help.err"
+    "$HOLD_BIN" cli >"$TEST_ROOT/captive-ios-help.out" 2>"$TEST_ROOT/captive-ios-help.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-ios-help.out" "$TEST_ROOT/captive-ios-help.err" >&2; return 1; }
@@ -5376,7 +5387,7 @@ inspect ops
 prune ops
 exit
 ' |
-    "$HOLD_BIN" >"$TEST_ROOT/captive-ios-ops.out" 2>"$TEST_ROOT/captive-ios-ops.err"
+    "$HOLD_BIN" cli >"$TEST_ROOT/captive-ios-ops.out" 2>"$TEST_ROOT/captive-ios-ops.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-ios-ops.out" "$TEST_ROOT/captive-ios-ops.err" >&2; return 1; }
@@ -5389,7 +5400,7 @@ exit
 test_captive_cli_rejects_ping_pseudo_command() {
   local rc
   set +e
-  printf 'ping target\nexit\n' | "$HOLD_BIN" >"$TEST_ROOT/captive-ping.out" 2>"$TEST_ROOT/captive-ping.err"
+  printf 'ping target\nexit\n' | "$HOLD_BIN" cli >"$TEST_ROOT/captive-ping.out" 2>"$TEST_ROOT/captive-ping.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { cat "$TEST_ROOT/captive-ping.out" "$TEST_ROOT/captive-ping.err" >&2; return 1; }
@@ -5416,7 +5427,7 @@ out.write(b"commit\nend\nrun inputedit\nlogs inputedit --plain\nprune inputedit\
 out.flush()
 time.sleep(0.2)
 PYINPUT
-    script -qfec "stty -echo rows 24 cols 120; $HOLD_BIN" /dev/null >"$TEST_ROOT/captive-input-edit.out" 2>"$TEST_ROOT/captive-input-edit.err"
+    script -qfec "stty -echo rows 24 cols 120; $HOLD_BIN cli" /dev/null >"$TEST_ROOT/captive-input-edit.out" 2>"$TEST_ROOT/captive-input-edit.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/captive-input-edit.out" "$TEST_ROOT/captive-input-edit.err" >&2; return 1; }
@@ -6018,14 +6029,14 @@ SH
 echo literal-h-command
 SH
   chmod +x "$TEST_ROOT/literal-help-bin/--help" "$TEST_ROOT/literal-help-bin/-h" || return 1
-  out=$(PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" run -- --help 2>&1) || return 1
+  out=$(PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" run -d -- --help 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   sleep 0.3
   PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" dump "$id" >"$TEST_ROOT/literal-help-command.out" || return 1
   grep -q 'literal-help-command' "$TEST_ROOT/literal-help-command.out" || { cat "$TEST_ROOT/literal-help-command.out" >&2; return 1; }
 
-  out=$(PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" run -- -h 2>&1) || return 1
+  out=$(PATH="$TEST_ROOT/literal-help-bin:$PATH" "$HOLD_BIN" run -d -- -h 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   sleep 0.3
@@ -6120,7 +6131,7 @@ test_multi_n_exact_count_and_invalid() {
   id2=$("$HOLD_BIN" run -d --force web-n 2>&1 | extract_id); [ -n "$id2" ] || return 1
   [ "$id2" != "$id" ] || { echo "run --force reused the original id" >&2; return 1; }
   "$HOLD_BIN" stop web-n --all >/dev/null 2>&1 || true
-  ids=$("$HOLD_BIN" run -d --multi 2 web-n 2>/dev/null | sed -n '/^[0-9a-f]\{12\}$/p')
+  ids=$("$HOLD_BIN" run -d --multi 2 web-n 2>/dev/null | sed -n '/^[0-9a-f]\{64\}$/p')
   [ "$(printf '%s\n' "$ids" | grep -c .)" -eq 2 ] || { echo "run --multi 2 did not print 2 ids" >&2; return 1; }
   "$HOLD_BIN" stop web-n --all >/dev/null 2>&1 || true
   set +e; "$HOLD_BIN" start web-n --multi >/dev/null 2>"$TEST_ROOT/mm.err"; rc=$?; set -e

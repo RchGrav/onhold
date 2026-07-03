@@ -153,16 +153,17 @@ should be passed directly as absolute arguments/configuration.
 PTY-backed runs can be detached and reattached:
 
 ```sh
-id="$(hold run -it -- bash)"
+id="$(hold run -d -it -- bash)"
 hold console "$id"
 ```
 
 Press `Ctrl-P Ctrl-Q` to detach without stopping the run.
 
-Running `hold` with no arguments opens the captive CLI, an operator-style
-namespace editor for profiles, runs, logs, and privileged mode. It is inspired by
-network-device configuration shells for discoverability and constrained editing;
-it is not a networking shell.
+Running `hold` with no arguments prints help, exactly like `docker`. The
+captive CLI — an operator-style namespace editor for profiles, runs, logs, and
+privileged mode — opens with `hold cli`. It is inspired by network-device
+configuration shells for discoverability and constrained editing; it is not a
+networking shell.
 
 ## Safety model
 

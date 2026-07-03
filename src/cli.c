@@ -39,6 +39,8 @@ static const struct hold_cli_command_spec command_specs[] = {
     {"dump", 1, 1, 0, "usage: hold dump <target>", "dump"},
     {"__view", 1, -1, 0, "usage: hold __view <target> [internal viewer test options]", "__view"},
     {"console", 1, 1, 0, "usage: hold console <target>", "console"},
+    {"attach", 1, 1, 0, "usage: hold attach <target>", "attach"},
+    {"commit", 2, 2, 0, "usage: hold commit <runid> <profile>", "commit"},
     {"prune", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold prune [target|all] [--all]", "prune"},
     {"rm", 1, 1, 0, "usage: hold rm [--force] <inactive-runid|profile>", "rm"},
     {"profiles", 0, 1, 0, "usage: hold profiles [-v]", "profiles"},
@@ -49,6 +51,7 @@ static const struct hold_cli_command_spec command_specs[] = {
     {"clean", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold clean [target|all]", "clean"},
     {"doctor", 0, 0, 0, "usage: hold doctor", "doctor"},
     {"shell", 0, 0, 0, "usage: hold shell", "shell"},
+    {"cli", 0, 0, 0, "usage: hold cli", "cli"},
     {"grant", 2, 4, 0, "usage: hold grant [--secure|--force] <profile> <user> [start,stop,kill,tail,dump,prune,console]", "grant"},
     {"revoke", 2, 3, 0, "usage: hold revoke <profile> <user> [start,stop,kill,tail,dump,prune,console]", "revoke"},
     {"help", 0, 1, 0, "usage: hold help [topic]", "help"},
@@ -204,6 +207,12 @@ static int help_action(const char *action) {
         }
     } else if (!strcmp(action, "console")) {
         printf("usage: hold console <target>\n\nAttach to a running console-enabled run. Shell examples should prefer Docker-shaped `hold run -it <profile>` or `hold -it <cmd>`.\n");
+    } else if (!strcmp(action, "attach")) {
+        printf("usage: hold attach <target>\n\nAttach your terminal to a running console/TTY run (Docker-style). Detach again with Ctrl-P Ctrl-Q. Start attachable runs with `hold run -it <cmd|profile>`.\n");
+    } else if (!strcmp(action, "commit")) {
+        printf("usage: hold commit <runid> <profile>\n\nSave a run's recorded recipe as a reusable profile, like `docker commit`. Equivalent to `hold profile save <runid> as <profile>`.\n");
+    } else if (!strcmp(action, "cli")) {
+        printf("usage: hold cli\n\nOpen the Cisco IOS-style captive CLI for constrained profile and grant editing.\n");
     } else if (!strcmp(action, "dump")) {
         printf("usage: hold logs <target> --plain\n\nThe public 0.4 log-text command is `hold logs <target> --plain`; structured details are `hold inspect <target>`.\n");
     } else if (!strcmp(action, "__view")) {

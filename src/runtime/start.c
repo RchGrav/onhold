@@ -87,7 +87,7 @@ static int restart_existing_run(const struct hold_invocation *inv,
                                 const char *restart_policy,
                                 int restart_delay_seconds,
                                 const char *id);
-static int generate_run_name_for_id(const struct hold_store *store, const char *id, const char *requested, char out[ALIAS_MAX_LEN + 1]);
+
 static int reserve_hashed_run_id(const struct hold_store *store,
                                  const char *profile_alias,
                                  const char *resolved_exec_path,
@@ -377,7 +377,7 @@ out:
     return rc;
 }
 
-static int generate_run_name_for_id(const struct hold_store *store, const char *id, const char *requested, char out[ALIAS_MAX_LEN + 1]) {
+int hold_generate_run_name_for_id(const struct hold_store *store, const char *id, const char *requested, char out[ALIAS_MAX_LEN + 1]) {
     if (requested && *requested) {
         if (!hold_valid_alias(requested)) {
             fprintf(stderr, "hold: error: invalid run name '%s'\n", requested);
@@ -1219,7 +1219,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
             free_launch_and_observed_argv(launch_argv, observed_argv, argc);
             hold_die_errno("hold: failed to generate id");
         }
-        int name_rc = generate_run_name_for_id(store, id, requested_run_name, run_name);
+        int name_rc = hold_generate_run_name_for_id(store, id, requested_run_name, run_name);
         if (name_rc != 0) {
             if (hold_checked_snprintf(reserve_path, sizeof(reserve_path), "%s/.%s.reserve", store->record_dir, id) == 0) {
                 unlink_if_nonempty(reserve_path);
@@ -1810,21 +1810,28 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         }
         char display_id[ID_DISPLAY_HEX_LEN + 1];
         hold_run_id_display(r.id, display_id);
-        printf("%s\n", display_id);
-        hold_sig_note(inv,
-                 "hold  started  %s   %s\n"
-                 "         log      %s\n"
-                 "         tail     hold tail %s\n"
-                 "%s%s%s"
-                 "         stop     hold stop %s\n",
-                 display_id,
-                 r.cmdline[0] ? r.cmdline : "?",
-                 r.log_path,
-                 display_id,
-                 r.has_console ? "         console  hold console " : "",
-                 r.has_console ? display_id : "",
-                 r.has_console ? "\n" : "",
-                 display_id);
+        if (inv->docker_run) {
+            /* Docker parity: detach prints the full ID alone; foreground prints nothing. */
+            if (!tail) {
+                printf("%s\n", r.id);
+            }
+        } else {
+            printf("%s\n", display_id);
+            hold_sig_note(inv,
+                     "hold  started  %s   %s\n"
+                     "         log      %s\n"
+                     "         tail     hold tail %s\n"
+                     "%s%s%s"
+                     "         stop     hold stop %s\n",
+                     display_id,
+                     r.cmdline[0] ? r.cmdline : "?",
+                     r.log_path,
+                     display_id,
+                     r.has_console ? "         console  hold console " : "",
+                     r.has_console ? display_id : "",
+                     r.has_console ? "\n" : "",
+                     display_id);
+        }
         fflush(stdout);
 
         if (tail) {

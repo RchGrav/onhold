@@ -611,19 +611,9 @@ static int parse_run_options(int argc,
 
 int hold_cli_main(int argc, char **argv) {
     if (argc < 2) {
-        struct hold_invocation inv;
-        if (hold_detect_invocation(&inv, false, false) != 0) {
-            hold_die_errno("hold: failed to resolve invocation context");
-        }
-        struct hold_store user_store, system_store;
-        memset(&user_store, 0, sizeof(user_store));
-        if (hold_init_system_store(&system_store) != 0) {
-            hold_die_errno("hold: failed to resolve system storage");
-        }
-        if (!inv.euid_root && hold_ensure_user_store_for_current_user(&user_store) != 0) {
-            hold_die_errno("hold: failed to init user storage");
-        }
-        return hold_cmd_captive_action(&inv, inv.euid_root ? &system_store : &user_store, &system_store, argv[0]);
+        /* Docker parity: bare invocation prints help. The captive CLI is `hold cli`. */
+        hold_usage();
+        return 0;
     }
 
     int argi = 1;
@@ -716,7 +706,8 @@ int hold_cli_main(int argc, char **argv) {
                 all = true;
                 continue;
             }
-            if (!literal_owned_arg && !strcmp(command, "ps") && !strcmp(argv[i], "-a")) {
+            if (!literal_owned_arg && !strcmp(argv[i], "-a") &&
+                (!strcmp(command, "ps") || !strcmp(command, "prune") || !strcmp(command, "clean"))) {
                 all = true;
                 continue;
             }
@@ -858,6 +849,7 @@ int hold_cli_main(int argc, char **argv) {
         hold_die_errno("hold: failed to resolve invocation context");
     }
     inv.quiet = quiet;
+    inv.docker_run = owned && !strcmp(command, "run");
     bool run_tail_implicit = false;
     if ((owned && !strcmp(command, "run")) && !run.detach && (!console_mode || run.tty)) {
         if (!tail) {
@@ -880,6 +872,9 @@ int hold_cli_main(int argc, char **argv) {
     bool docker_ps_command = owned && !strcmp(command, "ps");
     if (owned && !strcmp(command, "logs")) {
         command = "__view";
+    }
+    if (owned && !strcmp(command, "attach")) {
+        command = "console";
     }
     if (docker_ps_command) command = "list";
     if (owned && !strcmp(command, "status")) command = "list";
@@ -960,7 +955,7 @@ int hold_cli_main(int argc, char **argv) {
                                                !strcmp(command, "__view") || !strcmp(command, "prune") ||
                                                !strcmp(command, "console") || !strcmp(command, "profile") ||
                                                !strcmp(command, "show") || !strcmp(command, "rm") ||
-                                               !strcmp(command, "shell")))) {
+                                               !strcmp(command, "commit") || !strcmp(command, "shell")))) {
         if (!inv.euid_root) {
             if (hold_ensure_user_store_for_current_user(&user_store) != 0) {
                 hold_die_errno("hold: failed to init user storage");
@@ -1070,6 +1065,19 @@ int hold_cli_main(int argc, char **argv) {
 
     if (owned && !strcmp(command, "shell")) {
         int rc = hold_cmd_shell_action(&inv, inv.euid_root ? &system_store : &user_store);
+        free(cmd_argv);
+        return rc;
+    }
+
+    if (owned && !strcmp(command, "cli")) {
+        int rc = hold_cmd_captive_action(&inv, inv.euid_root ? &system_store : &user_store, &system_store, argv[0]);
+        free(cmd_argv);
+        return rc;
+    }
+
+    if (owned && !strcmp(command, "commit")) {
+        /* Docker parity: commit turns a run into a profile, like container -> image. */
+        int rc = hold_cmd_alias_action(&inv, &user_store, &system_store, argv[0], cmd_argc, cmd_argv);
         free(cmd_argv);
         return rc;
     }
@@ -1717,6 +1725,12 @@ int hold_cli_main(int argc, char **argv) {
     }
     if (!strcmp(command, "prune")) {
         const char *target = cmd_argc > 0 ? cmd_argv[0] : NULL;
+        if (target && target[0] == '-') {
+            fprintf(stderr, "hold: error: unknown flag '%s'\n", target);
+            print_command_usage_stderr("prune");
+            free(cmd_argv);
+            return 1;
+        }
         int rc = hold_cmd_prune_action(&inv, &user_store, &system_store, argv[0], target, all);
         free(cmd_argv);
         return rc;

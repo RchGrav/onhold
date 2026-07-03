@@ -631,14 +631,13 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
     if (removed_count) {
         *removed_count = 0;
     }
-    DIR *d = opendir(store->record_dir);
-    if (!d) {
-        return 0;
-    }
     char boot[128] = {0};
     bool have_boot = hold_current_boot_id(boot, sizeof(boot));
-
     const struct dirent *e;
+    DIR *d = opendir(store->record_dir);
+    if (!d) {
+        goto sweep_logs;
+    }
     while ((e = readdir(d))) {
         char file_id[ID_HEX_LEN + 1];
         if (!hold_record_json_filename_id(e->d_name, file_id, sizeof(file_id))) {
@@ -676,9 +675,10 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
     }
     closedir(d);
 
+sweep_logs:
     d = opendir(store->log_dir);
     if (!d) {
-        return 0;
+        goto sweep_consoles;
     }
     while ((e = readdir(d))) {
         if (!hold_has_suffix(e->d_name, ".log")) {
@@ -714,9 +714,11 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
         }
     }
     closedir(d);
+
+sweep_consoles:
     d = opendir(store->console_dir);
     if (!d) {
-        return 0;
+        goto sweep_public;
     }
     while ((e = readdir(d))) {
         if (!hold_has_suffix(e->d_name, ".sock")) {
@@ -749,6 +751,44 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
         }
     }
     closedir(d);
+
+sweep_public:
+    d = opendir(store->public_dir);
+    if (!d) {
+        return 0;
+    }
+    while ((e = readdir(d))) {
+        if (!hold_has_suffix(e->d_name, ".json")) {
+            continue;
+        }
+        size_t len = strlen(e->d_name);
+        if (len <= 5) {
+            continue;
+        }
+        char id[ID_STR_LEN];
+        size_t id_len = len - 5;
+        if (id_len >= sizeof(id)) {
+            continue;
+        }
+        memcpy(id, e->d_name, id_len);
+        id[id_len] = '\0';
+        if (!hold_valid_id(id)) {
+            continue;
+        }
+        char json_path[HOLD_PATH_MAX], public_path[HOLD_PATH_MAX];
+        if (hold_checked_snprintf(json_path, sizeof(json_path), "%s/%s.json", store->record_dir, id) != 0 ||
+            hold_checked_snprintf(public_path, sizeof(public_path), "%s/%s", store->public_dir, e->d_name) != 0) {
+            continue;
+        }
+        /* A public index entry whose record is gone is an orphan; ps must not resurrect it. */
+        if (access(json_path, F_OK) != 0) {
+            unlink(public_path);
+            if (removed_count) {
+                (*removed_count)++;
+            }
+        }
+    }
+    closedir(d);
     return 0;
 }
 
@@ -761,7 +801,8 @@ int hold_cmd_prune_action(const struct hold_invocation *inv,
     if (!target_token || strcmp(target_token, "all") == 0) {
         const struct hold_store *store = inv->euid_root ? system_store : user_store;
         int removed = 0;
-        int rc = cmd_prune_store_all(store, target_token && strcmp(target_token, "all") == 0, &removed);
+        bool include_stale = all || (target_token && strcmp(target_token, "all") == 0);
+        int rc = cmd_prune_store_all(store, include_stale, &removed);
         if (rc == 0) {
             if (removed > 0) {
                 hold_sig_note(inv, "hold: pruned %d past run%s\n", removed, removed == 1 ? "" : "s");

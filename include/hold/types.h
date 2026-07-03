@@ -112,6 +112,7 @@ struct hold_invocation {
     bool requested_system;
     bool elevated;
     bool quiet;
+    bool docker_run; /* invoked via the Docker-shaped `run` verb: Docker-exact output */
     bool have_sudo_user;
     uid_t invoking_uid;
     gid_t invoking_gid;
