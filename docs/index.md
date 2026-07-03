@@ -30,7 +30,7 @@ notes, and documentation for removed subsystems live in
 - [Store](store.md): user-local and root-managed state layout.
 - [Identity](identity.md): validation before signaling.
 - [Console](console.md): PTY-backed calls, attach/detach, adoption.
-- [Implementation spec](SPEC.md): pending refresh to the hold-on surface.
+- [Implementation invariants](SPEC.md): the on-disk contract everything relies on.
 - [CI parity](CI-PARITY.md): keeping local checks equal to CI.
 
 ## Future work
