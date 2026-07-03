@@ -22,7 +22,7 @@ notes, and documentation for removed subsystems live in
 | --- | --- |
 | Install Hold | [Installing Hold](install.md) |
 | Learn the workflow | [Repository README](../README.md) |
-| Understand security posture | [Security review notes](security-review-2026-06-28.md) |
+| Understand security posture | [Security review notes](archive/security-review-2026-06-28.md) |
 
 ## Technical references
 
