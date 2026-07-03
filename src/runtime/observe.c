@@ -19,6 +19,7 @@ void hold_port_list_free(struct hold_port_list *list) {
     list->count = 0;
 }
 
+#if defined(__linux__)
 static int port_list_add(struct hold_port_list *list, const char *entry) {
     if (!entry || !*entry) {
         return 0;
@@ -41,7 +42,6 @@ static int port_list_add(struct hold_port_list *list, const char *entry) {
     return 0;
 }
 
-#if defined(__linux__)
 int hold_proc_read_ids(pid_t pid, pid_t *pgid_out, pid_t *sid_out, char *state_out) {
     char path[128], buf[4096];
     if (hold_checked_snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid) != 0) {

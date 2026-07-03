@@ -15,7 +15,7 @@ if [ "$snapshot_version" != "dev" ]; then
   printf 'source snapshot resolver mismatch: got %s want dev\n' "$snapshot_version" >&2
   exit 1
 fi
-snapshot_make="$(cd "$snapshot" && make -s --no-print-directory print-version)"
+snapshot_make="$(cd "$snapshot" && env -u GITHUB_SHA -u GITHUB_REF_TYPE -u GITHUB_REF_NAME make -s --no-print-directory print-version)"
 if [ "$snapshot_make" != "dev" ]; then
   printf 'source snapshot Makefile version mismatch: got %s want dev\n' "$snapshot_make" >&2
   exit 1
