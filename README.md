@@ -19,6 +19,26 @@ hold attach web                       # pick the call back up
 hold end web                          # end it politely
 ```
 
+## Install
+
+```sh
+curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh
+```
+
+System-wide (installs to `/usr/local/bin` with sudo):
+
+```sh
+curl -LsSf https://github.com/RchGrav/sigmund/releases/latest/download/install.sh | sh -s -- --system
+```
+
+Or build from source with any C11 compiler:
+
+```sh
+make && ./hold --help
+```
+
+Details, checksums, and offline installs: [docs/install.md](docs/install.md).
+
 Hold does **not** create containers. It does not isolate filesystems, publish
 ports, mount volumes, or pretend a host process has Docker networking. It
 manages ordinary host processes and tells the truth about them. Where the
