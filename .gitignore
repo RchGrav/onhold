@@ -91,3 +91,7 @@ CURSOR.md
 EXAMPLES.md
 .cursor/
 skills/
+
+# claude-mem plugin context files (machine-local, not project content)
+CLAUDE.md
+**/CLAUDE.md
