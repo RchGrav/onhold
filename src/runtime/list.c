@@ -309,7 +309,18 @@ static int collect_list_public(const struct hold_store *store,
         row.redacted = true;
         row.start_unix_ns = 0;
         snprintf(row.ports, sizeof(row.ports), "%s", pi.observed_ports);
-        snprintf(row.status, sizeof(row.status), "%s", pi.state_hint[0] ? pi.state_hint : "Unknown");
+        /* Projected rows speak the table's Docker phrasing too: "Up <age>"
+         * from the published start time when the hint says running. */
+        int64_t started_ns = 0;
+        if (running && pi.started_at[0] && hold_parse_rfc3339_utc_to_ns(pi.started_at, &started_ns)) {
+            char up_human[48];
+            hold_format_duration_human(seconds_since(started_ns), up_human, sizeof(up_human));
+            snprintf(row.status, sizeof(row.status), "Up %s", up_human);
+        } else if (running) {
+            snprintf(row.status, sizeof(row.status), "Up");
+        } else {
+            snprintf(row.status, sizeof(row.status), "%s", pi.state_hint[0] ? pi.state_hint : "Unknown");
+        }
         /* The table never shows a raw ISO stamp: humanize the public index's
          * created_at, falling back to "-" when unparseable. */
         int64_t created_at_ns = 0;

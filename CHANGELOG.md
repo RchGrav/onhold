@@ -1,32 +1,38 @@
 # Changelog
 
-## 0.5.6
+## 0.6.0 - The ledger and the mirror
+
+`ps` speaks only Docker; `list` speaks only Hold.
 
 ### Changed
 
-- `ps` and `list` now diverge instead of being aliases. `ps` is the Docker
-  mirror: a machine-wide, running-first view (`-a` adds ended) of both your
-  own calls and the global ones, with Docker's columns minus IMAGE and no
-  scope flags. `list` is Hold's scoped ledger: your calls live *and* past by
-  default, with a new `USER` column in Docker's IMAGE slot, and scope flags
-  `-s`/`--system` (global only), `-u`/`--user` (personal only, even under
-  sudo), `-a`/`--all` (both), and `-l`/`--live` (running only) that compose.
-- Calls a user may not read (global calls in a non-root view) render the
-  literal `hidden` in their USER and COMMAND cells rather than leaking, or
-  showing a misleading `-`.
-- As root, `hold list` shows the global calls only; `sudo hold list -a` also
-  walks every user's store under `/home/*` and the USER column names each
-  owner. Listing as root refreshes each live global call's observed ports
-  (listening TCP / bound UDP only) into its public entry, so a normal user's
-  `list -a` eventually shows real ports for root-managed calls.
-- Purge gains scope: `hold purge -u` (the default) sweeps your calls,
-  `hold purge -s` sweeps the global store — re-execing once through `sudo`
-  when you are not root so `sudo` can prompt. `-a` keeps its state meaning
-  (include stale). A sweeping purge still prints each call it removes and
-  accounts for what it kept: `hold: purged 6 past calls; kept 2 live, 8
-  stale (purge -a sweeps stale)`.
-- The log viewer's header shows the call's name when it has one; the short
-  id stays in the footer where it always was.
+- `hold ps` is a pure Docker mirror: running calls only, from both scopes —
+  your own in full, global calls in redacted outline (`hidden` user and
+  command for non-root) with their published ports. `ps -a` adds ended
+  calls. Docker's columns minus IMAGE (no images, no pretending), no
+  invented flags.
+- `hold list` is the scoped ledger: your calls live and past by default
+  (the system's when root). `-l/--live` narrows to running; `-s/--system`
+  is the global view alone; `-u/--user` is your own even under sudo;
+  `-a/--all` is both scopes. A USER column sits second — real names on
+  your rows and root's views, `hidden` on redacted rows.
+- The full-screen viewer follows live calls by default (FOLLOWING ACTIVE),
+  opens at the newest output, and titles itself with the call's name.
+- Global calls publish their listening/bound ports (never outbound
+  connections) into the world-readable projection, so any user can see
+  which ports the machine's held services occupy: docker-format
+  `0.0.0.0:80/tcp, [::]:80/tcp`.
+- As root, `hold list` shows the global calls only; `sudo hold list -a`
+  also walks every user's store under `/home/*` and the USER column names
+  each owner. Listing as root refreshes each live global call's published
+  ports.
+- A sweeping purge prints each call it removes and accounts for what it
+  kept and why: `hold: purged 6 past calls; kept 2 live, 8 stale (purge -a
+  sweeps stale)`. Purge gains scope: `purge -u` (the default) sweeps your
+  calls, `purge -s` sweeps the global store — re-execing once through
+  `sudo` when you are not root so sudo can prompt. `-a` keeps its state
+  meaning (include stale).
+- SPEC.md is rewritten as the implementation-invariants contract.
 
 ## 0.5.5
 

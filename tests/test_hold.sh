@@ -2656,7 +2656,8 @@ test_public_root_index_list_is_redacted() {
   # cells both read the literal "hidden" (exists-but-not-yours-to-see, not "-"),
   # and the STATUS reflects the projected state.
   "$HOLD_BIN" list -a >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  grep -Eq '^abc12345cafe[[:space:]]+hidden[[:space:]]+hidden[[:space:]].*[[:space:]]running([[:space:]]|$)' "$TEST_ROOT/list.out" || { cat "$TEST_ROOT/list.out" >&2; return 1; }
+  # Projected rows speak the table's Docker phrasing: "Up <age>", not the raw hint.
+  grep -Eq '^abc12345cafe[[:space:]]+hidden[[:space:]]+hidden[[:space:]].*[[:space:]]Up ' "$TEST_ROOT/list.out" || { cat "$TEST_ROOT/list.out" >&2; return 1; }
   ! grep -q 'secret' "$TEST_ROOT/list.out"
 }
 
