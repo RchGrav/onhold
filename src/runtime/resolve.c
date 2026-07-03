@@ -109,7 +109,7 @@ bool hold_record_matches_alias_intent(const char *command, const struct hold_run
     if (!strcmp(command, "console")) {
         return st == STATE_RUNNING && r->has_console;
     }
-    if (!strcmp(command, "dump") || !strcmp(command, "view")) {
+    if (!strcmp(command, "view")) {
         return r->has_log;
     }
     if (!strcmp(command, "inspect")) {
@@ -184,7 +184,7 @@ static int append_private_run_name_target(struct hold_resolved_target **targets,
     closedir(d);
     if (matches == 0) return 0;
     if (matches > 1) {
-        fprintf(stderr, "hold: error: run name '%s' is ambiguous\n", name);
+        fprintf(stderr, "hold: error: call name '%s' is ambiguous\n", name);
         return -2;
     }
     return append_resolved_target(targets, count, scope, store, matched, false) == 0 ? 1 : -1;
@@ -220,14 +220,14 @@ static int append_public_run_name_target(struct hold_resolved_target **targets,
     closedir(d);
     if (matches == 0) return 0;
     if (matches > 1) {
-        fprintf(stderr, "hold: error: run name '%s' is ambiguous\n", name);
+        fprintf(stderr, "hold: error: call name '%s' is ambiguous\n", name);
         return -2;
     }
     return append_resolved_target(targets, count, RESOLVE_SYSTEM_MANAGED, system_store, matched, true) == 0 ? 1 : -1;
 }
 
 int hold_report_not_found(const char *token) {
-    fprintf(stderr, "hold: error: no run matches '%s'\n", token ? token : "");
+    fprintf(stderr, "hold: error: no call matches '%s'\n", token ? token : "");
     return 5;
 }
 

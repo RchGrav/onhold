@@ -10,7 +10,6 @@
 
 struct list_row {
     char id[ID_STR_LEN];
-    char profile[ALIAS_MAX_LEN + 1];
     char name[ALIAS_MAX_LEN + 1];
     char state[16];
     char started[64];
@@ -84,14 +83,14 @@ static int compare_list_rows(const void *a, const void *b) {
 }
 
 static void print_list_header(bool iso) {
-    printf("%-12s %-16s %-8s %-*s %s\n", "RUNID", "PROFILE", "STATE", iso ? 24 : 8, iso ? "STARTED_AT" : "STARTED", "CMD");
+    printf("%-12s %-8s %-*s %s\n", "CALL ID", "STATE", iso ? 24 : 8, iso ? "STARTED_AT" : "STARTED", "CMD");
 }
 
 static void print_list_row(const struct list_row *row, bool iso) {
     char cmd[80];
     const char *src = row->cmd[0] ? row->cmd : "?";
     snprintf(cmd, sizeof(cmd), "%.72s%s", src, strlen(src) > 72 ? "..." : "");
-    printf("%-12s %-16s %-8s %-*s %s\n", row->id, row->profile[0] ? row->profile : "-", row->state, iso ? 24 : 8, row->started, cmd);
+    printf("%-12s %-8s %-*s %s\n", row->id, row->state, iso ? 24 : 8, row->started, cmd);
 }
 
 static void quote_command(char out[32], const char *cmd) {
@@ -103,16 +102,15 @@ static void quote_command(char out[32], const char *cmd) {
 }
 
 static void print_ps_header(void) {
-    printf("%-12s %-12s %-28s %-14s %-22s %-36s %s\n",
-           "RUN ID", "PROFILE", "COMMAND", "CREATED", "STATUS", "PORTS", "NAMES");
+    printf("%-12s %-28s %-14s %-22s %-36s %s\n",
+           "CALL ID", "COMMAND", "CREATED", "STATUS", "PORTS", "NAMES");
 }
 
 static void print_ps_row(const struct list_row *row) {
     char cmd[32];
     quote_command(cmd, row->cmd);
-    printf("%-12s %-12s %-28s %-14s %-22s %-36s %s\n",
+    printf("%-12s %-28s %-14s %-22s %-36s %s\n",
            row->id,
-           row->profile[0] ? row->profile : "-",
            cmd,
            row->created[0] ? row->created : "-",
            row->status[0] ? row->status : row->state,
@@ -395,7 +393,6 @@ static int collect_list_private(const struct hold_store *store,
         char display_id[ID_DISPLAY_HEX_LEN + 1];
         hold_run_id_display(r.id, display_id);
         snprintf(row.id, sizeof(row.id), "%s", display_id);
-        snprintf(row.profile, sizeof(row.profile), "%s", r.has_alias ? r.alias : "-");
         if (r.has_name && r.name[0]) snprintf(row.name, sizeof(row.name), "%s", r.name);
         snprintf(row.state, sizeof(row.state), "%s", hold_state_str(st));
         row.start_unix_ns = r.start_unix_ns;
@@ -478,7 +475,6 @@ static int collect_list_public(const struct hold_store *store,
         char display_id[ID_DISPLAY_HEX_LEN + 1];
         hold_run_id_display(pi.id, display_id);
         snprintf(row.id, sizeof(row.id), "%s", display_id);
-        snprintf(row.profile, sizeof(row.profile), "%s", pi.has_alias ? pi.alias : "-");
         if (pi.has_name && pi.name[0]) snprintf(row.name, sizeof(row.name), "%s", pi.name);
         snprintf(row.state, sizeof(row.state), "%s", pi.state_hint[0] ? pi.state_hint : "unknown");
         row.running = !strcmp(row.state, "running");
@@ -607,7 +603,7 @@ int hold_prune_one_run(const struct hold_store *store, const char *id, const cha
     enum run_state st = hold_eval_state(&r, boot ? boot : NULL);
     bool prunable = (st == STATE_EXITED || st == STATE_FAILED || (allow_stale && st == STATE_STALE));
     if (!prunable) {
-        fprintf(stderr, "hold: error: run %s is %s and cannot be pruned\n", id, hold_state_str(st));
+        fprintf(stderr, "hold: error: call %s is %s and cannot be purged\n", id, hold_state_str(st));
         hold_free_run_record(&r);
         return 2;
     }
@@ -792,24 +788,39 @@ sweep_public:
     return 0;
 }
 
-int hold_cmd_prune_action(const struct hold_invocation *inv,
+int hold_cmd_purge_action(const struct hold_invocation *inv,
                             const struct hold_store *user_store,
                             const struct hold_store *system_store,
                             const char *target_token,
-                            bool all) {
+                            bool all,
+                            bool force) {
     if (!target_token || strcmp(target_token, "all") == 0) {
+        /* A no-target sweep only clears already-ended calls; --force adds nothing
+         * here (mass-ending live calls needs the saved-call protection that lands
+         * with a later task). */
         const struct hold_store *store = inv->euid_root ? system_store : user_store;
         int removed = 0;
-        bool include_stale = all || (target_token && strcmp(target_token, "all") == 0);
+        bool include_stale = all || force || (target_token && strcmp(target_token, "all") == 0);
         int rc = cmd_prune_store_all(store, include_stale, &removed);
         if (rc == 0) {
             if (removed > 0) {
-                hold_sig_note(inv, "hold: pruned %d past run%s\n", removed, removed == 1 ? "" : "s");
+                hold_sig_note(inv, "hold: purged %d past call%s\n", removed, removed == 1 ? "" : "s");
             } else {
-                hold_sig_note(inv, "hold: nothing to prune\n");
+                hold_sig_note(inv, "hold: nothing to purge\n");
             }
         }
         return rc;
+    }
+    /* --force on a specific target ends a live call first, then removes it.
+     * Saved-call protection (refuse without --force) arrives with a later task;
+     * this is the seam it plugs into. */
+    if (force) {
+        char *one[1] = { (char *)target_token };
+        int stop_rc = hold_cmd_signal_action(inv, user_store, system_store, "stop", 1, one,
+                                             SIGTERM, true, false, false);
+        if (stop_rc != 0) {
+            return stop_rc;
+        }
     }
     struct hold_resolved_target *targets = NULL;
     int ntargets = 0;
@@ -820,7 +831,7 @@ int hold_cmd_prune_action(const struct hold_invocation *inv,
     }
     if (ntargets == 0) {
         free(targets);
-        hold_sig_note(inv, "hold: nothing to prune\n");
+        hold_sig_note(inv, "hold: nothing to purge\n");
         return 0;
     }
     for (int i = 0; i < ntargets; i++) {
@@ -851,13 +862,13 @@ int hold_cmd_prune_action(const struct hold_invocation *inv,
             bool target_looks_like_alias = (token_scope != ID_TOKEN_INVALID && atom &&
                                             hold_valid_alias(atom) && !hold_valid_id_prefix(atom));
             if (target_looks_like_alias) {
-                hold_sig_note(inv, "hold: pruned %d past run%s for '%s'\n",
+                hold_sig_note(inv, "hold: purged %d past call%s for '%s'\n",
                          removed_count, removed_count == 1 ? "" : "s", atom);
             } else {
-                hold_sig_note(inv, "hold: pruned %d past run%s\n", removed_count, removed_count == 1 ? "" : "s");
+                hold_sig_note(inv, "hold: purged %d past call%s\n", removed_count, removed_count == 1 ? "" : "s");
             }
         } else {
-            hold_sig_note(inv, "hold: nothing to prune\n");
+            hold_sig_note(inv, "hold: nothing to purge\n");
         }
     }
     free(targets);

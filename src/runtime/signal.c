@@ -104,7 +104,7 @@ static int validate_signal_target(const char *id,
     char boot[128] = {0};
     bool have_boot = hold_current_boot_id(boot, sizeof(boot));
     if (r->has_boot && have_boot && strcmp(r->boot_id, boot) != 0) {
-        fprintf(stderr, "hold: error: run %s is stale and cannot be signaled\n", id);
+        fprintf(stderr, "hold: error: call %s is stale and cannot be signaled\n", id);
         return 2;
     }
 
@@ -114,7 +114,7 @@ static int validate_signal_target(const char *id,
     bool have_leader_stat = hold_read_proc_stat_tokens(r->pid, &leader_state, &leader_starttime) == 0;
     if (have_leader_stat && leader_state != 'Z') {
         if (r->proc_starttime_ticks != 0 && leader_starttime != r->proc_starttime_ticks) {
-            fprintf(stderr, "hold: error: run %s process identity differs from the record and cannot be signaled\n", id);
+            fprintf(stderr, "hold: error: call %s process identity differs from the record and cannot be signaled\n", id);
             return 2;
         }
         if (r->proc_starttime_ticks == 0 && r->exe_dev != 0 && r->exe_ino != 0) {
@@ -122,7 +122,7 @@ static int validate_signal_target(const char *id,
             uint64_t exe_ino = 0;
             if (hold_read_proc_exe(r->pid, &exe_dev, &exe_ino) == 0 &&
                 (exe_dev != r->exe_dev || exe_ino != r->exe_ino)) {
-                fprintf(stderr, "hold: error: run %s process identity differs from the record and cannot be signaled\n", id);
+                fprintf(stderr, "hold: error: call %s process identity differs from the record and cannot be signaled\n", id);
                 return 2;
             }
         }
@@ -130,33 +130,33 @@ static int validate_signal_target(const char *id,
         pid_t current_sid = getsid(r->pid);
         if ((current_pgid >= 0 && current_pgid != r->pgid) ||
             (current_sid >= 0 && current_sid != r->sid)) {
-            fprintf(stderr, "hold: error: run %s process group/session differs from the record and cannot be signaled\n", id);
+            fprintf(stderr, "hold: error: call %s process group/session differs from the record and cannot be signaled\n", id);
             return 2;
         }
         if (current_pgid >= 0 && current_sid >= 0) {
             if (!have_identity_token) {
-                fprintf(stderr, "hold: error: run %s has no recorded process identity token and cannot be signaled\n", id);
+                fprintf(stderr, "hold: error: call %s has no recorded process identity token and cannot be signaled\n", id);
                 return 2;
             }
             return 0;
         }
     }
     if (have_leader_stat && r->proc_starttime_ticks != 0 && leader_starttime != r->proc_starttime_ticks) {
-        fprintf(stderr, "hold: error: run %s process identity differs from the record and cannot be signaled\n", id);
+        fprintf(stderr, "hold: error: call %s process identity differs from the record and cannot be signaled\n", id);
         return 2;
     }
 
     enum group_liveness gl = hold_group_session_liveness(r->pgid, r->sid);
     if (gl == GROUP_LIVE) {
         if (!have_identity_token) {
-            fprintf(stderr, "hold: error: run %s has no recorded process identity token and cannot be signaled\n", id);
+            fprintf(stderr, "hold: error: call %s has no recorded process identity token and cannot be signaled\n", id);
             return 2;
         }
         return 0;
     }
     if (gl == GROUP_EMPTY || gl == GROUP_ZOMBIE_ONLY) {
         if (require_live) {
-            fprintf(stderr, "hold: error: run %s is not running and cannot be printed as a signal command\n", id);
+            fprintf(stderr, "hold: error: call %s is not running and cannot be printed as a signal command\n", id);
             return 2;
         }
         if (state_out) {
@@ -165,7 +165,7 @@ static int validate_signal_target(const char *id,
         return 0;
     }
 
-    fprintf(stderr, "hold: error: run %s could not be tied to its recorded process group/session and cannot be signaled\n", id);
+    fprintf(stderr, "hold: error: call %s could not be tied to its recorded process group/session and cannot be signaled\n", id);
     return 2;
 }
 
@@ -444,82 +444,6 @@ int hold_cmd_tail_action(const struct hold_invocation *inv,
     return rc;
 }
 
-int hold_cmd_dump_action(const struct hold_invocation *inv,
-                           const struct hold_store *user_store,
-                           const struct hold_store *system_store,
-                           const char *id_token) {
-    struct hold_resolved_target *targets = NULL;
-    int ntargets = 0;
-    int rc = hold_resolve_action_token(inv, user_store, system_store, "dump", id_token, false, &targets, &ntargets);
-    if (rc != 0) {
-        free(targets);
-        return rc;
-    }
-    if (ntargets == 0) {
-        free(targets);
-        hold_sig_note(inv, "hold: nothing to dump\n");
-        return 0;
-    }
-    struct hold_resolved_target target = targets[0];
-    if (target.requires_root) {
-        free(targets);
-        return hold_report_requires_root(target.id);
-    }
-    struct hold_run_record r;
-    char path[HOLD_PATH_MAX];
-    if (hold_load_record_by_id(target.store.record_dir, target.id, &r, path, sizeof(path)) != 0) {
-        free(targets);
-        return 5;
-    }
-    if (!r.has_log) {
-        fprintf(stderr, "hold: record has no log path: %s\n", target.id);
-        hold_free_run_record(&r);
-        free(targets);
-        return 5;
-    }
-    int fd = open(r.log_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd < 0) {
-        hold_free_run_record(&r);
-        free(targets);
-        hold_die_errno("hold: failed to open log for dump");
-    }
-    char buf[4096];
-    struct decoded_log_stream decoder = {0};
-    while (1) {
-        ssize_t n = read(fd, buf, sizeof(buf));
-        if (n == 0) {
-            break;
-        }
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            decoded_log_stream_free(&decoder);
-            close(fd);
-            hold_free_run_record(&r);
-            free(targets);
-            hold_die_errno("hold: failed while dumping log");
-        }
-        if (decoded_log_stream_write(&decoder, buf, (size_t)n) != 0) {
-            decoded_log_stream_free(&decoder);
-            close(fd);
-            hold_free_run_record(&r);
-            free(targets);
-            hold_die_errno("hold: failed writing dumped output");
-        }
-    }
-    if (decoded_log_stream_flush(&decoder) != 0) {
-        decoded_log_stream_free(&decoder);
-        close(fd);
-        hold_free_run_record(&r);
-        free(targets);
-        hold_die_errno("hold: failed writing dumped output");
-    }
-    decoded_log_stream_free(&decoder);
-    close(fd);
-    hold_free_run_record(&r);
-    free(targets);
-    return 0;
-}
-
 static bool parse_view_limit(const char *s, size_t *out) {
     if (!s || !*s) return false;
     char *end = NULL;
@@ -751,7 +675,7 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
             opts.visible_capacity = opts.max_results;
         } else if (!strcmp(argv[i], "--debug-stats")) {
             debug_stats = true;
-        } else if (!strcmp(argv[i], "--plain")) {
+        } else if (!strcmp(argv[i], "--plain") || !strcmp(argv[i], "--print") || !strcmp(argv[i], "-p")) {
             force_plain = true;
         } else if (!strcmp(argv[i], "--interactive")) {
             force_interactive = true;

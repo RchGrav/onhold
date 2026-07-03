@@ -16,11 +16,11 @@ static int attach_console_record(const struct hold_invocation *inv,
                                  const struct hold_run_record *r,
                                  enum run_state st) {
     if (st != STATE_RUNNING) {
-        hold_sig_note(inv, "hold: %s has exited - see 'hold dump %s'\n", r->id, r->id);
+        hold_sig_note(inv, "hold: %s has ended - see 'hold logs %s'\n", r->id, r->id);
         return 0;
     }
     if (!r->has_console) {
-        hold_sig_note(inv, "hold: %s has no console (start with --console)\n", r->id);
+        hold_sig_note(inv, "hold: %s has no console (start with -it)\n", r->id);
         return 0;
     }
     return hold_run_native_console(r->console_sock);
@@ -39,7 +39,7 @@ int hold_cmd_console_action(const struct hold_invocation *inv,
     }
     if (ntargets == 0) {
         free(targets);
-        hold_sig_note(inv, "hold: nothing to console\n");
+        hold_sig_note(inv, "hold: nothing to attach\n");
         return 0;
     }
     struct hold_resolved_target target = targets[0];
@@ -64,35 +64,29 @@ int hold_cmd_console_action(const struct hold_invocation *inv,
 
 void hold_usage(void) {
     printf("hold %s - more than nohup, less than systemd\n\n"
-           "Run a command under a durable run ID, then list it, watch it,\n"
-           "inspect it, and stop it later. No daemon, no config server.\n\n"
-           "USAGE\n"
-           "  hold [run-options] <cmd> [args...]      Docker-shaped ad-hoc launch\n"
-           "  hold run [run-options] <cmd>            Docker-shaped launch\n"
-           "  hold <command> [args...]                manage runs\n\n"
-           "RUN\n"
-           "  hold <command>...                       foreground run, streaming logs\n"
-           "  hold run <command>...                   foreground run, streaming logs\n"
-           "  hold -d <command>...                    detach/background and print run ID\n"
-           "  hold -it <command>...                   allocate Hold's PTY/console path\n"
-           "  hold run --name web -d <command>...     name and run in the background\n\n"
-           "MANAGE\n"
-           "  hold ps [-a]                            list active (-a: retained inactive too)\n"
-           "  hold attach <target>                    attach to a running console/TTY run\n"
-           "  hold logs <target> [-f] [-n N]          open/filter logs\n"
-           "  hold logs <target> --plain              print log text and exit\n"
-           "  hold inspect <target>                   print structured JSON details\n"
-           "  hold stop <target> [--all]              graceful stop (TERM, then KILL)\n"
-           "  hold kill <target>                      force kill now (KILL)\n"
-           "  hold start <id|name>                    restart a retained run\n"
-           "  hold rm [--force] <target>              remove inactive run; force active runid\n"
-           "  hold prune [target|all]                 clear inactive past run data\n\n"
+           "Put a command on hold as a durable call, then list your calls, pick one\n"
+           "back up, and end it politely. No daemon, no config server.\n\n"
+           "PLACE A CALL\n"
+           "  hold <cmd> [args...]         foreground: stream its output\n"
+           "  hold -d <cmd> [args...]      detached: print the bare 64-hex call id\n"
+           "  hold -it <cmd> [args...]     attached on a PTY (Ctrl-P Ctrl-Q holds it)\n"
+           "  hold <id|name>               redial: restart a retained call from its recipe\n"
+           "  hold --name web -d <cmd>...  name the call and place it in the background\n\n"
            "SESSION\n"
-           "  hold shell                              capture/adopt from a real system shell\n\n"
-           "  target = run id, id prefix, or run name\n\n"
+           "  hold on                      guarded shell; Ctrl-P Ctrl-Q holds a program\n"
+           "  hold off                     end the current hold on session\n\n"
+           "MANAGE YOUR CALLS\n"
+           "  hold list                    the call table (ps is an alias)\n"
+           "  hold attach <target>         pick the call back up (Ctrl-P Ctrl-Q detaches)\n"
+           "  hold logs <target> [-f]      open the log viewer (-p dumps plain text)\n"
+           "  hold inspect <target>        structured JSON details\n"
+           "  hold end <target> [--all]    end the call politely: TERM, then KILL\n"
+           "  hold kill <target>           KILL now, when it won't listen\n"
+           "  hold rename <target> <name>  give a call a meaningful name\n"
+           "  hold purge [<target>]        the one removal verb (-a stale, --force live)\n\n"
+           "  target = call id, id prefix, or call name\n\n"
            "MORE\n"
            "  hold help targets            id and scope resolution\n"
-           "  hold help system             root-managed runs\n"
            "  hold help scripting          exit codes, --print, --quiet, stdout\n"
            "  hold <command> -h            help for one command\n\n"
            "  hold --version\n",

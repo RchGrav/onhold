@@ -6,7 +6,6 @@
 static int help_targets(void);
 static int help_system(void);
 static int help_scripting(void);
-static int help_console(void);
 static int help_action(const char *action);
 
 enum {
@@ -26,24 +25,24 @@ struct hold_cli_command_spec {
 static const struct hold_cli_command_spec command_specs[] = {
     {"list", 0, 1, 0, "usage: hold list [name]", "list"},
     {"ps", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold ps [-a|--all]", "ps"},
-    {"run", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold run [run-options] <cmd> [args...]", "run"},
-    {"start", 1, -1, HOLD_CLI_ALLOW_DDASH, "usage: hold start <id|name>\n       hold start <cmd> [args...]", "start"},
+    {"on", 0, 0, 0, "usage: hold on", "on"},
+    {"off", 0, 0, 0, "usage: hold off", "off"},
+    {"shell", 0, 0, 0, "usage: hold shell", "shell"},
+    {"end", 1, -1, HOLD_CLI_ALLOW_ALL, "usage: hold end [--print] [--all] <target>...", "end"},
     {"stop", 1, -1, HOLD_CLI_ALLOW_ALL, "usage: hold stop [--print] [--all] <target>...", "stop"},
     {"kill", 1, -1, HOLD_CLI_ALLOW_ALL, "usage: hold kill [--print] [--all] <target>...", "kill"},
     {"tail", 1, 1, 0, "usage: hold tail <target>", "tail"},
-    {"logs", 1, -1, 0, "usage: hold logs <target> [--follow|-f] [--tail|-n N] [--plain|--interactive]", "logs"},
-    {"status", 0, 1, 0, "usage: hold status [target]", "status"},
+    {"logs", 1, -1, 0, "usage: hold logs <target> [--follow|-f] [--tail|-n N] [--plain|-p|--interactive]", "logs"},
     {"inspect", 1, 1, 0, "usage: hold inspect <target>", "inspect"},
-    {"dump", 1, 1, 0, "usage: hold dump <target>", "dump"},
     {"__view", 1, -1, 0, "usage: hold __view <target> [internal viewer test options]", "__view"},
-    {"console", 1, 1, 0, "usage: hold console <target>", "console"},
     {"attach", 1, 1, 0, "usage: hold attach <target>", "attach"},
-    {"prune", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold prune [target|all] [--all]", "prune"},
-    {"rm", 1, 1, 0, "usage: hold rm [--force] <inactive-runid>", "rm"},
-    {"show", 1, 2, 0, "usage: hold show <runs|running|dormant|failed|stale> [name]", "show"},
-    {"clean", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold clean [target|all]", "clean"},
-    {"doctor", 0, 0, 0, "usage: hold doctor", "doctor"},
-    {"shell", 0, 0, 0, "usage: hold shell", "shell"},
+    {"console", 1, 1, 0, "usage: hold console <target>", "console"},
+    {"purge", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold purge [<target>] [-a|--all] [--force]", "purge"},
+    {"prune", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold purge [<target>] [-a|--all] [--force]", "prune"},
+    {"rm", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold purge [<target>] [--force]", "rm"},
+    {"drop", 0, 1, HOLD_CLI_ALLOW_ALL, "usage: hold purge [<target>] [-a|--all] [--force]", "drop"},
+    {"save", 1, 1, 0, "usage: hold save <target>", "save"},
+    {"rename", 2, 2, 0, "usage: hold rename <target> <name>", "rename"},
     {"help", 0, 1, 0, "usage: hold help [topic]", "help"},
 };
 
@@ -64,24 +63,24 @@ static int help_targets(void) {
            "  <target>          resolve in the current context\n"
            "  user:<target>     force user-local lookup\n"
            "  system:<target>   force root-managed lookup\n\n"
-           "target = run id, leading id prefix, or run name\n\n"
-           "A run id addresses one run directly, always. A run name resolves to the\n"
-           "single run recorded under that name, narrowed by the verb: stop/kill/logs\n"
-           "look at running or logged runs, inspect looks at retained records, and prune\n"
-           "looks at removable past run data.\n");
+           "target = call id, leading id prefix, or call name\n\n"
+           "A call id addresses one call directly, always. A call name resolves to the\n"
+           "single call recorded under that name, narrowed by the verb: end/kill/logs\n"
+           "look at running or logged calls, inspect looks at retained records, and purge\n"
+           "looks at removable past call data.\n");
     return 0;
 }
 
 static int help_system(void) {
     printf("hold help system\n\n"
-           "Root, sudo, and --system runs use the root-managed store:\n\n"
+           "Root and sudo calls use the root-managed store:\n\n"
            "  Linux: /var/lib/hold\n"
            "  macOS: /var/db/hold\n\n"
            "Private root records and logs stay root-only. Normal users see only the\n"
            "redacted public index. Acting on a root-managed target requires root;\n"
            "user-local targets win over root-public collisions.\n\n"
-           "  hold --system <cmd...>       start in root-managed state\n"
-           "  hold --system list           list authoritative root records\n");
+           "  sudo hold <cmd...>           start in root-managed state\n"
+           "  sudo hold list               list authoritative root records\n");
     return 0;
 }
 
@@ -89,8 +88,8 @@ static int help_scripting(void) {
     printf("hold help scripting\n\n"
            "stdout is for machine data. Human banners, confirmations, warnings, and\n"
            "errors go to stderr; --quiet suppresses normal human status.\n\n"
-           "  id=$(hold -d <cmd...>)       capture the bare 12-hex run id\n"
-           "  hold stop --print <id>       print kill -TERM -- -<pgid>\n"
+           "  id=$(hold -d <cmd...>)       capture the bare 64-hex call id\n"
+           "  hold end --print <id>        print kill -TERM -- -<pgid>\n"
            "  hold kill --print <id>       print kill -KILL -- -<pgid>\n\n"
            "Exit codes:\n"
            "  0  success (includes known name with nothing to do)\n"
@@ -103,63 +102,35 @@ static int help_scripting(void) {
     return 0;
 }
 
-static int help_console(void) {
-    printf("hold help console\n\n"
-           "Start a run with an attachable PTY console, then reconnect to it later.\n"
-           "Console output is still tee'd to the normal log, so logs continue\n"
-           "to work.\n\n"
-           "  hold -t <cmd...>             start with an attachable PTY console\n"
-           "  hold attach <target>         reconnect to a running console/TTY run\n\n"
-           "Console attach is native: Hold saves your terminal, enters an alternate\n"
-           "screen for interactive attaches, forwards terminal size changes to the PTY,\n"
-           "and restores your original screen on exit. Ctrl-P Ctrl-Q detaches without\n"
-           "ending the run.\n");
-    return 0;
-}
-
 static int help_action(const char *action) {
     if (!strcmp(action, "list")) {
-        printf("usage: hold list [name] [--iso|-l]\n\nShow all visible runs, optionally filtered by run name.\n");
+        printf("usage: hold list [name] [--iso|-l]\n\nShow all visible calls, optionally filtered by name.\n");
     } else if (!strcmp(action, "ps")) {
-        printf("usage: hold ps [-a|--all]\n\nDocker-shaped run listing. Shows Hold run IDs and names.\n");
-    } else if (!strcmp(action, "start")) {
-        printf("usage: hold start <id|name>\n       hold start <cmd> [args...]\n\nRestart a retained run by id or name, or use the explicit start form for a raw command.\n");
-    } else if (!strcmp(action, "stop")) {
-        printf("usage: hold stop [--print] [--all] <target>...\n\nGracefully stop matching runs with TERM, then KILL if needed.\n");
+        printf("usage: hold ps [-a|--all]\n\nDocker-shaped call listing. Shows Hold call IDs and names.\n");
+    } else if (!strcmp(action, "on") || !strcmp(action, "shell")) {
+        printf("usage: hold on\n\nStart a guarded shell under Hold's PTY/session wrapper. Hold holds the line: pressing the classic detach sequence Ctrl-P Ctrl-Q puts the current foreground program on hold as a call and returns to the shell. 'hold off' or exit ends the session. (shell is an alias of on.)\n");
+    } else if (!strcmp(action, "off")) {
+        printf("usage: hold off\n\nEnd the current 'hold on' session cleanly. Only works inside a hold on session.\n");
+    } else if (!strcmp(action, "end") || !strcmp(action, "stop")) {
+        printf("usage: hold end [--print] [--all] <target>...\n\nEnd matching calls politely: TERM, then KILL if needed. (stop is an alias.)\n");
     } else if (!strcmp(action, "kill")) {
-        printf("usage: hold kill [--print] [--all] <target>...\n\nForce matching runs down with KILL.\n");
-    } else if (!strcmp(action, "run")) {
-        printf("usage: hold run [run-options] <cmd> [args...]\n\nDocker-shaped launch. Without -d, Hold starts the run and follows its log in the foreground.\nCommon options:\n  -d, --detach          run in the background and print the run ID\n  -i, --interactive     keep non-PTY stdin open\n  -t, --tty             allocate Hold's PTY/console path\n  -e, --env KEY=VALUE   set launch environment\n      --env-file FILE   load KEY=VALUE launch environment lines\n  -p, --publish SPEC    unsupported: Hold observes in-use ports in `hold ps`\n  -v, --volume SPEC     unsupported: pass host paths directly; no mounts/remaps\n      --rm              remove run record/log after exit\n      --restart POLICY  restart rule: no|always|unless-stopped|on-failure[:N]\n      --restart-delay N delay seconds between restart attempts\n      --name NAME       assign this run's container-style name\n      --detach-keys SEQ set TTY detach keys (default ctrl-p,ctrl-q)\nUse -- before a command whose name conflicts with a Hold command or option.\n");
-    } else if (!strcmp(action, "tail") || !strcmp(action, "logs")) {
-        if (!strcmp(action, "logs")) {
-            printf("usage: hold logs <target> [--follow|-f] [--tail|-n N] [--plain|--interactive]\n\nOpen the log viewer for a run. In a TTY, type directly in the full-screen viewer to filter dynamically; Backspace relaxes the filter, Space excludes lines like the highlighted line, and Ctrl-R resets filters. Non-TTY output stays script-friendly.\n");
-        } else {
-            printf("usage: hold tail <target>\n\nFollow live output for a run name match, or follow an id's log directly.\n");
-        }
-    } else if (!strcmp(action, "console")) {
-        printf("usage: hold console <target>\n\nAttach to a running console-enabled run. Prefer Docker-shaped `hold -it <cmd>`.\n");
-    } else if (!strcmp(action, "attach")) {
-        printf("usage: hold attach <target>\n\nAttach your terminal to a running console/TTY run (Docker-style). Detach again with Ctrl-P Ctrl-Q. Start attachable runs with `hold -it <cmd>`.\n");
-    } else if (!strcmp(action, "dump")) {
-        printf("usage: hold logs <target> --plain\n\nThe public 0.4 log-text command is `hold logs <target> --plain`; structured details are `hold inspect <target>`.\n");
+        printf("usage: hold kill [--print] [--all] <target>...\n\nForce matching calls down with KILL.\n");
+    } else if (!strcmp(action, "tail")) {
+        printf("usage: hold tail <target>\n\nFollow a call's live output. Shorthand for hold logs <target> -f.\n");
+    } else if (!strcmp(action, "logs")) {
+        printf("usage: hold logs <target> [--follow|-f] [--tail|-n N] [--plain|-p|--interactive]\n\nOpen the log viewer for a call. In a TTY, type directly in the full-screen viewer to filter dynamically; Backspace relaxes the filter, Space excludes lines like the highlighted line, and Ctrl-R resets filters. Non-TTY output stays script-friendly; -p/--print/--plain always dumps plain text.\n");
+    } else if (!strcmp(action, "console") || !strcmp(action, "attach")) {
+        printf("usage: hold attach <target>\n\nPick a running console/TTY call back up. Detach again with Ctrl-P Ctrl-Q. Start attachable calls with hold -it <cmd>. (console is an alias of attach.)\n");
     } else if (!strcmp(action, "__view")) {
         printf("usage: hold __view <target> [internal viewer test options]\n\nInternal regression/debug entrypoint for the log viewer engine. The product UX is hold logs <target>, then type inside the full-screen viewer to filter dynamically.\n");
-    } else if (!strcmp(action, "prune")) {
-        printf("usage: hold prune [target|all] [--all]\n\nClear removable past run data. Running valid runs are never pruned.\n");
-    } else if (!strcmp(action, "rm")) {
-        printf("usage: hold rm [--force] <inactive-runid>\n\nRemove an inactive run record/log. With --force, stop and remove one concrete active run ID.\n");
-    } else if (!strcmp(action, "status")) {
-        printf("usage: hold status [target]\n\nShow runs, optionally narrowed by target.\n");
+    } else if (!strcmp(action, "purge") || !strcmp(action, "prune") || !strcmp(action, "rm") || !strcmp(action, "drop")) {
+        printf("usage: hold purge [<target>] [-a|--all] [--force]\n\nThe one removal verb. With no target it sweeps ended calls (-a includes stale); a target removes one call; --force removes regardless of state (live or saved). rm, prune, and drop are accepted aliases.\n");
     } else if (!strcmp(action, "inspect")) {
-        printf("usage: hold inspect <target>\n\nPrint structured JSON details for a run target. Log text belongs to `hold logs <target> --plain`.\n");
-    } else if (!strcmp(action, "show")) {
-        printf("usage: hold show <runs|running|dormant|failed|stale> [name]\n\nNavigate alternate views of the same runtime tree.\n");
-    } else if (!strcmp(action, "clean")) {
-        printf("usage: hold clean [target|all]\n\nClear removable past run data.\n");
-    } else if (!strcmp(action, "doctor")) {
-        printf("usage: hold doctor\n\nCheck local Hold paths and build identity.\n");
-    } else if (!strcmp(action, "shell")) {
-        printf("usage: hold shell\n\nStart an ordinary user shell under Hold's PTY/session wrapper. Typing `exit` returns without creating a runid. Pressing the classic detach sequence Ctrl-P Ctrl-Q captures the current foreground process group as a Hold run and returns to the caller.\n");
+        printf("usage: hold inspect <target>\n\nPrint structured JSON details for a call. Log text belongs to hold logs <target> --plain.\n");
+    } else if (!strcmp(action, "save")) {
+        printf("usage: hold save <target>\n\nProtect a call from purge. There is no unsave; use hold purge --force to remove a saved call.\n");
+    } else if (!strcmp(action, "rename")) {
+        printf("usage: hold rename <target> <name>\n\nRename a call. Live and ended calls are both renameable.\n");
     } else {
         return -1;
     }
@@ -174,7 +145,6 @@ int hold_show_help(const char *topic) {
     if (!strcmp(topic, "targets")) return help_targets();
     if (!strcmp(topic, "system")) return help_system();
     if (!strcmp(topic, "scripting")) return help_scripting();
-    if (!strcmp(topic, "console")) return help_console();
     if (help_action(topic) == 0) return 0;
     fprintf(stderr, "hold: unknown help topic '%s'\n", topic);
     return 5;
@@ -208,18 +178,4 @@ int hold_validate_owned_command_arity(const char *command, int argc) {
         return 5;
     }
     return 0;
-}
-
-bool hold_parse_positive_count(const char *s, int *out) {
-    if (!s || !*s) {
-        return false;
-    }
-    char *end = NULL;
-    errno = 0;
-    long v = strtol(s, &end, 10);
-    if (end == s || *end != '\0' || errno != 0 || v < 1 || v > 1000) {
-        return false;
-    }
-    *out = (int)v;
-    return true;
 }

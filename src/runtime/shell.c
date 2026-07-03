@@ -12,6 +12,30 @@ struct shell_raw_terminal {
     bool active;
 };
 
+/* Set when a `hold off` running inside this session SIGTERMs the proxy so the
+ * relay loop can unwind cleanly (restore the terminal, hang up the shell). */
+static volatile sig_atomic_t g_hold_on_off_requested = 0;
+static void hold_on_off_signal_handler(int sig) {
+    (void)sig;
+    g_hold_on_off_requested = 1;
+}
+
+#if defined(__linux__)
+static int read_proc_comm(pid_t pid, char *out, size_t n) {
+    char path[64];
+    if (hold_checked_snprintf(path, sizeof(path), "/proc/%ld/comm", (long)pid) != 0) return -1;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t r = read(fd, out, n - 1);
+    close(fd);
+    if (r <= 0) return -1;
+    out[r] = '\0';
+    size_t len = strlen(out);
+    while (len && (out[len - 1] == '\n' || out[len - 1] == '\r')) out[--len] = '\0';
+    return 0;
+}
+#endif
+
 static const char *resolve_user_shell(void) {
     const char *shell = getenv("SHELL");
     if (shell && *shell) return shell;
@@ -575,6 +599,9 @@ static int relay_shell_pty(int master, pid_t child, bool *detached) {
     bool pending_ctrl_p = false;
     *detached = false;
     while (1) {
+        if (g_hold_on_off_requested) {
+            return 0;
+        }
         int status = 0;
         pid_t w = waitpid(child, &status, WNOHANG);
         if (w == child) {
@@ -660,6 +687,24 @@ int hold_cmd_shell_action(const struct hold_invocation *inv, const struct hold_s
         hold_die_errno("hold: failed to allocate shell PTY");
     }
     apply_window_size(master);
+
+    /* The shell (and anything it launches) inherits HOLD_ON_PID so a `hold off`
+     * run from inside the session can find and signal this proxy. */
+    char pidbuf[32];
+    snprintf(pidbuf, sizeof(pidbuf), "%ld", (long)getpid());
+    setenv("HOLD_ON_PID", pidbuf, 1);
+
+    g_hold_on_off_requested = 0;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = hold_on_off_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, NULL);
+
+    fprintf(stderr,
+            "Hold is now active. Ctrl-P Ctrl-Q puts the foreground program on hold; "
+            "'hold off' or exit ends the session.\n");
+
     pid_t child = spawn_shell_child(master, slave_path, shell);
     if (child < 0) {
         int saved = errno;
@@ -679,6 +724,13 @@ int hold_cmd_shell_action(const struct hold_invocation *inv, const struct hold_s
     bool detached = false;
     int rc = relay_shell_pty(master, child, &detached);
     leave_raw(&raw);
+    if (g_hold_on_off_requested && !detached) {
+        /* `hold off`: end the wrapper shell cleanly and return success. */
+        kill(child, SIGHUP);
+        waitpid(child, NULL, 0);
+        close(master);
+        return 0;
+    }
     if (detached) {
         pid_t fg_pgid = 0;
         if (ioctl(master, TIOCGPGRP, &fg_pgid) != 0) {
@@ -698,4 +750,40 @@ int hold_cmd_shell_action(const struct hold_invocation *inv, const struct hold_s
     }
     close(master);
     return rc;
+}
+
+int hold_cmd_off_action(void) {
+    const char *pidstr = getenv("HOLD_ON_PID");
+    if (!pidstr || !*pidstr) {
+        fprintf(stderr, "hold: not inside a hold on session\n");
+        return 1;
+    }
+    char *end = NULL;
+    errno = 0;
+    long pid = strtol(pidstr, &end, 10);
+    if (end == pidstr || *end != '\0' || errno != 0 || pid <= 1) {
+        fprintf(stderr, "hold: not inside a hold on session\n");
+        return 1;
+    }
+#if defined(__linux__)
+    /* Confirm the target is a live Hold process before signaling it: match its
+     * /proc/<pid>/comm against our own so we never TERM an unrelated pid. */
+    char self_comm[64] = {0}, target_comm[64] = {0};
+    if (read_proc_comm(getpid(), self_comm, sizeof(self_comm)) != 0 ||
+        read_proc_comm((pid_t)pid, target_comm, sizeof(target_comm)) != 0 ||
+        strcmp(self_comm, target_comm) != 0) {
+        fprintf(stderr, "hold: not inside a hold on session\n");
+        return 1;
+    }
+#else
+    if (kill((pid_t)pid, 0) != 0) {
+        fprintf(stderr, "hold: not inside a hold on session\n");
+        return 1;
+    }
+#endif
+    if (kill((pid_t)pid, SIGTERM) != 0) {
+        fprintf(stderr, "hold: not inside a hold on session\n");
+        return 1;
+    }
+    return 0;
 }

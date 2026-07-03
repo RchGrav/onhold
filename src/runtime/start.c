@@ -20,16 +20,6 @@ static volatile sig_atomic_t g_restart_stop = 0;
 static const char *explicit_start_argv0(bool owned, const char *command, int argc, char **argv);
 static int apply_child_env(int envc, char **env, bool clean_base);
 static int apply_child_capabilities(int cap_addc, char **cap_add, int cap_dropc, char **cap_drop);
-static int perform_explicit_start_options(const struct hold_invocation *inv,
-                                            const struct hold_store *store,
-                                            bool tail,
-                                            bool console_mode,
-                                            bool auto_remove,
-                                            bool interactive_stdin,
-                                            const char *restart_policy,
-                                            int restart_delay_seconds,
-                                            int argc,
-                                            char **argv);
 static int perform_start_with_metadata_name_options_internal(const struct hold_invocation *inv,
                                                              const struct hold_store *store,
                                                              const struct hold_start_options *opts);
@@ -242,7 +232,7 @@ static int find_restart_record(const struct hold_store *store, const char *token
     closedir(d);
     if (matches == 0) return 0;
     if (matches > 1) {
-        fprintf(stderr, "hold: error: restart target '%s' is ambiguous\n", token);
+        fprintf(stderr, "hold: error: call '%s' is ambiguous\n", token);
         return -2;
     }
     return 1;
@@ -268,12 +258,12 @@ static int restart_existing_run(const struct hold_invocation *inv,
     if (st == STATE_RUNNING) {
         char display[ID_DISPLAY_HEX_LEN + 1];
         hold_run_id_display(old.id, display);
-        fprintf(stderr, "hold: error: run %s is already running\n", display);
+        fprintf(stderr, "hold: error: call %s is already running\n", display);
         hold_free_run_record(&old);
         return 6;
     }
     if (!old.has_log || !old.log_path[0]) {
-        fprintf(stderr, "hold: error: run %s has no retained log path\n", id);
+        fprintf(stderr, "hold: error: call %s has no retained log path\n", id);
         hold_free_run_record(&old);
         return 5;
     }
@@ -326,14 +316,126 @@ out:
     return rc;
 }
 
+int hold_cmd_redial(const struct hold_invocation *inv,
+                      const struct hold_store *user_store,
+                      const struct hold_store *system_store,
+                      bool tail,
+                      bool console_mode,
+                      bool auto_remove,
+                      bool interactive_stdin,
+                      const char *restart_policy,
+                      int restart_delay_seconds,
+                      const char *token,
+                      bool *redialed) {
+    *redialed = false;
+    char restart_id[ID_STR_LEN];
+    const struct hold_store *restart_store = NULL;
+    int match = 0;
+    if (user_store && user_store->record_dir[0]) {
+        match = find_restart_record(user_store, token, restart_id);
+        if (match == 1) restart_store = user_store;
+    }
+    if (match == 0 && system_store && system_store->record_dir[0] && inv->euid_root) {
+        match = find_restart_record(system_store, token, restart_id);
+        if (match == 1) restart_store = system_store;
+    }
+    if (match == -2) {
+        *redialed = true;
+        return 6;
+    }
+    if (match < 0) {
+        *redialed = true;
+        return 3;
+    }
+    if (!restart_store) {
+        /* Not a retained call; the caller launches it as a command instead. */
+        return 0;
+    }
+    *redialed = true;
+    return restart_existing_run(inv, restart_store, tail, console_mode, auto_remove,
+                                interactive_stdin, restart_policy, restart_delay_seconds, restart_id);
+}
+
+int hold_cmd_rename_action(const struct hold_invocation *inv,
+                             const struct hold_store *user_store,
+                             const struct hold_store *system_store,
+                             const char *target_token,
+                             const char *new_name) {
+    if (!hold_valid_alias(new_name)) {
+        fprintf(stderr, "hold: error: invalid call name '%s'\n", new_name);
+        return 5;
+    }
+    struct hold_resolved_target *targets = NULL;
+    int ntargets = 0;
+    /* Both live and ended calls are renameable, so resolve with the widest
+     * (inspect) intent. */
+    int rc = hold_resolve_action_token(inv, user_store, system_store, "inspect", target_token, false, &targets, &ntargets);
+    if (rc != 0) {
+        free(targets);
+        return rc;
+    }
+    if (ntargets == 0) {
+        free(targets);
+        return hold_report_not_found(target_token);
+    }
+    struct hold_resolved_target target = targets[0];
+    if (target.requires_root) {
+        free(targets);
+        return hold_report_requires_root(target.id);
+    }
+    if (run_name_exists_in_store(&target.store, new_name, target.id)) {
+        fprintf(stderr, "hold: error: call name '%s' already exists\n", new_name);
+        free(targets);
+        return 5;
+    }
+    struct hold_run_record r;
+    char record_path[HOLD_PATH_MAX];
+    if (hold_load_record_by_id(target.store.record_dir, target.id, &r, record_path, sizeof(record_path)) != 0) {
+        free(targets);
+        return 5;
+    }
+    char *j = NULL;
+    char **argv = NULL;
+    int argc = 0;
+    if (hold_read_owned_file_no_symlink(record_path, &j) != 0 ||
+        hold_json_get_argv_alloc(j, &argv, &argc) != 0) {
+        fprintf(stderr, "hold: error: failed to load call record for %s\n", target.id);
+        free(j);
+        hold_free_run_record(&r);
+        free(targets);
+        return 5;
+    }
+    snprintf(r.name, sizeof(r.name), "%s", new_name);
+    r.has_name = true;
+    char out_path[HOLD_PATH_MAX];
+    if (hold_write_record_atomic(target.store.record_dir, &r, argc, argv, out_path, sizeof(out_path)) != 0) {
+        hold_free_argv_alloc(argv, argc);
+        free(j);
+        hold_free_run_record(&r);
+        free(targets);
+        hold_die_errno("hold: failed to write renamed call record");
+    }
+    if (target.store.kind == STORE_SYSTEM_MANAGED) {
+        (void)hold_write_public_index_atomic(&target.store, &r);
+    }
+    char display_id[ID_DISPLAY_HEX_LEN + 1];
+    hold_run_id_display(r.id, display_id);
+    hold_sig_note(inv, "hold: renamed %s to %s\n", display_id, new_name);
+    hold_free_argv_alloc(argv, argc);
+    free(j);
+    hold_free_run_record(&r);
+    free(targets);
+    return 0;
+}
+
 int hold_generate_run_name_for_id(const struct hold_store *store, const char *id, const char *requested, char out[ALIAS_MAX_LEN + 1]) {
     if (requested && *requested) {
         if (!hold_valid_alias(requested)) {
-            fprintf(stderr, "hold: error: invalid run name '%s'\n", requested);
+            fprintf(stderr, "hold: error: invalid call name '%s'\n", requested);
             return 5;
         }
         if (run_name_exists_in_store(store, requested, NULL)) {
-            fprintf(stderr, "hold: error: run name '%s' already exists\n", requested);
+            fprintf(stderr, "hold: error: call name '%s' already exists\n", requested);
             return 5;
         }
         snprintf(out, ALIAS_MAX_LEN + 1, "%s", requested);
@@ -1093,7 +1195,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
         if (existing_run_name && *existing_run_name) {
             if (hold_checked_snprintf(run_name, sizeof(run_name), "%s", existing_run_name) != 0) {
                 free_launch_and_observed_argv(launch_argv, observed_argv, argc);
-                hold_die_errno("hold: run name too long");
+                hold_die_errno("hold: call name too long");
             }
         }
     } else {
@@ -1537,7 +1639,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
     if (run_name[0]) {
         r.has_name = true;
         if (hold_checked_snprintf(r.name, sizeof(r.name), "%s", run_name) != 0) {
-            hold_die_errno("hold: run name too long");
+            hold_die_errno("hold: call name too long");
         }
     }
     if (console_sock[0]) {
@@ -1750,121 +1852,6 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
     return 1;
 }
 
-int hold_cmd_start_action_options(const struct hold_invocation *inv,
-                                    const struct hold_store *user_store,
-                                    const struct hold_store *system_store,
-                                    const struct hold_store *fallback_store,
-                                    bool tail,
-                                    bool console_mode,
-                                    bool auto_remove,
-                                    bool interactive_stdin,
-                                    bool multi,
-                                    int multi_count,
-                                    const char *restart_policy,
-                                    int restart_delay_seconds,
-                                    int argc,
-                                    char **argv) {
-    return hold_cmd_start_action_name_options(inv, user_store, system_store, fallback_store, tail, console_mode,
-                                              auto_remove, interactive_stdin, multi, multi_count, restart_policy,
-                                              restart_delay_seconds, NULL, true, argc, argv);
-}
-
-int hold_cmd_start_action_name_options(const struct hold_invocation *inv,
-                                        const struct hold_store *user_store,
-                                        const struct hold_store *system_store,
-                                        const struct hold_store *fallback_store,
-                                        bool tail,
-                                        bool console_mode,
-                                        bool auto_remove,
-                                        bool interactive_stdin,
-                                        bool multi,
-                                        int multi_count,
-                                        const char *restart_policy,
-                                        int restart_delay_seconds,
-                                        const char *requested_run_name,
-                                        bool allow_existing_restart,
-                                        int argc,
-                                        char **argv) {
-    (void)multi_count;
-    if (argc == 1 && allow_existing_restart) {
-        char restart_id[ID_STR_LEN];
-        const struct hold_store *restart_store = NULL;
-        int restart_match = 0;
-        if (user_store && user_store->record_dir[0]) {
-            restart_match = find_restart_record(user_store, argv[0], restart_id);
-            if (restart_match == 1) restart_store = user_store;
-        }
-        if (restart_match == 0 && system_store && system_store->record_dir[0] &&
-            (inv->euid_root || (fallback_store && fallback_store->kind == STORE_SYSTEM_MANAGED))) {
-            restart_match = find_restart_record(system_store, argv[0], restart_id);
-            if (restart_match == 1) restart_store = system_store;
-        }
-        if (restart_match == -2) {
-            return 6;
-        }
-        if (restart_match < 0) {
-            return 3;
-        }
-        if (restart_store) {
-            if (multi) {
-                fprintf(stderr, "hold: error: --multi applies only to profile starts\n");
-                return 5;
-            }
-            if (requested_run_name) {
-                fprintf(stderr, "hold: error: --name cannot rename an existing run during start\n");
-                return 5;
-            }
-            return restart_existing_run(inv,
-                                        restart_store,
-                                        tail,
-                                        console_mode,
-                                        auto_remove,
-                                        interactive_stdin,
-                                        restart_policy,
-                                        restart_delay_seconds,
-                                        restart_id);
-        }
-    }
-    if (multi) {
-        fprintf(stderr, "hold: error: --multi applies only to profile starts\n");
-        return 5;
-    }
-    if (requested_run_name) {
-        if (argc <= 0) {
-            fprintf(stderr, "usage: hold start <cmd> [args...]\n");
-            return 5;
-        }
-        if (argc == 1) {
-            char *shell_argv[4] = {"sh", "-c", argv[0], NULL};
-            struct hold_start_options opts = {
-                .tail = tail,
-                .console_mode = console_mode,
-                .auto_remove = auto_remove,
-                .interactive_stdin = interactive_stdin,
-                .argc = 3,
-                .argv = shell_argv,
-                .run_name = requested_run_name,
-                .restart_policy = restart_policy,
-                .restart_delay_seconds = restart_delay_seconds,
-            };
-            return hold_perform_start_options(inv, fallback_store, &opts);
-        }
-        struct hold_start_options opts = {
-            .tail = tail,
-            .console_mode = console_mode,
-            .auto_remove = auto_remove,
-            .interactive_stdin = interactive_stdin,
-            .argc = argc,
-            .argv = argv,
-            .run_name = requested_run_name,
-            .restart_policy = restart_policy,
-            .restart_delay_seconds = restart_delay_seconds,
-        };
-        return hold_perform_start_options(inv, fallback_store, &opts);
-    }
-    return perform_explicit_start_options(inv, fallback_store, tail, console_mode, auto_remove, interactive_stdin, restart_policy, restart_delay_seconds, argc, argv);
-}
-
 int hold_ensure_start_store_for_command(const struct hold_invocation *inv,
                                           bool requested_system,
                                           bool owned,
@@ -1886,49 +1873,4 @@ int hold_ensure_start_store_for_command(const struct hold_invocation *inv,
         return hold_ensure_system_store(store);
     }
     return hold_ensure_user_store_for_current_user(store);
-}
-
-static int perform_explicit_start_options(const struct hold_invocation *inv,
-                                            const struct hold_store *store,
-                                            bool tail,
-                                            bool console_mode,
-                                            bool auto_remove,
-                                            bool interactive_stdin,
-                                            const char *restart_policy,
-                                            int restart_delay_seconds,
-                                            int argc,
-                                            char **argv) {
-    if (argc <= 0) {
-        fprintf(stderr, "usage: hold start <cmd> [args...]\n");
-        return 5;
-    }
-    if (argc == 1) {
-        char *shell_argv[4];
-        shell_argv[0] = "sh";
-        shell_argv[1] = "-c";
-        shell_argv[2] = argv[0];
-        shell_argv[3] = NULL;
-        struct hold_start_options opts = {
-            .tail = tail,
-            .console_mode = console_mode,
-            .auto_remove = auto_remove,
-            .interactive_stdin = interactive_stdin,
-            .argc = 3,
-            .argv = shell_argv,
-            .restart_policy = restart_policy,
-            .restart_delay_seconds = restart_delay_seconds,
-        };
-        return hold_perform_start_options(inv, store, &opts);
-    }
-    struct hold_start_options opts = {
-        .tail = tail,
-        .console_mode = console_mode,
-        .auto_remove = auto_remove,
-        .interactive_stdin = interactive_stdin,
-        .argc = argc,
-        .argv = argv,
-        .restart_policy = restart_policy,
-        .restart_delay_seconds = restart_delay_seconds,
-    };
-    return hold_perform_start_options(inv, store, &opts);
 }

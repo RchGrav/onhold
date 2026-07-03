@@ -541,31 +541,22 @@ path_absent_soon() {
 }
 
 test_lifecycle() {
-  local out id lines sleep_bin
-  sleep_bin="$(resolve_path "$(command -v sleep)")" || return 1
+  local out id lines
   out=$("$HOLD_BIN" -d sleep 300 2>&1) || return 1
+  # Detached bare form prints exactly the 64-hex call id, nothing else.
+  printf '%s\n' "$out" | grep -Eqx '[0-9a-f]{64}' || { printf '%s\n' "$out" >&2; return 1; }
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   printf '%s\n' "$id" | grep -Eq '^[0-9a-f]{12}$' || return 1
-  printf '%s\n' "$out" | grep -Fqx "hold  started  $id   $sleep_bin 300"
-  printf '%s\n' "$out" | grep -Eq '^         log      .+/.+\.log$'
-  printf '%s\n' "$out" | grep -Eq "^         stop     hold stop $id$"
   "$HOLD_BIN" list | grep -Eq "^$id[[:space:]].*running"
-  "$HOLD_BIN" stop "$id" >/dev/null
+  "$HOLD_BIN" end "$id" >/dev/null
   "$HOLD_BIN" list | grep -Eq "^$id[[:space:]].*exited"
-  "$HOLD_BIN" prune >/dev/null
+  "$HOLD_BIN" purge >/dev/null
   lines=$("$HOLD_BIN" list | wc -l)
   [ "$lines" -eq 1 ]
 }
 
 
-test_start_output_stop_hint() {
-  local out id
-  out=$("$HOLD_BIN" -d sleep 300 2>&1) || return 1
-  id=$(printf '%s\n' "$out" | extract_id)
-  [ -n "$id" ] || return 1
-  printf '%s\n' "$out" | grep -Eq "^         stop     hold stop $id$"
-}
 test_kill_subcommand() {
   local out id pgid
   out=$("$HOLD_BIN" -d sleep 300 2>&1) || return 1
@@ -686,12 +677,12 @@ test_symlinked_log_rejected() {
   rm -f "$log" || return 1
   ln -s "$TEST_ROOT/log-target" "$log" || return 1
   set +e
-  "$HOLD_BIN" dump "$id" >"$TEST_ROOT/dump.out" 2>"$TEST_ROOT/dump.err"
+  "$HOLD_BIN" logs "$id" -p >"$TEST_ROOT/dump.out" 2>"$TEST_ROOT/dump.err"
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || return 1
   ! grep -q 'symlink-secret' "$TEST_ROOT/dump.out" || return 1
-  grep -q 'failed to open log for dump' "$TEST_ROOT/dump.err"
+  grep -q 'failed to open log' "$TEST_ROOT/dump.err"
 }
 
 test_invalid_pgid_record() {
@@ -803,29 +794,24 @@ test_argument_edges() {
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/bare-hold.out" "$TEST_ROOT/bare-hold.err" >&2; return 1; }
-  grep -q 'USAGE' "$TEST_ROOT/bare-hold.out" || { cat "$TEST_ROOT/bare-hold.out" >&2; return 1; }
+  grep -q 'PLACE A CALL' "$TEST_ROOT/bare-hold.out" || { cat "$TEST_ROOT/bare-hold.out" >&2; return 1; }
   set +e
-  "$HOLD_BIN" prune -all >/dev/null 2>"$TEST_ROOT/prune-flag.err"
+  "$HOLD_BIN" purge -all >/dev/null 2>"$TEST_ROOT/prune-flag.err"
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || return 1
   grep -q "unknown flag '-all'" "$TEST_ROOT/prune-flag.err" || return 1
   set +e
-  "$HOLD_BIN" stop >/dev/null 2>&1
+  "$HOLD_BIN" end >/dev/null 2>&1
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || return 1
   "$HOLD_BIN" --help >/dev/null || return 1
   "$HOLD_BIN" help >/dev/null || return 1
   "$HOLD_BIN" help --help >/dev/null || return 1
-  "$HOLD_BIN" help targets | grep -q 'run id, leading id prefix, or run name' || return 1
+  "$HOLD_BIN" help targets | grep -q 'call id, leading id prefix, or call name' || return 1
   "$HOLD_BIN" help scripting | grep -q 'Exit codes:' || return 1
-  "$HOLD_BIN" help run >"$TEST_ROOT/help-run.out" || return 1
-  grep -q -- '-p, --publish SPEC' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
-  grep -q -- '-v, --volume SPEC' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
-  grep -q -- '--restart POLICY' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
-  grep -q -- '--restart-delay N' "$TEST_ROOT/help-run.out" || { cat "$TEST_ROOT/help-run.out" >&2; return 1; }
-  "$HOLD_BIN" stop -h | grep -q 'usage: hold stop' || return 1
+  "$HOLD_BIN" end -h | grep -q 'usage: hold end' || return 1
   out=$("$HOLD_BIN" --version) || return 1
   printf '%s\n' "$out" | grep -Eq '^(dev(-[0-9a-f]{7,40}(-dirty)?)?|[0-9a-f]{7,40}|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
   set +e
@@ -894,7 +880,7 @@ test_log_view_internal_seed_filters() {
 
 test_log_view_follow_filters_live_output() {
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'sleep 0.2; echo ignore-before; sleep 0.2; echo "live-needle one"; sleep 0.2; echo ignore-after; sleep 0.2; echo "live-needle two"' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'sleep 0.2; echo ignore-before; sleep 0.2; echo "live-needle one"; sleep 0.2; echo ignore-after; sleep 0.2; echo "live-needle two"' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
@@ -912,7 +898,7 @@ test_hold_logs_follow_opens_dynamic_tty_filter() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'sleep 0.3; echo logs-ignore; sleep 0.3; echo "logs-live-hit"; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'sleep 0.3; echo logs-ignore; sleep 0.3; echo "logs-live-hit"; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
@@ -930,7 +916,7 @@ test_log_view_follow_dynamic_tty_filter() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'sleep 0.3; echo boring-ignore; sleep 0.3; echo "needle-live"; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'sleep 0.3; echo boring-ignore; sleep 0.3; echo "needle-live"; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
@@ -948,7 +934,7 @@ test_log_viewer_integrated_chrome_help_and_info() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo "chrome one"; echo "chrome two"; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "chrome one"; echo "chrome two"; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -969,7 +955,7 @@ test_log_viewer_space_excludes_and_ctrl_r_resets_filters() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo "example database timeout"; echo "unrelated payment ok"; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "example database timeout"; echo "unrelated payment ok"; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -988,7 +974,7 @@ test_log_view_selection_uses_cached_rows() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc max_gen
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'printf "needle 1\nneedle 2\nneedle 3\nneedle 4\n"; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'printf "needle 1\nneedle 2\nneedle 3\nneedle 4\n"; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1008,7 +994,7 @@ test_log_view_follow_pages_filtered_windows() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9; do echo "page-hit-$i"; done; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9; do echo "page-hit-$i"; done; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1037,7 +1023,7 @@ test_log_view_follow_page_up_stays_at_start() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 40); do echo "topjump-line-$i"; done; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 40); do echo "topjump-line-$i"; done; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1074,7 +1060,7 @@ test_log_view_follow_oldest_page_does_not_wrap_to_tail() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 50); do echo "nowrap-line-$i"; done; sleep 0.5' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 50); do echo "nowrap-line-$i"; done; sleep 0.5' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
@@ -1108,7 +1094,7 @@ test_log_view_follow_arrow_up_to_top_does_not_wrap_to_tail() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 45); do echo "arrowtop-line-$i"; done; sleep 0.3' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 45); do echo "arrowtop-line-$i"; done; sleep 0.3' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1143,7 +1129,7 @@ test_log_view_follow_top_navigation_is_idempotent() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 80); do echo "idempotent-top-line-$i"; done; sleep 0.8' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 80); do echo "idempotent-top-line-$i"; done; sleep 0.8' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
@@ -1179,7 +1165,7 @@ test_log_view_follow_repeated_top_commands_ignore_live_growth() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 40); do echo "sticktop-line-$i"; done; for i in $(seq 41 90); do sleep 0.03; echo "sticktop-line-$i"; done; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 40); do echo "sticktop-line-$i"; done; for i in $(seq 41 90); do sleep 0.03; echo "sticktop-line-$i"; done; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.15
@@ -1215,7 +1201,7 @@ test_log_view_modified_page_up_reaches_oldest_page_without_tail_loop() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 80); do echo "modpgup-line-$i"; done; sleep 0.4' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 80); do echo "modpgup-line-$i"; done; sleep 0.4' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
@@ -1248,7 +1234,7 @@ test_log_view_modified_home_key_pins_oldest_page_without_tail_loop() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 90); do echo "modhome-line-$i"; done; sleep 0.6; echo "modhome-line-91"; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 90); do echo "modhome-line-$i"; done; sleep 0.6; echo "modhome-line-91"; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
@@ -1281,7 +1267,7 @@ test_log_view_home_key_pins_oldest_page_without_tail_loop() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 90); do echo "homepin-line-$i"; done; sleep 0.6; echo "homepin-line-91"; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 90); do echo "homepin-line-$i"; done; sleep 0.6; echo "homepin-line-91"; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
@@ -1314,7 +1300,7 @@ test_log_view_follow_page_down_from_top_does_not_wrap_to_tail() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 70); do echo "topdown-line-$i"; done; sleep 0.3' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 70); do echo "topdown-line-$i"; done; sleep 0.3' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1347,7 +1333,7 @@ test_log_view_follow_page_down_stops_on_last_real_page() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 12); do echo "loopend-line-$i"; done; sleep 0.3' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 12); do echo "loopend-line-$i"; done; sleep 0.3' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1383,7 +1369,7 @@ test_log_view_follow_page_up_after_top_page_down_returns_to_top() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 60); do echo "navloop-line-$i"; done; sleep 0.3' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 60); do echo "navloop-line-$i"; done; sleep 0.3' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1418,7 +1404,7 @@ test_log_view_follow_filter_change_preserves_browsed_page() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo "target-top-one"; echo "target-top-two"; for i in $(seq 1 60); do echo "noise-middle-$i"; done; echo "target-tail-one"; echo "target-tail-two"; sleep 0.3' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "target-top-one"; echo "target-top-two"; for i in $(seq 1 60); do echo "noise-middle-$i"; done; echo "target-tail-one"; echo "target-tail-two"; sleep 0.3' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1451,7 +1437,7 @@ test_log_view_follow_exclude_preserves_browsed_page() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo "exclude-alpha-root"; for i in $(seq 1 40); do echo "keep-near-top-$i"; done; for i in $(seq 1 20); do echo "tail-after-exclude-$i"; done; sleep 0.3' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "exclude-alpha-root"; for i in $(seq 1 40); do echo "keep-near-top-$i"; done; for i in $(seq 1 20); do echo "tail-after-exclude-$i"; done; sleep 0.3' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1482,7 +1468,7 @@ test_log_view_follow_exclude_at_live_edge_pins_current_page() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo "drop heartbeat alpha"; echo "keep window one"; echo "keep window two"; echo "keep window three"; echo "keep window four"; echo "keep window five"; sleep 0.5; for i in $(seq 1 40); do sleep 0.03; echo "late bottom $i"; done; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "drop heartbeat alpha"; echo "keep window one"; echo "keep window two"; echo "keep window three"; echo "keep window four"; echo "keep window five"; sleep 0.5; for i in $(seq 1 40); do sleep 0.03; echo "late bottom $i"; done; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.05
@@ -1516,7 +1502,7 @@ test_log_view_follow_top_refills_as_live_log_grows() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 12); do echo "growtop-line-$i"; sleep 0.02; done; sleep 0.5' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 12); do echo "growtop-line-$i"; sleep 0.02; done; sleep 0.5' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
@@ -1547,7 +1533,7 @@ test_log_view_follow_cursor_navigation_disables_tail_yank() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 12); do echo "cursor-yank-line-$i"; done; for i in $(seq 13 40); do sleep 0.04; echo "cursor-yank-line-$i"; done; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 12); do echo "cursor-yank-line-$i"; done; for i in $(seq 13 40); do sleep 0.04; echo "cursor-yank-line-$i"; done; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.15
@@ -1579,7 +1565,7 @@ test_log_view_follow_cursor_browse_keeps_short_top_page_pinned() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in 1 2 3 4; do echo "pinshort-line-$i"; done; sleep 0.8; for i in $(seq 5 40); do sleep 0.03; echo "pinshort-line-$i"; done; sleep 3' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in 1 2 3 4; do echo "pinshort-line-$i"; done; sleep 0.8; for i in $(seq 5 40); do sleep 0.03; echo "pinshort-line-$i"; done; sleep 3' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.15
@@ -1616,7 +1602,7 @@ test_log_view_follow_page_up_stops_at_first_filtered_match() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 20); do echo "filtered-noise-$i"; done; for i in $(seq 1 40); do echo "filtered-target-line-$i"; done; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 20); do echo "filtered-noise-$i"; done; for i in $(seq 1 40); do echo "filtered-target-line-$i"; done; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1650,7 +1636,7 @@ test_log_view_printable_f_starts_dynamic_filter() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo "aaa unrelated"; echo "f-only-visible"; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "aaa unrelated"; echo "f-only-visible"; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.3
@@ -1668,7 +1654,7 @@ test_log_view_follow_exited_page_up_keeps_backward_navigation() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in $(seq 1 40); do echo "exitpage-line-$i"; done; sleep 0.1' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 40); do echo "exitpage-line-$i"; done; sleep 0.1' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
@@ -1700,7 +1686,7 @@ test_log_view_follow_browsed_away_marks_newer_without_yank() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in 1 2 3 4 5 6; do echo "away-hit-old-$i"; done; sleep 0.8; echo "away-hit-new-tail"; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in 1 2 3 4 5 6; do echo "away-hit-old-$i"; done; sleep 0.8; echo "away-hit-new-tail"; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
@@ -1719,7 +1705,7 @@ test_log_view_follow_ignores_nonmatching_newer_data() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in 1 2 3 4 5 6; do echo "nomatch-hit-old-$i"; done; sleep 0.8; echo "unrelated-new-tail"; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in 1 2 3 4 5 6; do echo "nomatch-hit-old-$i"; done; sleep 0.8; echo "unrelated-new-tail"; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
@@ -1738,7 +1724,7 @@ test_log_view_follow_finds_sparse_newer_match_after_large_burst() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id rc
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'for i in 1 2 3 4 5 6; do echo "burst-hit-old-$i"; done; sleep 0.8; python3 -c '"'"'import sys; sys.stdout.write("unrelated\\n" * 40000); sys.stdout.write("burst-hit-new-tail\\n"); sys.stdout.flush()'"'"'; sleep 0.2' 2>&1) || return 1
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in 1 2 3 4 5 6; do echo "burst-hit-old-$i"; done; sleep 0.8; python3 -c '"'"'import sys; sys.stdout.write("unrelated\\n" * 40000); sys.stdout.write("burst-hit-new-tail\\n"); sys.stdout.flush()'"'"'; sleep 0.2' 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   sleep 0.2
@@ -1754,10 +1740,9 @@ test_log_view_follow_finds_sparse_newer_match_after_large_burst() {
 }
 
 test_start_follow_short_form() {
-  local out id
+  local out
+  # -f keeps the foreground call streaming; foreground prints no id of its own.
   out=$("$HOLD_BIN" -f bash -c 'echo follow-short' 2>&1) || return 1
-  id=$(printf '%s\n' "$out" | extract_id)
-  [ -n "$id" ] || return 1
   printf '%s\n' "$out" | grep -q 'follow-short'
 }
 
@@ -1785,7 +1770,7 @@ test_persistent_stale_records() {
   HOLD_BOOT_ID_PATH="$bootfile" "$HOLD_BIN" list >/dev/null || return 1
   printf 'boot-b\n' >"$bootfile" || return 1
   list_out=$(HOLD_BOOT_ID_PATH="$bootfile" "$HOLD_BIN" list) || return 1
-  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+-[[:space:]]+stale[[:space:]]"
+  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+stale[[:space:]]"
   set +e
   HOLD_BOOT_ID_PATH="$bootfile" "$HOLD_BIN" stop "$id" >/dev/null 2>"$TEST_ROOT/stop.err"
   [ "$?" -eq 2 ] || return 1
@@ -1799,7 +1784,7 @@ test_persistent_stale_records() {
   grep -q 'stale' "$TEST_ROOT/print.err"
   HOLD_BOOT_ID_PATH="$bootfile" "$HOLD_BIN" tail "$id" >"$TEST_ROOT/tail.out" 2>&1 || return 1
   grep -q 'stale-line' "$TEST_ROOT/tail.out"
-  HOLD_BOOT_ID_PATH="$bootfile" "$HOLD_BIN" dump "$id" >"$TEST_ROOT/dump.out" 2>&1 || return 1
+  HOLD_BOOT_ID_PATH="$bootfile" "$HOLD_BIN" logs "$id" -p >"$TEST_ROOT/dump.out" 2>&1 || return 1
   grep -q 'stale-line' "$TEST_ROOT/dump.out"
   record_exists "$id" "$store" && log_exists "$id" "$store"
 }
@@ -1816,8 +1801,8 @@ test_boot_unavailable_does_not_force_stale() {
   [ -n "$pgid" ] || return 1
   rm -f "$bootfile"
   list_out=$(HOLD_BOOT_ID_PATH="$bootfile" "$HOLD_BIN" list) || return 1
-  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+-[[:space:]]+running[[:space:]]" || return 1
-  ! printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+-[[:space:]]+stale[[:space:]]" || return 1
+  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+running[[:space:]]" || return 1
+  ! printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+stale[[:space:]]" || return 1
   set +e
   got=$(HOLD_BOOT_ID_PATH="$bootfile" "$HOLD_BIN" stop --print "$id" 2>"$TEST_ROOT/missing-boot-print.err")
   rc=$?
@@ -1828,21 +1813,13 @@ test_boot_unavailable_does_not_force_stale() {
 }
 
 test_leader_zombie_group_still_running() {
-  local i id list_out tail_pid
-  "$HOLD_BIN" --tail bash -c 'sleep 60 & exit 0' >"$TEST_ROOT/tail.out" 2>"$TEST_ROOT/tail.err" &
-  tail_pid=$!
-  id=""
-  for i in $(seq 1 50); do
-    id=$(extract_id <"$TEST_ROOT/tail.out" || true)
-    [ -n "$id" ] && break
-    sleep 0.05
-  done
+  local id list_out
+  id=$("$HOLD_BIN" -d bash -c 'sleep 60 & exit 0' 2>&1 | extract_id) || return 1
   [ -n "$id" ] || return 1
   sleep 0.3
   list_out=$("$HOLD_BIN" list) || return 1
-  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+-[[:space:]]+running[[:space:]]" || return 1
-  "$HOLD_BIN" stop "$id" >/dev/null || return 1
-  wait "$tail_pid" || true
+  printf '%s\n' "$list_out" | grep -Eq "^$id[[:space:]]+running[[:space:]]" || return 1
+  "$HOLD_BIN" end "$id" >/dev/null || return 1
 }
 
 test_tail_finished_log_prints_existing_output() {
@@ -1907,7 +1884,7 @@ test_console_round_trip_and_log_tee() {
   sock=$(sed -n 's/.*"console_sock":[[:space:]]*"\([^"]*\)".*/\1/p' "$record" | head -n1)
   [ -n "$sock" ] || { cat "$record" >&2; return 1; }
   "$HOLD_BIN" list >"$TEST_ROOT/console-list.out" || return 1
-  grep -Eq "^$id[[:space:]]+-[[:space:]]+running[[:space:]]" "$TEST_ROOT/console-list.out" || {
+  grep -Eq "^$id[[:space:]]+running[[:space:]]" "$TEST_ROOT/console-list.out" || {
     cat "$TEST_ROOT/console-list.out" >&2
     return 1
   }
@@ -2322,7 +2299,7 @@ test_root_capability_drop_all_then_add_preserves_added_cap() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "root actor unavailable"
   [ -r /proc/self/status ] || skip "/proc status unavailable"
   local out cap_hex
-  out=$(as_root "$HOLD_REAL_BIN" run --rm --cap-drop ALL --cap-add NET_BIND_SERVICE -- /bin/sh -c 'grep "^CapEff:" /proc/self/status' 2>&1) || {
+  out=$(as_root "$HOLD_REAL_BIN" --rm --cap-drop ALL --cap-add NET_BIND_SERVICE -- /bin/sh -c 'grep "^CapEff:" /proc/self/status' 2>&1) || {
     printf '%s
 ' "$out" >&2
     return 1
@@ -2344,7 +2321,7 @@ test_direct_capability_metadata_projects_to_inspect() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "root actor unavailable"
   command -v python3 >/dev/null 2>&1 || skip "python3 not available"
   local out id
-  out=$(as_root "$HOLD_REAL_BIN" run -d --cap-add NET_BIND_SERVICE --cap-drop ALL -- /bin/sleep 60 2>&1) || {
+  out=$(as_root "$HOLD_REAL_BIN" -d --cap-add NET_BIND_SERVICE --cap-drop ALL -- /bin/sleep 60 2>&1) || {
     printf '%s\n' "$out" >&2
     return 1
   }
@@ -2374,7 +2351,7 @@ grep '^CapEff:' /proc/self/status
 exit 7
 EOS
   chmod 755 "$script" || return 1
-  out=$(as_root "$HOLD_REAL_BIN" run -d --restart on-failure:1 --restart-delay 0 \
+  out=$(as_root "$HOLD_REAL_BIN" -d --restart on-failure:1 --restart-delay 0 \
       --cap-drop ALL --cap-add NET_BIND_SERVICE -- \
       "$script" 2>&1) || {
     printf '%s\n' "$out" >&2
@@ -2411,7 +2388,7 @@ PY
 test_docker_rm_removes_run_artifacts_after_exit() {
   local out id store json log
   store="$HOME/.local/state/hold"
-  out=$("$HOLD_BIN" run -d --rm -- /bin/sh -c 'echo rm-gone; sleep 0.3' 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  out=$("$HOLD_BIN" -d --rm -- /bin/sh -c 'echo rm-gone; sleep 0.3' 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   json=$(record_path "$id" "$store") || { find "$store" -maxdepth 1 -type f -print >&2 || true; return 1; }
@@ -2457,7 +2434,7 @@ test_raw_start_does_not_steal_trailing_system() {
 test_public_root_index_list_is_redacted() {
   write_public_index_fixture abc12345cafe running 2026-06-15T18:42:11Z || return 1
   "$HOLD_BIN" list --iso >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  grep -Eq '^abc12345cafe[[:space:]]+-[[:space:]]+running[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || return 1
+  grep -Eq '^abc12345cafe[[:space:]]+running[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || return 1
   ! grep -q 'secret' "$TEST_ROOT/list.out"
 }
 
@@ -2491,7 +2468,7 @@ test_public_root_index_list_reads_projected_state() {
 JSON
   chmod 0644 "$HOLD_TEST_SYSTEM_STATE_DIR/public/$id.json" || return 1
   "$HOLD_BIN" list --iso >"$TEST_ROOT/list.out" 2>"$TEST_ROOT/list.err" || return 1
-  grep -Eq '^deadbeefcafe[[:space:]]+-[[:space:]]+exited[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || { cat "$TEST_ROOT/list.out" >&2; return 1; }
+  grep -Eq '^deadbeefcafe[[:space:]]+exited[[:space:]]+2026-06-15T18:42:11Z[[:space:]]+<root-managed>$' "$TEST_ROOT/list.out" || { cat "$TEST_ROOT/list.out" >&2; return 1; }
   ! grep -q 'secret' "$TEST_ROOT/list.out"
 }
 
@@ -2675,7 +2652,7 @@ JSON
 test_root_start_writes_system_store_and_public_unknown() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
   local out id mode list_out
-  out=$(as_root "$HOLD_REAL_BIN" true 2>&1) || return 1
+  out=$(as_root "$HOLD_REAL_BIN" -d true 2>&1) || return 1
   id=$(printf '%s
 ' "$out" | extract_id)
   [ -n "$id" ] || return 1
@@ -2727,13 +2704,13 @@ PY
   [ "$matched" = 1 ] || { cat "$TEST_ROOT/root-public-state-compare.err" "$TEST_ROOT/root-private-state.json" "$public_json" >&2; return 1; }
   list_out=$("$HOLD_BIN" list) || return 1
   printf '%s
-' "$list_out" | grep -Eq "^$id[[:space:]]+-[[:space:]]+(running|exited|Exited|Up)[[:space:]]"
+' "$list_out" | grep -Eq "^$id[[:space:]]+(running|exited|Exited|Up)[[:space:]]"
 }
 
 test_sudo_start_writes_system_store_with_invoking_metadata() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
   local out id json
-  out=$(as_sudo_from_user "$HOLD_REAL_BIN" true 2>&1) || return 1
+  out=$(as_sudo_from_user "$HOLD_REAL_BIN" -d true 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   json=$(root_record_path "$id" "$HOLD_TEST_SYSTEM_STATE_DIR/runs") || return 1
@@ -2834,7 +2811,7 @@ test_sudo_context_can_stop_unique_user_local_run() {
 
 test_docker_shaped_cli_flags_and_rm() {
   local out id id2
-  out=$("$HOLD_BIN" run -d --name docker-web -e HOLD_DOCKER_ENV=ok -- /bin/sh -c 'echo "$HOLD_DOCKER_ENV"; sleep 0.1' 2>&1) || {
+  out=$("$HOLD_BIN" -d --name docker-web -e HOLD_DOCKER_ENV=ok -- /bin/sh -c 'echo "$HOLD_DOCKER_ENV"; sleep 0.1' 2>&1) || {
     printf '%s\n' "$out" >&2
     return 1
   }
@@ -2858,8 +2835,8 @@ if 'ok\n' in json.dumps(record):
     raise SystemExit('inspect returned log text instead of structured record data')
 PY
   "$HOLD_BIN" ps -a >"$TEST_ROOT/docker-ps.out" || return 1
-  grep -Eq "^RUN ID[[:space:]]+PROFILE[[:space:]]+COMMAND[[:space:]]+CREATED[[:space:]]+STATUS[[:space:]]+PORTS[[:space:]]+NAMES" "$TEST_ROOT/docker-ps.out" || { cat "$TEST_ROOT/docker-ps.out" >&2; return 1; }
-  grep -Eq "^$id[[:space:]]+-[[:space:]].*Exited.*docker-web$" "$TEST_ROOT/docker-ps.out" || { cat "$TEST_ROOT/docker-ps.out" >&2; return 1; }
+  grep -Eq "^CALL ID[[:space:]]+COMMAND[[:space:]]+CREATED[[:space:]]+STATUS[[:space:]]+PORTS[[:space:]]+NAMES" "$TEST_ROOT/docker-ps.out" || { cat "$TEST_ROOT/docker-ps.out" >&2; return 1; }
+  grep -Eq "^$id[[:space:]]+.*Exited.*docker-web$" "$TEST_ROOT/docker-ps.out" || { cat "$TEST_ROOT/docker-ps.out" >&2; return 1; }
 
   out=$("$HOLD_BIN" -d --name docker-direct /bin/sh -c 'echo direct; sleep 5' 2>&1) || {
     printf '%s\n' "$out" >&2
@@ -2874,19 +2851,23 @@ PY
 
 test_docker_bare_launch_foreground_follows_output_by_default() {
   local out id
+  # Bare foreground streams the process output and prints no id of its own.
   out=$("$HOLD_BIN" -- /bin/sh -c 'echo bare-foreground-ok' 2>"$TEST_ROOT/docker-bare-foreground.err") || {
     cat "$TEST_ROOT/docker-bare-foreground.err" >&2
     return 1
   }
-  id=$(printf '%s\n' "$out" | extract_id)
-  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
-  ! grep -q '^bare-foreground-ok$' <<<"$out" || { printf '%s\n' "$out" >&2; return 1; }
+  grep -q '^bare-foreground-ok$' <<<"$out" || { printf '%s\n' "$out" >&2; return 1; }
+  if grep -Eq '^[0-9a-f]{12}$|^[0-9a-f]{64}$' <<<"$out"; then
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
 
+  # Detached prints exactly the bare 64-hex id and hides the process output.
   out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo bare-detached-hidden; sleep 0.1' 2>"$TEST_ROOT/docker-bare-detached.err") || {
     cat "$TEST_ROOT/docker-bare-detached.err" >&2
     return 1
   }
-  id=$(printf '%s\n' "$out" | extract_id)
+  id=$(printf '%s\n' "$out" | sed -n '/^[0-9a-f]\{64\}$/p')
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   if grep -q '^bare-detached-hidden$' <<<"$out"; then
     printf '%s\n' "$out" >&2
@@ -2897,7 +2878,7 @@ test_docker_bare_launch_foreground_follows_output_by_default() {
 
 test_docker_run_foreground_follows_output_by_default() {
   local out id
-  out=$("$HOLD_BIN" run -- /bin/sh -c 'echo docker-foreground-ok' 2>"$TEST_ROOT/docker-foreground.err") || {
+  out=$("$HOLD_BIN" -- /bin/sh -c 'echo docker-foreground-ok' 2>"$TEST_ROOT/docker-foreground.err") || {
     cat "$TEST_ROOT/docker-foreground.err" >&2
     return 1
   }
@@ -2908,7 +2889,7 @@ test_docker_run_foreground_follows_output_by_default() {
     return 1
   fi
 
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo docker-detached-hidden; sleep 0.1' 2>"$TEST_ROOT/docker-detached.err") || {
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo docker-detached-hidden; sleep 0.1' 2>"$TEST_ROOT/docker-detached.err") || {
     cat "$TEST_ROOT/docker-detached.err" >&2
     return 1
   }
@@ -2923,18 +2904,18 @@ test_docker_run_foreground_follows_output_by_default() {
 
 test_docker_unsupported_options_fail_loudly() {
   local rc
-  "$HOLD_BIN" start /bin/true --detach-keys ctrl-p,ctrl-q >/dev/null 2>"$TEST_ROOT/docker-detach-keys-default.err" || {
+  "$HOLD_BIN" --detach-keys ctrl-p,ctrl-q /bin/true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-default.err" || {
     cat "$TEST_ROOT/docker-detach-keys-default.err" >&2
     return 1
   }
 
-  "$HOLD_BIN" start /bin/true --detach-keys ctrl-a >/dev/null 2>"$TEST_ROOT/docker-detach-keys-custom.err" || {
+  "$HOLD_BIN" --detach-keys ctrl-a /bin/true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-custom.err" || {
     cat "$TEST_ROOT/docker-detach-keys-custom.err" >&2
     return 1
   }
 
   set +e
-  "$HOLD_BIN" start /bin/true --detach-keys ctrl-not-a-key >/dev/null 2>"$TEST_ROOT/docker-detach-keys-invalid.err"
+  "$HOLD_BIN" --detach-keys ctrl-not-a-key /bin/true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-invalid.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { echo "invalid --detach-keys: rc=$rc (want 5)" >&2; return 1; }
@@ -2948,7 +2929,7 @@ test_docker_unsupported_options_fail_loudly() {
 
 test_docker_restart_policy_restarts_failures() {
   local out id count got
-  out=$("$HOLD_BIN" run -d --restart on-failure:2 --restart-delay 0 -- /bin/sh -c 'mkdir -p "$HOME"; echo attempt >> "$HOME/restart-count"; c=$(wc -l < "$HOME/restart-count"); echo restart-attempt-$c; [ "$c" -lt 3 ] && exit 7 || sleep 1' 2>&1) || {
+  out=$("$HOLD_BIN" -d --restart on-failure:2 --restart-delay 0 -- /bin/sh -c 'mkdir -p "$HOME"; echo attempt >> "$HOME/restart-count"; c=$(wc -l < "$HOME/restart-count"); echo restart-attempt-$c; [ "$c" -lt 3 ] && exit 7 || sleep 1' 2>&1) || {
     printf '%s\n' "$out" >&2
     return 1
   }
@@ -2974,21 +2955,21 @@ test_docker_restart_policy_restarts_failures() {
 test_docker_restart_validation_and_tty_gate() {
   local rc
   set +e
-  "$HOLD_BIN" run --restart nonsense /bin/true >/dev/null 2>"$TEST_ROOT/restart-invalid.err"
+  "$HOLD_BIN" --restart nonsense /bin/true >/dev/null 2>"$TEST_ROOT/restart-invalid.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { echo "invalid restart rc=$rc" >&2; return 1; }
   grep -q 'invalid --restart policy' "$TEST_ROOT/restart-invalid.err" || { cat "$TEST_ROOT/restart-invalid.err" >&2; return 1; }
 
   set +e
-  "$HOLD_BIN" run --restart-delay 1 /bin/true >/dev/null 2>"$TEST_ROOT/restart-delay-alone.err"
+  "$HOLD_BIN" --restart-delay 1 /bin/true >/dev/null 2>"$TEST_ROOT/restart-delay-alone.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { echo "restart-delay without restart rc=$rc" >&2; return 1; }
   grep -q -- '--restart-delay requires --restart' "$TEST_ROOT/restart-delay-alone.err" || { cat "$TEST_ROOT/restart-delay-alone.err" >&2; return 1; }
 
   set +e
-  "$HOLD_BIN" run -t --restart always /bin/true >/dev/null 2>"$TEST_ROOT/restart-tty.err"
+  "$HOLD_BIN" -t --restart always /bin/true >/dev/null 2>"$TEST_ROOT/restart-tty.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { echo "restart tty rc=$rc" >&2; return 1; }
@@ -3000,7 +2981,7 @@ test_docker_restart_validation_and_tty_gate() {
 
 test_start_existing_run_appends_retained_log() {
   local out id log before_count after_count restart_out
-  out=$("$HOLD_BIN" run -d -- /bin/sh -c 'echo restart-append-marker' 2>&1) || {
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo restart-append-marker' 2>&1) || {
     printf '%s\n' "$out" >&2
     return 1
   }
@@ -3013,7 +2994,7 @@ test_start_existing_run_appends_retained_log() {
     sleep 0.1
   done
   [ "${before_count:-0}" -ge 1 ] || { cat "$log" >&2; return 1; }
-  restart_out=$("$HOLD_BIN" start "$id" 2>&1) || {
+  restart_out=$("$HOLD_BIN" -d "$id" 2>&1) || {
     printf '%s\n' "$restart_out" >&2
     return 1
   }
@@ -3030,14 +3011,14 @@ test_start_existing_run_appends_retained_log() {
 test_docker_publish_and_volume_rejected() {
   local rc
   set +e
-  "$HOLD_BIN" run -p 8080:3000 -- /bin/true >"$TEST_ROOT/docker-publish.out" 2>"$TEST_ROOT/docker-publish.err"
+  "$HOLD_BIN" -p 8080:3000 -- /bin/true >"$TEST_ROOT/docker-publish.out" 2>"$TEST_ROOT/docker-publish.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { cat "$TEST_ROOT/docker-publish.out" "$TEST_ROOT/docker-publish.err" >&2; return 1; }
   grep -q 'does not publish or forward ports' "$TEST_ROOT/docker-publish.err" || { cat "$TEST_ROOT/docker-publish.err" >&2; return 1; }
 
   set +e
-  "$HOLD_BIN" run -v "$TEST_ROOT:/work" -- /bin/true >"$TEST_ROOT/docker-volume.out" 2>"$TEST_ROOT/docker-volume.err"
+  "$HOLD_BIN" -v "$TEST_ROOT:/work" -- /bin/true >"$TEST_ROOT/docker-volume.out" 2>"$TEST_ROOT/docker-volume.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { cat "$TEST_ROOT/docker-volume.out" "$TEST_ROOT/docker-volume.err" >&2; return 1; }
@@ -3047,13 +3028,13 @@ test_docker_publish_and_volume_rejected() {
 
 test_docker_interactive_stdin_pipes_to_child() {
   local out id
-  out=$(printf 'stdin-i-ok\n' | "$HOLD_BIN" run -i -f -- /bin/cat 2>"$TEST_ROOT/docker-i.err") || {
+  out=$(printf 'stdin-i-ok\n' | "$HOLD_BIN" -i -f -- /bin/cat 2>"$TEST_ROOT/docker-i.err") || {
     cat "$TEST_ROOT/docker-i.err" >&2
     return 1
   }
   grep -q '^stdin-i-ok$' <<<"$out" || { printf '%s\n' "$out" >&2; return 1; }
 
-  out=$(printf 'stdin-no-i\n' | "$HOLD_BIN" run -f -- /bin/cat 2>"$TEST_ROOT/docker-no-i.err") || {
+  out=$(printf 'stdin-no-i\n' | "$HOLD_BIN" -f -- /bin/cat 2>"$TEST_ROOT/docker-no-i.err") || {
     cat "$TEST_ROOT/docker-no-i.err" >&2
     return 1
   }
@@ -3075,7 +3056,7 @@ sleep 30
 EOF
   chmod +x "$TEST_ROOT/docker-tty-child.sh"
   set +e
-  python3 - <<'PY' | script -qfec "$HOLD_BIN run -it $TEST_ROOT/docker-tty-child.sh" /dev/null >"$TEST_ROOT/docker-tty.out" 2>"$TEST_ROOT/docker-tty.err"
+  python3 - <<'PY' | script -qfec "$HOLD_BIN -it $TEST_ROOT/docker-tty-child.sh" /dev/null >"$TEST_ROOT/docker-tty.out" 2>"$TEST_ROOT/docker-tty.err"
 import sys, time
 out = sys.stdout.buffer
 time.sleep(0.5)
@@ -3096,7 +3077,7 @@ PY
   record=$(record_path "$id") || { find "$HOME/.local/state/hold" -maxdepth 1 -type f -print >&2 || true; return 1; }
   grep -q '"console_sock": "' "$record" || { cat "$record" >&2; return 1; }
   "$HOLD_BIN" ps >"$TEST_ROOT/docker-tty-ps.out" || return 1
-  grep -Eq "^$id[[:space:]]+-[[:space:]].*Up " "$TEST_ROOT/docker-tty-ps.out" || { cat "$TEST_ROOT/docker-tty-ps.out" >&2; return 1; }
+  grep -Eq "^$id[[:space:]]+.*Up " "$TEST_ROOT/docker-tty-ps.out" || { cat "$TEST_ROOT/docker-tty-ps.out" >&2; return 1; }
   "$HOLD_BIN" stop "$id" >/dev/null || return 1
 }
 
@@ -3113,7 +3094,7 @@ sleep 30
 EOF
   chmod +x "$TEST_ROOT/docker-tty-custom-child.sh"
   set +e
-  python3 - <<'PY' | script -qfec "$HOLD_BIN run -it --detach-keys ctrl-a $TEST_ROOT/docker-tty-custom-child.sh" /dev/null >"$TEST_ROOT/docker-tty-custom.out" 2>"$TEST_ROOT/docker-tty-custom.err"
+  python3 - <<'PY' | script -qfec "$HOLD_BIN -it --detach-keys ctrl-a $TEST_ROOT/docker-tty-custom-child.sh" /dev/null >"$TEST_ROOT/docker-tty-custom.out" 2>"$TEST_ROOT/docker-tty-custom.err"
 import sys, time
 out = sys.stdout.buffer
 time.sleep(0.5)
@@ -3130,7 +3111,7 @@ PY
   id=$("$HOLD_BIN" list | awk '/docker-tty-custom-child/ {print $1; exit}')
   [ -n "$id" ] || { "$HOLD_BIN" list >&2; return 1; }
   "$HOLD_BIN" ps >"$TEST_ROOT/docker-tty-custom-ps.out" || return 1
-  grep -Eq "^$id[[:space:]]+-[[:space:]].*Up " "$TEST_ROOT/docker-tty-custom-ps.out" || { cat "$TEST_ROOT/docker-tty-custom-ps.out" >&2; return 1; }
+  grep -Eq "^$id[[:space:]]+.*Up " "$TEST_ROOT/docker-tty-custom-ps.out" || { cat "$TEST_ROOT/docker-tty-custom-ps.out" >&2; return 1; }
   "$HOLD_BIN" stop "$id" >/dev/null || return 1
 }
 
@@ -3327,7 +3308,7 @@ root_safe_hold_copy() {
 test_system_store_directory_modes() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
   local id d mode
-  id=$(as_root "$HOLD_REAL_BIN" true 2>&1 | extract_id)
+  id=$(as_root "$HOLD_REAL_BIN" -d true 2>&1 | extract_id)
   [ -n "$id" ] || return 1
   for d in runs logs console; do
     mode=$(root_file_mode "$HOLD_TEST_SYSTEM_STATE_DIR/$d") || return 1
@@ -3344,7 +3325,7 @@ test_system_store_tightens_preexisting_loose_dir() {
   local id mode
   as_root mkdir -p "$HOLD_TEST_SYSTEM_STATE_DIR/runs" || return 1
   as_root chmod 0777 "$HOLD_TEST_SYSTEM_STATE_DIR/runs" || return 1
-  id=$(as_root "$HOLD_REAL_BIN" true 2>&1 | extract_id)
+  id=$(as_root "$HOLD_REAL_BIN" -d true 2>&1 | extract_id)
   [ -n "$id" ] || return 1
   mode=$(root_file_mode "$HOLD_TEST_SYSTEM_STATE_DIR/runs") || return 1
   [ "$mode" = 700 ] || { echo "pre-existing loose runs/ not tightened: mode=$mode" >&2; return 1; }
@@ -3375,7 +3356,7 @@ test_system_store_refuses_symlinked_critical_dirs() {
     HOLD_TEST_SYSTEM_STATE_DIR="$state"
     export HOLD_TEST_SYSTEM_STATE_DIR
     set +e
-    as_root "$HOLD_REAL_BIN" true >/dev/null 2>"$TEST_ROOT/syslink-$name.err"
+    as_root "$HOLD_REAL_BIN" -d true >/dev/null 2>"$TEST_ROOT/syslink-$name.err"
     rc=$?
     set -e
     HOLD_TEST_SYSTEM_STATE_DIR="$old_store"
@@ -3389,7 +3370,7 @@ test_system_store_refuses_symlinked_critical_dirs() {
 test_system_store_artifacts_owned_by_root() {
   [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "no root actor"
   local id owner record log
-  id=$(as_root "$HOLD_REAL_BIN" true 2>&1 | extract_id)
+  id=$(as_root "$HOLD_REAL_BIN" -d true 2>&1 | extract_id)
   [ -n "$id" ] || return 1
   record=$(root_record_path "$id" "$HOLD_TEST_SYSTEM_STATE_DIR/runs") || return 1
   log=$(root_log_path "$id" "$HOLD_TEST_SYSTEM_STATE_DIR/logs") || return 1
@@ -3401,7 +3382,7 @@ test_system_store_artifacts_owned_by_root() {
 
 test_nonroot_ignores_spoofed_sudo_provenance() {
   local out id json
-  out=$(as_user_spoof_sudo "$HOLD_REAL_BIN" true 2>&1) || return 1
+  out=$(as_user_spoof_sudo "$HOLD_REAL_BIN" -d true 2>&1) || return 1
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
   json=$(record_path "$id" "$ACTOR_HOME/.local/state/hold") || true
@@ -3448,9 +3429,9 @@ test_public_index_write_rollback() {
 test_quiet_suppresses_banner_keeps_id() {
   local out id
   out=$("$HOLD_BIN" --quiet -d /bin/sleep 300 2>"$TEST_ROOT/q.err") || return 1
-  id=$(printf '%s\n' "$out" | extract_id)
+  id=$(printf '%s\n' "$out" | sed -n '/^[0-9a-f]\{64\}$/p')
   [ -n "$id" ] || { echo "no id from --quiet start" >&2; return 1; }
-  [ "$out" = "$id" ] || { echo "--quiet stdout is not the bare id: [$out]" >&2; return 1; }
+  [ "$out" = "$id" ] || { echo "--quiet stdout is not the bare 64-hex id: [$out]" >&2; return 1; }
   [ ! -s "$TEST_ROOT/q.err" ] || { echo "--quiet start wrote to stderr:" >&2; cat "$TEST_ROOT/q.err" >&2; return 1; }
   "$HOLD_BIN" --quiet stop "$id" >/dev/null 2>"$TEST_ROOT/q2.err" || return 1
   [ ! -s "$TEST_ROOT/q2.err" ] || { echo "--quiet stop wrote to stderr" >&2; return 1; }
@@ -3471,9 +3452,9 @@ test_run_id_prefix_resolution() {
 
 test_misc_action_guards() {
   local rc
-  set +e; "$HOLD_BIN" --console stop deadbeef >/dev/null 2>"$TEST_ROOT/c.err"; rc=$?; set -e
-  [ "$rc" -eq 5 ] || { echo "--console stop: rc=$rc (want 5)" >&2; return 1; }
-  grep -q 'only to starts' "$TEST_ROOT/c.err" || { cat "$TEST_ROOT/c.err" >&2; return 1; }
+  set +e; "$HOLD_BIN" --console end deadbeef >/dev/null 2>"$TEST_ROOT/c.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "--console end: rc=$rc (want 5)" >&2; return 1; }
+  grep -q 'only when launching a call' "$TEST_ROOT/c.err" || { cat "$TEST_ROOT/c.err" >&2; return 1; }
   set +e; "$HOLD_BIN" help bogustopic >/dev/null 2>"$TEST_ROOT/h.err"; rc=$?; set -e
   [ "$rc" -eq 5 ] || { echo "help bogustopic: rc=$rc (want 5)" >&2; return 1; }
   grep -q 'unknown help topic' "$TEST_ROOT/h.err" || { cat "$TEST_ROOT/h.err" >&2; return 1; }
@@ -3488,17 +3469,13 @@ test_owned_command_exact_arity() {
   [ "$rc" -eq 5 ] || { echo "tail extra: rc=$rc (want 5)" >&2; return 1; }
   grep -q 'usage: hold tail <target>' "$TEST_ROOT/tail-extra.err" || { cat "$TEST_ROOT/tail-extra.err" >&2; return 1; }
 
-  set +e; "$HOLD_BIN" dump deadbeef extra >/dev/null 2>"$TEST_ROOT/dump-extra.err"; rc=$?; set -e
-  [ "$rc" -eq 5 ] || { echo "dump extra: rc=$rc (want 5)" >&2; return 1; }
-  grep -q 'usage: hold dump <target>' "$TEST_ROOT/dump-extra.err" || { cat "$TEST_ROOT/dump-extra.err" >&2; return 1; }
-
   set +e; "$HOLD_BIN" console deadbeef extra >/dev/null 2>"$TEST_ROOT/console-extra.err"; rc=$?; set -e
   [ "$rc" -eq 5 ] || { echo "console extra: rc=$rc (want 5)" >&2; return 1; }
   grep -q 'usage: hold console <target>' "$TEST_ROOT/console-extra.err" || { cat "$TEST_ROOT/console-extra.err" >&2; return 1; }
 
-  set +e; "$HOLD_BIN" prune deadbeef extra >/dev/null 2>"$TEST_ROOT/prune-extra.err"; rc=$?; set -e
-  [ "$rc" -eq 5 ] || { echo "prune extra: rc=$rc (want 5)" >&2; return 1; }
-  grep -q 'usage: hold prune \[target|all\] \[--all\]' "$TEST_ROOT/prune-extra.err" || { cat "$TEST_ROOT/prune-extra.err" >&2; return 1; }
+  set +e; "$HOLD_BIN" purge deadbeef extra >/dev/null 2>"$TEST_ROOT/prune-extra.err"; rc=$?; set -e
+  [ "$rc" -eq 5 ] || { echo "purge extra: rc=$rc (want 5)" >&2; return 1; }
+  grep -q 'usage: hold purge' "$TEST_ROOT/prune-extra.err" || { cat "$TEST_ROOT/prune-extra.err" >&2; return 1; }
 
   set +e; "$HOLD_BIN" tail --all deadbeef >/dev/null 2>"$TEST_ROOT/tail-all.err"; rc=$?; set -e
   [ "$rc" -eq 5 ] || { echo "tail --all: rc=$rc (want 5)" >&2; return 1; }
@@ -3534,7 +3511,6 @@ run_test "system store artifacts are owned by root:root" test_system_store_artif
 run_test "non-root process ignores spoofed SUDO_* provenance" test_nonroot_ignores_spoofed_sudo_provenance
 run_test "start/stop lifecycle" test_lifecycle
 run_test "kill subcommand kills process group" test_kill_subcommand
-run_test "start output includes stop helper" test_start_output_stop_hint
 run_test "stop kills full process group (children)" test_group_kill_children
 run_test "exec failure creates no record" test_exec_failure_no_record
 run_test "fast exit command is recorded as exited" test_fast_exit_record_exited
@@ -3551,7 +3527,7 @@ run_test "signal refuses tampered live process-group identity" test_signal_refus
 run_test "stop supports multiple IDs in one command" test_stop_multiple_ids
 run_test "argument edge cases" test_argument_edges
 run_test "Docker-shaped run/logs/ps/rm surface" test_docker_shaped_cli_flags_and_rm
-run_test "Docker bare convenience launch defaults to background" test_docker_bare_launch_foreground_follows_output_by_default
+run_test "bare foreground streams output; -d detaches with a 64-hex id" test_docker_bare_launch_foreground_follows_output_by_default
 run_test "Docker run foreground follows output by default" test_docker_run_foreground_follows_output_by_default
 run_test "unsupported Docker-shaped options fail loudly" test_docker_unsupported_options_fail_loudly
 run_test "Docker restart policy restarts failed processes" test_docker_restart_policy_restarts_failures
