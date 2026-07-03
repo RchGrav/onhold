@@ -421,10 +421,6 @@ int hold_cmd_rename_action(const struct hold_invocation *inv,
     r.has_name = true;
     char out_path[HOLD_PATH_MAX];
     if (hold_write_record_atomic(target.store.record_dir, &r, argc, argv, out_path, sizeof(out_path)) != 0) {
-        hold_free_argv_alloc(argv, argc);
-        free(j);
-        hold_free_run_record(&r);
-        free(targets);
         hold_die_errno("hold: failed to write renamed call record");
     }
     if (target.store.kind == STORE_SYSTEM_MANAGED) {
@@ -493,10 +489,6 @@ int hold_cmd_save_action(const struct hold_invocation *inv,
     r.saved = true;
     char out_path[HOLD_PATH_MAX];
     if (hold_write_record_atomic(target.store.record_dir, &r, argc, argv, out_path, sizeof(out_path)) != 0) {
-        hold_free_argv_alloc(argv, argc);
-        free(j);
-        hold_free_run_record(&r);
-        free(targets);
         hold_die_errno("hold: failed to write saved call record");
     }
     if (target.store.kind == STORE_SYSTEM_MANAGED) {

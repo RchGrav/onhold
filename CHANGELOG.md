@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.5.0 - Hold On
+
+`nohup` says no hang-up; Hold says hold on. This release re-founds the tool
+around its identity: one small, reviewable static binary that places ordinary
+commands as durable **calls** — held process groups with a 64-hex call ID, a
+generated name, captured logs, and a line you can always pick back up. The
+design contract is `docs/hold-on-identity.md`.
+
+### Added
+
+- Added `hold on` / `hold off`: a guarded shell session. Run anything; press
+  `Ctrl-P Ctrl-Q` to put the foreground program on hold — it is adopted with a
+  call ID, a generated name, captured logs, and a reattachable console.
+- Added `hold attach` (alias `console`) as the canonical way to pick a call
+  back up, including calls adopted from a `hold on` session.
+- Added `hold end` (alias `stop`): end the call politely — TERM, then KILL.
+- Added `hold save <target>`: protect a call from purge. No unsave exists;
+  removal of a saved call is an explicit targeted `purge --force`.
+- Added `hold purge` (aliases `rm`, `prune`, `drop`) as the one removal verb:
+  sweeps ended calls, `-a` includes stale, a target removes one call,
+  `--force` removes regardless of state. Purging a saved call without
+  `--force` refuses with exit 2 and prints the exact command to copy.
+- Added `hold rename <target> <name>` with the same validity and uniqueness
+  rules as generated names.
+- Added recipe-mode redial: `hold <id|name>` restarts a retained call in the
+  session mode it was recorded with (`-it` recipes reattach, `-d` recipes
+  detach); explicit flags override.
+- Added `hold ports <target>` (observed listening sockets for the call's
+  process group) and `hold stats <target>` (live CPU/memory/pids stream).
+- Added neutral stdio reporting to `hold inspect`: where the call's fds
+  actually point, including deliberate redirects.
+- Rebuilt the full-screen `hold logs` viewer to the before-0.5 design: quiet
+  persistent header/footer chrome, right-justified view status, `Ctrl-T`
+  timestamp cycle (none/time/date) and `Ctrl-U` local/UTC toggle from the
+  sidecar index, source and wrap controls, center-out filtering with
+  Space-exclude and `Ctrl-R` reset, no counters and no flicker.
+
+### Changed
+
+- The bare form is the launch surface: `hold <cmd>`, `hold -d <cmd>`,
+  `hold -it <cmd>`. There is no `run` verb. Docker familiarity now applies at
+  the flag level (`-d`, `-i`, `-t`, `-e`, `--env-file`, `--name`, `--rm`,
+  `--restart`, `--detach-keys`) and the table level, not the verb level.
+- `hold -d` prints exactly one line: the full 64-hex call id.
+- `hold list` (alias `ps`) renders one Docker-look table: content-sized
+  columns, humanized CREATED, `Up`/`Exited (code)` STATUS phrasing with a
+  ` (saved)` suffix for protected calls, and no PROFILE column.
+- The vocabulary is calls, not runs or containers, across all output.
+- Adopted (`hold on`) calls are served by the console broker: named, logged,
+  and reattachable like every other call.
+
+### Removed
+
+- Removed the profile system, the alias store, and the
+  `profile`/`profiles`/`export`/`import`/`commit` commands. A saved call is
+  the reusable thing: save it, rename it, redial it.
+- Removed the grants/sudoers/elevation subsystem (`grant`, `revoke`,
+  capability tokens, sudo self-elevation). Acting on a root-managed call as a
+  normal user now returns a clear requires-root error.
+- Removed the captive IOS-style configuration CLI.
+- Removed the `run`, `start`, `status`, `show`, `clean`, `doctor`, and `dump`
+  verbs (`logs --print` covers dump; redial covers start).
+- Removed the syslog log-destination mirror; captured logs are raw bytes plus
+  the documented `HLOGIDX` sidecar.
+
 ## 0.4.0 - Hold process-management redesign
 
 This release turns the project into Hold: a Docker-shaped, daemonless manager

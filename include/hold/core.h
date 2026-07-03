@@ -12,7 +12,7 @@ struct sha256_ctx {
     size_t off;
 };
 
-void hold_die_errno(const char *msg);
+_Noreturn void hold_die_errno(const char *msg);
 void hold_sig_note(const struct hold_invocation *inv, const char *fmt, ...);
 int hold_checked_snprintf(char *dst, size_t n, const char *fmt, ...);
 bool hold_has_suffix(const char *s, const char *suffix);

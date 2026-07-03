@@ -15,7 +15,7 @@ void hold_sig_note(const struct hold_invocation *inv, const char *fmt, ...) {
     va_end(ap);
 }
 
-void hold_die_errno(const char *msg) {
+_Noreturn void hold_die_errno(const char *msg) {
     int e = errno;
     fprintf(stderr, "%s: %s\n", msg, strerror(e));
     exit(1);
