@@ -56,8 +56,12 @@ from it.
 ## Safety invariants
 
 - Every managed call gets its own process group and session.
-- Signals are delivered to the group only after the recorded identity
-  (start time, exe identity) revalidates — a recycled PID is never signaled.
+- Signals are delivered to the group only after revalidation: the boot id
+  must match, and a live leader's recorded identity (start time, exe
+  identity) must compare equal. When the leader is gone, the group is
+  matched by its recorded pgid+sid within the same boot — a deliberate
+  best effort, since no atomic verify-and-signal exists for a process
+  group. A recycled PID is never knowingly signaled.
 - Records are trusted only after validation; corrupt records are reported
   (and swept by purge), never silently obeyed.
 - stdout carries machine data; human notes go to stderr; `--quiet`

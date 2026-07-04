@@ -21,9 +21,14 @@ This directory preserves everything needed to execute the rest without re-discov
     to stderr rc 5.
 - **IN FLIGHT, reverted to diff:** `partial-c1-commit2-post-eof-hang.diff` — unfinished,
   unverified start on c1 commit 2 (post-EOF attach hang). Review before use.
+- **RESOLVED BY REDLINE (owner decision 2026-07-04):** c4 commit 1 (fail-closed
+  signal validation) — the recurring finding was driven by SPEC.md's unkeepable
+  absolute ("a recycled PID is never signaled"); no atomic verify-and-signal
+  exists for a process group. SPEC now states the kept guarantee precisely and
+  the leader-gone branch carries a deliberate-best-effort comment. Do not
+  re-open without new evidence of a real-world mis-kill.
 - **STILL OPEN (specs in r2-*.json):** c1 commits 2-3 (post-EOF attach hang, EAGAIN
-  backlog); c3 commits 1,2,4,5; c4 commit 1 (fail-closed signal validation — biggest
-  remaining safety item) and commit 3 (purge path derivation); c5 caps/--privileged cut
+  backlog); c3 commits 1,2,4,5; c4 commit 3 (purge path derivation); c5 caps/--privileged cut
   (owner sign-off) + --name grammar + remaining help items; all of c6.
 
 ## Files here
