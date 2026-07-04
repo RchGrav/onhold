@@ -87,6 +87,10 @@ static int validate_signal_target(const char *id,
         return 2;
     }
 
+    /* Leader gone, group live: there is nothing left to compare the recorded
+     * identity against, and no atomic verify-and-signal exists for a process
+     * group. Matching the recorded pgid+sid within the same boot is the
+     * deliberate best effort SPEC.md states; the zombie-leader test pins it. */
     enum group_liveness gl = hold_group_session_liveness(r->pgid, r->sid);
     if (gl == GROUP_LIVE) {
         if (!have_identity_token) {
