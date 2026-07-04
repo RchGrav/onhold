@@ -1,0 +1,157 @@
+diff --git a/src/console/broker.c b/src/console/broker.c
+index a3fdba9..3b2560b 100644
+--- a/src/console/broker.c
++++ b/src/console/broker.c
+@@ -342,6 +342,7 @@ static void broker_serve(const struct hold_store *store,
+     hold_console_replay_init(&replay);
+     bool target_done = false;
+     int target_status = 0;
++    bool master_gone = false;
+     while (1) {
+         if (!adopted && !target_done) {
+             int st = 0;
+@@ -360,11 +361,20 @@ static void broker_serve(const struct hold_store *store,
+             hold_group_session_liveness(adopted_pgid, adopted_sid) != GROUP_LIVE) {
+             target_done = true;
+         }
++        /* Once the PTY is gone AND the target has exited, there is nothing left
++         * to serve or drain; leave without waiting for the poll tick. */
++        if (target_done && master_gone) {
++            break;
++        }
+ 
+         struct pollfd pfds[3];
+         nfds_t nfds = 0;
+-        nfds_t master_idx = nfds;
+-        pfds[nfds++] = (struct pollfd){.fd = master, .events = POLLIN};
++        nfds_t master_idx = 0;
++        bool poll_master = master >= 0 && !master_gone;
++        if (poll_master) {
++            master_idx = nfds;
++            pfds[nfds++] = (struct pollfd){.fd = master, .events = POLLIN};
++        }
+         nfds_t listener_idx = nfds;
+         pfds[nfds++] = (struct pollfd){.fd = listener, .events = POLLIN};
+         nfds_t client_idx = 0;
+@@ -390,7 +400,7 @@ static void broker_serve(const struct hold_store *store,
+ 
+         short listener_events = pfds[listener_idx].revents;
+         short client_events = poll_client ? pfds[client_idx].revents : 0;
+-        short master_events = pfds[master_idx].revents;
++        short master_events = poll_master ? pfds[master_idx].revents : 0;
+ 
+         if (listener_events & POLLIN) {
+             int next = accept(listener, NULL, NULL);
+@@ -399,6 +409,14 @@ static void broker_serve(const struct hold_store *store,
+                     close(next);
+                 } else if (!authorize_console_client(next, owner_uid, have_allowed_peer_uid, allowed_peer_uid)) {
+                     close(next);
++                } else if (master_gone) {
++                    /* The PTY is closed but the call may still run: replay what
++                     * we captured, tell the viewer plainly, and drop them --
++                     * never leave a new attach hanging on a dead terminal. */
++                    (void)hold_console_replay_write(&replay, next);
++                    static const char msg[] = "hold: console closed - call still running, see hold logs\r\n";
++                    (void)hold_write_all(next, msg, sizeof(msg) - 1);
++                    close(next);
+                 } else if (client >= 0) {
+                     static const char msg[] = "hold: console already attached\n";
+                     (void)hold_write_all(next, msg, sizeof(msg) - 1);
+@@ -449,7 +467,23 @@ static void broker_serve(const struct hold_store *store,
+                     client_input_closed = false;
+                 }
+             } else if (n == 0 || errno == EIO) {
+-                break;
++                if (adopted) {
++                    break;
++                }
++                /* Child mode: the PTY closed, but the target may still be running
++                 * (it daemonized its stdio). Stop polling the master and close
++                 * the live viewer -- its stream ends, as it did before -- yet
++                 * keep the listener open so later attaches get an honest notice
++                 * instead of hanging on a broker wedged in a blocking waitpid.
++                 * We exit once the target is also reaped (checked at loop top). */
++                master_gone = true;
++                close(master);
++                master = -1;
++                if (client >= 0) {
++                    close(client);
++                    client = -1;
++                    client_input_closed = false;
++                }
+             }
+         }
+     }
+diff --git a/tests/test_hold.sh b/tests/test_hold.sh
+index 8e4e7ce..92b3d11 100755
+--- a/tests/test_hold.sh
++++ b/tests/test_hold.sh
+@@ -2104,6 +2104,60 @@ test_console_broker_term_forwards_to_target() {
+   path_absent_soon "$sock" || { ls -la "$(dirname "$sock")" >&2 || true; return 1; }
+ }
+ 
++test_console_attach_after_target_closes_stdio() {
++  # A target that daemonizes its stdio closes the PTY while still running. The
++  # broker must keep serving the listener: replay what it captured, tell late
++  # attaches the console is closed, and never wedge them in a blocking waitpid.
++  # On pre-fix HEAD the attach hangs until the harness timeout (red today).
++  local out id store record sock logf ok arc _
++  out=$("$HOLD_BIN" --console /bin/sh -c 'echo pre-daemon; exec >/dev/null 2>&1 </dev/null; sleep 300' 2>&1) || {
++    printf '%s\n' "$out" >&2
++    return 1
++  }
++  id=$(printf '%s\n' "$out" | extract_id)
++  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
++  store="$HOME/.local/state/hold"
++  record=$(record_path "$id" "$store") || return 1
++  sock=$(sed -n 's/.*"console_sock":[[:space:]]*"\([^"]*\)".*/\1/p' "$record" | head -n1)
++  [ -n "$sock" ] || { cat "$record" >&2; return 1; }
++  logf=$(log_path "$id" "$store") || return 1
++  # Wait until the target has produced its pre-daemon line, so the broker has it
++  # buffered for replay before we probe the post-EOF path.
++  ok=0
++  for _ in $(seq 1 100); do
++    grep -q 'pre-daemon' "$logf" 2>/dev/null && { ok=1; break; }
++    sleep 0.1
++  done
++  [ "$ok" -eq 1 ] || { echo "target never logged pre-daemon" >&2; cat "$logf" >&2; return 1; }
++  # Each attach must return promptly (never hang) and replay pre-daemon; once the
++  # PTY has closed it must also carry the honest 'console closed' notice. The
++  # retry absorbs the tiny window between the pre-daemon line and the redirect.
++  ok=0
++  for _ in $(seq 1 50); do
++    set +e
++    printf '' | "$HOLD_BIN" console "$id" >"$TEST_ROOT/eof-attach.out" 2>"$TEST_ROOT/eof-attach.err"
++    arc=$?
++    set -e
++    [ "$arc" -eq 0 ] || { echo "attach rc=$arc" >&2; cat "$TEST_ROOT/eof-attach.err" >&2; return 1; }
++    grep -q 'pre-daemon' "$TEST_ROOT/eof-attach.out" || { echo "replay missing pre-daemon" >&2; cat "$TEST_ROOT/eof-attach.out" >&2; return 1; }
++    if grep -q 'console closed' "$TEST_ROOT/eof-attach.out"; then ok=1; break; fi
++    sleep 0.1
++  done
++  [ "$ok" -eq 1 ] || { echo "attach never saw the console-closed notice" >&2; cat "$TEST_ROOT/eof-attach.out" >&2; return 1; }
++  # The call is still honestly running while its console is closed.
++  "$HOLD_BIN" list | grep -Eq "^$id[[:space:]].*Up " || { "$HOLD_BIN" list >&2; return 1; }
++  # end un-wedges the post-EOF broker: the group dies, the record marks, socket goes.
++  "$HOLD_BIN" end "$id" >/dev/null || return 1
++  record_ended_soon "$id" "$store" || { cat "$record" >&2; return 1; }
++  ok=0
++  for _ in $(seq 1 50); do
++    grep -q '"exit_code": 143' "$record" && { ok=1; break; }
++    sleep 0.1
++  done
++  [ "$ok" -eq 1 ] || { echo "record did not reach exit_code 143:" >&2; cat "$record" >&2; return 1; }
++  path_absent_soon "$sock" || { ls -la "$(dirname "$sock")" >&2 || true; return 1; }
++}
++
+ test_console_socket_lives_in_store_dir() {
+   # The console socket must live inside the store's console directory, never in
+   # /tmp, even though the harness's store path is longer than the AF_UNIX
+@@ -4286,6 +4340,7 @@ run_test "console exit code is recorded" test_console_exit_code_is_recorded
+ run_test "end on a console call signals the held group, not the broker" test_end_console_call_signals_target
+ run_test "end on a console call escalates TERM to KILL" test_end_console_call_escalates_to_kill
+ run_test "SIGTERM to the console broker forwards to the held group" test_console_broker_term_forwards_to_target
++run_test "console attach after target closes stdio does not hang" test_console_attach_after_target_closes_stdio
+ run_test "console rejects unrelated peer UID before replay" test_console_rejects_unrelated_peer_uid_before_replay
+ run_test "console can reattach after detach" test_console_can_reattach_after_detach
+ run_test "console socket lives in store dir, not /tmp, for long paths" test_console_socket_lives_in_store_dir
