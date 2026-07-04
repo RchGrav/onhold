@@ -58,8 +58,8 @@ CALL ID   USER   COMMAND   CREATED   STATUS   PORTS   NAMES
 - CREATED is humanized: `Less than a second ago`, `2 minutes ago`,
   `2 days ago`. Never a raw ISO timestamp in the table.
 - STATUS uses Docker phrasing: `Up 2 minutes`, `Exited (0) 2 days ago`,
-  `Created` — plus Hold's honest extras: `Stale 2 days`, and a ` (saved)`
-  suffix on protected calls.
+  `Created` — plus Hold's honest extras: `Stale 2 days`, `Exited (?)` for a
+  death no waiter witnessed, and a ` (saved)` suffix on protected calls.
 - COMMAND is double-quoted and ellipsized; NAMES is always present for a
   user's calls. A call the caller may not read (a global call in a normal
   user's view) renders `hidden` in its USER and COMMAND cells.

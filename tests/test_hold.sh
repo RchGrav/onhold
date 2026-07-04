@@ -980,7 +980,7 @@ test_log_viewer_integrated_chrome_help_and_info() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   short=$(printf '%s' "$id" | cut -c1-12)
-  sleep 0.3
+  record_ended_soon "$id" || return 1
   set +e
   # Ctrl-T cycles timestamps to time; Ctrl-Y shows the source column; Ctrl-H
   # opens the footer help; the next key dismisses it; q quits.
@@ -3553,6 +3553,50 @@ test_docker_restart_policy_restarts_failures() {
   "$HOLD_BIN" stop "$id" >/dev/null 2>&1 || true
 }
 
+test_restart_final_status_recorded() {
+  local out id record
+  out=$("$HOLD_BIN" -d --restart on-failure:1 --restart-delay 0 -- /bin/sh -c 'exit 3' 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  record_ended_soon "$id" || { echo "restart call never marked exited" >&2; return 1; }
+  record=$(record_path "$id") || return 1
+  grep -q '"exit_code": 3' "$record" || { cat "$record" >&2; return 1; }
+  "$HOLD_BIN" list -a | grep -F "Exited (3)" >/dev/null || { "$HOLD_BIN" list -a >&2; return 1; }
+}
+
+test_end_restart_call_records_term_status() {
+  local out id record
+  out=$("$HOLD_BIN" -d --restart always --restart-delay 0 -- sleep 30 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  sleep 0.3
+  "$HOLD_BIN" end "$id" >/dev/null 2>&1 || return 1
+  record_ended_soon "$id" || { echo "ended restart call never marked exited" >&2; return 1; }
+  record=$(record_path "$id") || return 1
+  grep -q '"term_signal": ' "$record" || { cat "$record" >&2; return 1; }
+}
+
+test_unwitnessed_death_renders_exited_unknown() {
+  local out id record pid ppid tries
+  out=$("$HOLD_BIN" -d -- sleep 30 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  record=$(record_path "$id") || return 1
+  pid=$(sed -n 's/.*"pid": \([0-9]*\).*/\1/p' "$record" | head -n1)
+  [ -n "$pid" ] || { cat "$record" >&2; return 1; }
+  ppid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)
+  [ -n "$ppid" ] || return 1
+  # Kill the waiter first so no final frame is ever written, then the call.
+  kill -9 "$ppid" 2>/dev/null || true
+  kill -9 "-$pid" 2>/dev/null || true
+  for tries in $(seq 1 40); do
+    "$HOLD_BIN" list -a | grep -F "Exited (?)" >/dev/null && return 0
+    sleep 0.05
+  done
+  "$HOLD_BIN" list -a >&2
+  cat "$record" >&2
+  return 1
+}
 
 test_docker_restart_validation_and_tty_gate() {
   local rc
@@ -4152,6 +4196,9 @@ run_test "bare foreground streams output; -d detaches with a 64-hex id" test_doc
 run_test "Docker run foreground follows output by default" test_docker_run_foreground_follows_output_by_default
 run_test "unsupported Docker-shaped options fail loudly" test_docker_unsupported_options_fail_loudly
 run_test "Docker restart policy restarts failed processes" test_docker_restart_policy_restarts_failures
+run_test "restart call records its final exit status" test_restart_final_status_recorded
+run_test "ending a restart call records the term status" test_end_restart_call_records_term_status
+run_test "unwitnessed death renders Exited (?)" test_unwitnessed_death_renders_exited_unknown
 run_test "Docker restart validates policies and tty gate" test_docker_restart_validation_and_tty_gate
 run_test "start existing run appends retained log" test_start_existing_run_appends_retained_log
 run_test "Docker publish and volume flags are rejected" test_docker_publish_and_volume_rejected

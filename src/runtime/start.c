@@ -282,7 +282,20 @@ static int spawn_log_capture(int stdout_fd,
     _exit(0);
 }
 
-static void run_restart_supervisor(int handshake_fd,
+static void mark_finished_with_retry(const struct hold_store *store, const char *id, int status) {
+    for (int i = 0; i < 50; i++) {
+        int rc = hold_mark_run_finished(store, id, status);
+        if (rc == 0 || rc == 1) break; /* 1: purged is final; only retry -1 */
+        struct timespec sl = {.tv_sec = 0, .tv_nsec = 100 * 1000000L};
+        while (nanosleep(&sl, &sl) != 0 && errno == EINTR) {
+            continue;
+        }
+    }
+}
+
+static void run_restart_supervisor(const struct hold_store *store,
+                                   const char *id,
+                                   int handshake_fd,
                                    const char *log_path,
                                    bool interactive_stdin,
                                    int envc,
@@ -327,10 +340,13 @@ static void run_restart_supervisor(int handshake_fd,
 
     close(handshake_fd);
     int failures = 0;
+    int status = 0;
+    bool have_status = false;
     while (!g_restart_stop) {
         pid_t worker = fork();
         if (worker < 0) {
             fprintf(stderr, "hold: restart supervisor failed to fork: %s\n", strerror(errno));
+            mark_finished_with_retry(store, id, 127 << 8);
             _exit(127);
         }
         if (worker == 0) {
@@ -341,7 +357,6 @@ static void run_restart_supervisor(int handshake_fd,
             fprintf(stderr, "hold: cannot restart '%s': %s\n", resolved_exec_path, strerror(errno));
             _exit(127);
         }
-        int status = 0;
         while (waitpid(worker, &status, 0) < 0) {
             if (errno == EINTR) {
                 if (g_restart_stop) kill(worker, SIGTERM);
@@ -350,6 +365,7 @@ static void run_restart_supervisor(int handshake_fd,
             status = 127 << 8;
             break;
         }
+        have_status = true;
         if (g_restart_stop) break;
         if (restart_status_failed(status)) failures++;
         else failures = 0;
@@ -357,6 +373,7 @@ static void run_restart_supervisor(int handshake_fd,
         fprintf(stderr, "hold: restarting %s after exit status %d\n", resolved_exec_path, status);
         sleep_restart_delay(restart_delay_seconds);
     }
+    if (have_status) mark_finished_with_retry(store, id, status);
     _exit(0);
 }
 
@@ -805,7 +822,9 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
                 if (stdout_pipe[1] > STDERR_FILENO) close(stdout_pipe[1]);
                 if (stderr_pipe[1] > STDERR_FILENO) close(stderr_pipe[1]);
             }
-            run_restart_supervisor(pipefd[1],
+            run_restart_supervisor(store,
+                                   id,
+                                   pipefd[1],
                                    log_path,
                                    interactive_stdin,
                                    envc,
