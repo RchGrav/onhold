@@ -31,7 +31,9 @@ The command is resolved against the invoking environment's `PATH`;
 Hold's own.
 
 Foreground launches print **nothing** of their own — only the process
-output. Detach with `Ctrl-P Ctrl-Q`, exactly like Docker.
+output — and exit with the held process's exit status once it ends
+(`docker run` parity). Interrupting the tail leaves the call held and
+exits 0. Detach with `Ctrl-P Ctrl-Q`, exactly like Docker.
 
 Flags that would require a container substrate are rejected with an honest
 message, never faked: `-p`/`-P` (Hold observes real host ports instead;

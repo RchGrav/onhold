@@ -3649,6 +3649,21 @@ test_docker_restart_policy_restarts_failures() {
   "$HOLD_BIN" stop "$id" >/dev/null 2>&1 || true
 }
 
+test_docker_foreground_propagates_exit_code() {
+  local rc
+  set +e
+  "$HOLD_BIN" -- /bin/sh -c 'exit 7' >/dev/null 2>"$TEST_ROOT/fg-exit.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 7 ] || { echo "foreground rc=$rc, want 7" >&2; cat "$TEST_ROOT/fg-exit.err" >&2; return 1; }
+  set +e
+  "$HOLD_BIN" --rm -- /bin/sh -c 'exit 5' >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { echo "--rm foreground rc=$rc, want 5" >&2; return 1; }
+  "$HOLD_BIN" -- /bin/true >/dev/null 2>&1 || { echo "clean foreground exit not 0" >&2; return 1; }
+}
+
 test_restart_final_status_recorded() {
   local out id record
   out=$("$HOLD_BIN" -d --restart on-failure:1 --restart-delay 0 -- /bin/sh -c 'exit 3' 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
@@ -4292,6 +4307,7 @@ run_test "bare foreground streams output; -d detaches with a 64-hex id" test_doc
 run_test "Docker run foreground follows output by default" test_docker_run_foreground_follows_output_by_default
 run_test "unsupported Docker-shaped options fail loudly" test_docker_unsupported_options_fail_loudly
 run_test "Docker restart policy restarts failed processes" test_docker_restart_policy_restarts_failures
+run_test "foreground launch propagates the exit code" test_docker_foreground_propagates_exit_code
 run_test "restart call records its final exit status" test_restart_final_status_recorded
 run_test "ending a restart call records the term status" test_end_restart_call_records_term_status
 run_test "unwitnessed death renders Exited (?)" test_unwitnessed_death_renders_exited_unknown

@@ -285,6 +285,30 @@ static int spawn_log_capture(int stdout_fd,
     _exit(0);
 }
 
+/* docker run parity: a foreground launch exits with the held process's exit
+ * status once it ends. An interrupted tail leaves the call held: exit 0. */
+static int foreground_exit_status(const struct hold_store *store, const char *id) {
+    char boot[128] = {0};
+    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
+    for (int i = 0; i < 50; i++) {
+        struct hold_run_record r = {0};
+        char path[HOLD_PATH_MAX];
+        if (hold_load_record_by_id(store->record_dir, id, &r, path, sizeof(path)) != 0) break;
+        enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+        bool marked = r.has_exit_code;
+        int code = r.exit_code;
+        hold_free_run_record(&r);
+        if (st == STATE_RUNNING) return 0;
+        if (marked) return code;
+        struct timespec sl = {.tv_sec = 0, .tv_nsec = 100 * 1000000L};
+        while (nanosleep(&sl, &sl) != 0 && errno == EINTR) {
+            continue;
+        }
+    }
+    fprintf(stderr, "hold: exit status unknown for call %.12s\n", id);
+    return 1;
+}
+
 static void mark_finished_with_retry(const struct hold_store *store, const char *id, int status) {
     for (int i = 0; i < 50; i++) {
         if (hold_mark_run_finished(store, id, status) == 0) break;
@@ -1520,6 +1544,7 @@ static int perform_start_with_metadata_name_options_internal(const struct hold_i
                 tail_rc = hold_run_native_console(r.console_sock);
             } else {
                 tail_rc = hold_tail_log_until_exit(&r, false, true);
+                if (tail_rc == 0) tail_rc = foreground_exit_status(store, r.id);
             }
             if (auto_remove) {
                 char boot[128] = {0};
