@@ -483,7 +483,7 @@ int hold_cli_main(int argc, char **argv) {
     }
 
     if (argi >= argc) {
-        hold_usage();
+        fprintf(stderr, "usage: hold [flags] <cmd|id|name> [args...]\n");
         return 5;
     }
 

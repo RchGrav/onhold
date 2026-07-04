@@ -91,7 +91,8 @@ reattach to later with `hold attach`. `hold off` or `exit` ends the session.
 ## Managing calls
 
 ```sh
-hold list                   # the call table (ps is an alias)
+hold list                   # your ledger: your calls, live and past
+hold ps                     # the Docker view: running calls, machine-wide
 hold attach <target>        # pick a call back up (Ctrl-P Ctrl-Q detaches)
 hold end <target>           # end politely: TERM, then KILL (stop is an alias)
 hold kill <target>          # KILL now, when it won't listen

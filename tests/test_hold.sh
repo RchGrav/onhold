@@ -3553,6 +3553,54 @@ test_docker_restart_policy_restarts_failures() {
   "$HOLD_BIN" stop "$id" >/dev/null 2>&1 || true
 }
 
+test_usage_errors_go_to_stderr_and_help_names_both_views() {
+  local rc out err
+  set +e
+  out=$("$HOLD_BIN" -d 2>"$TEST_ROOT/flags-only.err")
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { echo "flags-only rc=$rc want 5" >&2; return 1; }
+  [ -z "$out" ] || { echo "usage error leaked to stdout" >&2; printf '%s\n' "$out" >&2; return 1; }
+  grep -q '^usage: hold' "$TEST_ROOT/flags-only.err" || { cat "$TEST_ROOT/flags-only.err" >&2; return 1; }
+  out=$("$HOLD_BIN" 2>/dev/null)
+  printf '%s\n' "$out" | grep -q 'hold ps ' || { echo "help missing a distinct hold ps line" >&2; return 1; }
+  printf '%s\n' "$out" | grep -q 'ps is an alias' && { echo "help still claims ps is an alias" >&2; return 1; }
+  return 0
+}
+
+test_crash_leftover_tmp_does_not_block_rewrites() {
+  local out id store
+  store="$HOME/.local/state/hold"
+  out=$("$HOLD_BIN" -d -- sleep 30 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  local json full
+  json=$(record_path "$id" "$store") || return 1
+  full=$(basename "$json" .json)
+  # A crashed writer's legacy fixed-name tomb must not block future rewrites.
+  : >"$store/.$full.tmp"
+  "$HOLD_BIN" rename "$id" tombproof >/dev/null 2>&1 || { echo "rename blocked by leftover tmp" >&2; return 1; }
+  grep -q '"name": "tombproof"' "$json" || { cat "$json" >&2; return 1; }
+  "$HOLD_BIN" kill "$id" >/dev/null 2>&1 || true
+}
+
+test_purge_sweep_respects_creation_reserve() {
+  local store fid
+  store="$HOME/.local/state/hold"
+  ensure_user_fixture_store || return 1
+  fid=$(printf '1234567890abcdef%.0s' 1 2 3 4)
+  echo orphan >"$store/$fid.log"
+  : >"$store/.$fid.reserve"
+  "$HOLD_BIN" purge >/dev/null 2>&1 || true
+  [ -f "$store/$fid.log" ] || { echo "sweep ate a mid-creation log" >&2; return 1; }
+  command -v python3 >/dev/null 2>&1 || { rm -f "$store/$fid.log" "$store/.$fid.reserve"; return 0; }
+  # A stale reserve is a dead start's litter: the orphan collection proceeds.
+  python3 -c 'import os,sys,time; os.utime(sys.argv[1], (time.time()-1200,)*2)' "$store/.$fid.reserve"
+  "$HOLD_BIN" purge >/dev/null 2>&1 || true
+  [ ! -f "$store/$fid.log" ] || { echo "sweep kept an orphan log after the reserve aged out" >&2; return 1; }
+  [ ! -f "$store/.$fid.reserve" ] || { echo "stale reserve not collected" >&2; return 1; }
+}
+
 test_logs_plain_dumps_whole_log_and_tail_is_last_n() {
   local out id got
   out=$("$HOLD_BIN" -d -- /bin/sh -c 'seq 1 200' 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
@@ -4230,6 +4278,9 @@ run_test "bare foreground streams output; -d detaches with a 64-hex id" test_doc
 run_test "Docker run foreground follows output by default" test_docker_run_foreground_follows_output_by_default
 run_test "unsupported Docker-shaped options fail loudly" test_docker_unsupported_options_fail_loudly
 run_test "Docker restart policy restarts failed processes" test_docker_restart_policy_restarts_failures
+run_test "usage errors go to stderr; help names both views" test_usage_errors_go_to_stderr_and_help_names_both_views
+run_test "crash-leftover temp does not block record rewrites" test_crash_leftover_tmp_does_not_block_rewrites
+run_test "purge sweep respects the creation reserve" test_purge_sweep_respects_creation_reserve
 run_test "logs --plain dumps the whole log; -n/--tail is the last N" test_logs_plain_dumps_whole_log_and_tail_is_last_n
 run_test "foreground launch propagates the exit code" test_docker_foreground_propagates_exit_code
 run_test "restart call records its final exit status" test_restart_final_status_recorded
