@@ -924,7 +924,7 @@ test_hold_logs_follow_opens_dynamic_tty_filter() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
-  python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("logs-live"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("q"); sys.stdout.flush()' |
+  python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("logs-live"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("\x1b"); sys.stdout.flush()' |
     script -qfec "$HOLD_BIN logs $id --follow --interactive --debug-stats" /dev/null >"$TEST_ROOT/logs-follow.out" 2>"$TEST_ROOT/logs-follow.err"
   rc=$?
   set -e
@@ -942,7 +942,7 @@ test_log_view_follow_dynamic_tty_filter() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
-  python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("needle"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("q"); sys.stdout.flush()' |
+  python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("needle"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("\x1b"); sys.stdout.flush()' |
     script -qfec "$HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-dynamic.out" 2>"$TEST_ROOT/view-follow-dynamic.err"
   rc=$?
   set -e
@@ -965,9 +965,9 @@ test_log_viewer_integrated_chrome_help_and_info() {
   record_ended_soon "$id" || return 1
   set +e
   # Ctrl-T cycles timestamps to time; Ctrl-Y shows the source column; Ctrl-H
-  # opens the footer help; the next key dismisses it; q quits.
-  python3 -c 'import sys,time; o=sys.stdout.buffer; o.write(b"\x14\x19"); o.flush(); time.sleep(0.2); o.write(b"\x08"); o.flush(); time.sleep(0.2); o.write(b"q"); o.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 10 cols 80; $HOLD_BIN logs $id --interactive" /dev/null >"$TEST_ROOT/viewer-chrome.out" 2>"$TEST_ROOT/viewer-chrome.err"
+  # opens the centered help overlay; the next key dismisses it; Esc quits.
+  python3 -c 'import sys,time; o=sys.stdout.buffer; o.write(b"\x14\x19"); o.flush(); time.sleep(0.2); o.write(b"\x08"); o.flush(); time.sleep(0.2); o.write(b"\x1b"); o.flush(); time.sleep(0.1)' |
+    script -qfec "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive" /dev/null >"$TEST_ROOT/viewer-chrome.out" 2>"$TEST_ROOT/viewer-chrome.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/viewer-chrome.err" >&2; return 1; }
@@ -978,10 +978,14 @@ test_log_viewer_integrated_chrome_help_and_info() {
   grep -q "$short" "$plain" || { cat "$plain" >&2; return 1; }
   grep -q 'VIEWING EXITED (0)' "$plain" || { cat "$plain" >&2; return 1; }
   grep -q 'Ctrl-H Help' "$plain" || { cat "$plain" >&2; return 1; }
-  grep -Eq 'ts:time local +src:all +wrap:off' "$plain" || { cat "$plain" >&2; return 1; }
+  # Ctrl-T's effect is visible in the rows themselves: a time prefix. The
+  # footer no longer narrates mode state.
+  grep -Eq '\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] OUT \| chrome one' "$plain" || { cat "$plain" >&2; return 1; }
   grep -q 'OUT | chrome one' "$plain" || { cat "$plain" >&2; return 1; }
   grep -q 'ERR | chrome err' "$plain" || { cat "$plain" >&2; return 1; }
-  grep -q 'Ctrl-T time' "$plain" || { cat "$plain" >&2; return 1; }
+  # The help overlay replaced the truncated footer line.
+  grep -q 'Timestamps: off, time, date' "$plain" || { cat "$plain" >&2; return 1; }
+  grep -Eq 'Esc +Quit' "$plain" || { cat "$plain" >&2; return 1; }
 }
 
 test_log_viewer_space_excludes_and_ctrl_r_resets_filters() {
@@ -995,7 +999,7 @@ test_log_viewer_space_excludes_and_ctrl_r_resets_filters() {
   # Space excludes the selected (top) record destructively; the dissimilar line
   # stays visible and the excluded line disappears.
   set +e
-  python3 -c 'import sys,time; sys.stdout.buffer.write(b" "); sys.stdout.flush(); time.sleep(0.3); sys.stdout.buffer.write(b"q"); sys.stdout.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; sys.stdout.buffer.write(b" "); sys.stdout.flush(); time.sleep(0.3); sys.stdout.buffer.write(b"\x1b"); sys.stdout.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 8 cols 90; $HOLD_BIN logs $id --interactive" /dev/null >"$TEST_ROOT/viewer-exclude.out" 2>"$TEST_ROOT/viewer-exclude.err"
   rc=$?
   set -e
@@ -1012,7 +1016,7 @@ if 'example database timeout' in final:
 PY
   # Ctrl-R restores every excluded record.
   set +e
-  python3 -c 'import sys,time; sys.stdout.buffer.write(b" "); sys.stdout.flush(); time.sleep(0.2); sys.stdout.buffer.write(b"\x12"); sys.stdout.flush(); time.sleep(0.2); sys.stdout.buffer.write(b"q"); sys.stdout.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; sys.stdout.buffer.write(b" "); sys.stdout.flush(); time.sleep(0.2); sys.stdout.buffer.write(b"\x12"); sys.stdout.flush(); time.sleep(0.2); sys.stdout.buffer.write(b"\x1b"); sys.stdout.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 8 cols 90; $HOLD_BIN logs $id --interactive" /dev/null >"$TEST_ROOT/viewer-reset.out" 2>"$TEST_ROOT/viewer-reset.err"
   rc=$?
   set -e
@@ -1037,7 +1041,7 @@ test_log_view_selection_uses_cached_rows() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; sys.stdout.write("needlejjkkq"); sys.stdout.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; sys.stdout.write("needle\x1b[B\x1b[B\x1b[A\x1b[A\x1b"); sys.stdout.flush(); time.sleep(0.1)' |
     script -qfec "$HOLD_BIN __view $id --interactive --debug-stats" /dev/null >"$TEST_ROOT/view-cache-selection.out" 2>"$TEST_ROOT/view-cache-selection.err"
   rc=$?
   set -e
@@ -1057,7 +1061,7 @@ test_log_view_follow_pages_filtered_windows() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"page-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"page-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-pages.out" 2>"$TEST_ROOT/view-follow-pages.err"
   rc=$?
   set -e
@@ -1086,7 +1090,7 @@ test_log_view_follow_page_up_stays_at_start() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 15); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 15); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top.out" 2>"$TEST_ROOT/view-follow-top.err"
   rc=$?
   set -e
@@ -1123,7 +1127,7 @@ test_log_view_follow_oldest_page_does_not_wrap_to_tail() {
   [ -n "$id" ] || return 1
   sleep 0.2
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"\x1b[A" * 8); out.flush(); time.sleep(0.7); out.write(b"\x1b[A" * 3); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"\x1b[A" * 8); out.flush(); time.sleep(0.7); out.write(b"\x1b[A" * 3); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-nowrap-tail.out" 2>"$TEST_ROOT/view-follow-nowrap-tail.err"
   rc=$?
   set -e
@@ -1157,7 +1161,7 @@ test_log_view_follow_arrow_up_to_top_does_not_wrap_to_tail() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[A" * 80); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[A" * 80); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-arrow-top.out" 2>"$TEST_ROOT/view-follow-arrow-top.err"
   rc=$?
   set -e
@@ -1192,7 +1196,7 @@ test_log_view_follow_top_navigation_is_idempotent() {
   [ -n "$id" ] || return 1
   sleep 0.2
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 30); out.flush(); time.sleep(0.1); out.write((b"\x1b[A" * 5 + b"\x1b[5~") * 4); out.flush(); time.sleep(0.7); out.write((b"\x1b[A" * 3 + b"\x1b[5~") * 2); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 30); out.flush(); time.sleep(0.1); out.write((b"\x1b[A" * 5 + b"\x1b[5~") * 4); out.flush(); time.sleep(0.7); out.write((b"\x1b[A" * 3 + b"\x1b[5~") * 2); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top-idempotent.out" 2>"$TEST_ROOT/view-follow-top-idempotent.err"
   rc=$?
   set -e
@@ -1228,7 +1232,7 @@ test_log_view_follow_repeated_top_commands_ignore_live_growth() {
   [ -n "$id" ] || return 1
   sleep 0.15
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 40); out.flush(); time.sleep(0.2); out.write((b"\x1b[H" + b"\x1b[5~") * 5); out.flush(); time.sleep(1.4); out.write((b"\x1b[H" + b"\x1b[5~") * 3); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 40); out.flush(); time.sleep(0.2); out.write((b"\x1b[H" + b"\x1b[5~") * 5); out.flush(); time.sleep(1.4); out.write((b"\x1b[H" + b"\x1b[5~") * 3); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-repeated-top-live.out" 2>"$TEST_ROOT/view-follow-repeated-top-live.err"
   rc=$?
   set -e
@@ -1264,7 +1268,7 @@ test_log_view_modified_page_up_reaches_oldest_page_without_tail_loop() {
   [ -n "$id" ] || return 1
   sleep 0.2
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5;5~" * 30); out.flush(); time.sleep(0.2); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5;5~" * 30); out.flush(); time.sleep(0.2); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-modpgup.out" 2>"$TEST_ROOT/view-follow-modpgup.err"
   rc=$?
   set -e
@@ -1297,7 +1301,7 @@ test_log_view_modified_home_key_pins_oldest_page_without_tail_loop() {
   [ -n "$id" ] || return 1
   sleep 0.2
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[1;5H"); out.flush(); time.sleep(0.9); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[1;5H"); out.flush(); time.sleep(0.9); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-modhomepin.out" 2>"$TEST_ROOT/view-follow-modhomepin.err"
   rc=$?
   set -e
@@ -1330,7 +1334,7 @@ test_log_view_home_key_pins_oldest_page_without_tail_loop() {
   [ -n "$id" ] || return 1
   sleep 0.2
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[H"); out.flush(); time.sleep(0.9); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[H"); out.flush(); time.sleep(0.9); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-homepin.out" 2>"$TEST_ROOT/view-follow-homepin.err"
   rc=$?
   set -e
@@ -1363,7 +1367,7 @@ test_log_view_follow_page_down_from_top_does_not_wrap_to_tail() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~"); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~"); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top-down-not-tail.out" 2>"$TEST_ROOT/view-follow-top-down-not-tail.err"
   rc=$?
   set -e
@@ -1396,7 +1400,7 @@ test_log_view_follow_page_down_stops_on_last_real_page() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 12); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~" * 4); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 12); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~" * 4); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-page-down-last-real.out" 2>"$TEST_ROOT/view-follow-page-down-last-real.err"
   rc=$?
   set -e
@@ -1409,14 +1413,14 @@ stats = re.findall(r'scan_gen=(\d+) offset=(\d+) prev=(\d+) next=(\d+).*?follow=
 if not stats:
     raise SystemExit('missing debug stats')
 last = stats[-1]
-if last[4] != 'browsing':
-    raise SystemExit(f'expected manual browsing to remain active, got {last}')
-if last[1] == last[3]:
-    raise SystemExit(f'PageDown advanced to an empty EOF anchor instead of stopping on the last real page: {last}')
+# Paging past the newest page while the call is live has one honest meaning:
+# return to the tail and keep following. Never an empty EOF page.
+if last[4] not in ('tail', 'exited'):
+    raise SystemExit(f'expected PageDown past the last page to resume the live tail, got {last}')
 final = plain[-1400:]
 for wanted in ('loopend-line-9', 'loopend-line-10', 'loopend-line-11', 'loopend-line-12'):
     if wanted not in final:
-        raise SystemExit(f'PageDown advanced past the last real log page; missing {wanted}')
+        raise SystemExit(f'resumed tail lost the newest real lines; missing {wanted}')
 if final.count('~') >= 4 and 'loopend-line-12' not in final:
     raise SystemExit('PageDown rendered an empty EOF page')
 PYCHECK
@@ -1432,7 +1436,7 @@ test_log_view_follow_page_up_after_top_page_down_returns_to_top() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top-down-up.out" 2>"$TEST_ROOT/view-follow-top-down-up.err"
   rc=$?
   set -e
@@ -1467,7 +1471,7 @@ test_log_view_follow_filter_change_preserves_browsed_page() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b"target"); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b"target"); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-filter-preserve.out" 2>"$TEST_ROOT/view-follow-filter-preserve.err"
   rc=$?
   set -e
@@ -1500,7 +1504,7 @@ test_log_view_follow_exclude_preserves_browsed_page() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b" "); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b" "); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-exclude-preserve.out" 2>"$TEST_ROOT/view-follow-exclude-preserve.err"
   rc=$?
   set -e
@@ -1531,7 +1535,9 @@ test_log_view_follow_exclude_at_live_edge_pins_current_page() {
   [ -n "$id" ] || return 1
   sleep 0.05
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b" "); out.flush(); time.sleep(1.2); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  # At the live edge the first Space only summons the cursor (bottom row);
+  # Up walks it to the top line, and the second Space excludes it.
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b" "); out.flush(); time.sleep(0.2); out.write(b"\x1b[A" * 5); out.flush(); time.sleep(0.2); out.write(b" "); out.flush(); time.sleep(1.2); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-exclude-live-pin.out" 2>"$TEST_ROOT/view-follow-exclude-live-pin.err"
   rc=$?
   set -e
@@ -1564,7 +1570,7 @@ test_log_view_follow_top_refills_as_live_log_grows() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; time.sleep(0.02); out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.9); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; time.sleep(0.02); out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.9); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-growtop.out" 2>"$TEST_ROOT/view-follow-growtop.err"
   rc=$?
   set -e
@@ -1596,7 +1602,7 @@ test_log_view_follow_cursor_navigation_disables_tail_yank() {
   [ -n "$id" ] || return 1
   sleep 0.15
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[B\x1b[B\x1b[A"); out.flush(); time.sleep(0.7); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[B\x1b[B\x1b[A"); out.flush(); time.sleep(0.7); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-cursor-yank.out" 2>"$TEST_ROOT/view-follow-cursor-yank.err"
   rc=$?
   set -e
@@ -1628,7 +1634,9 @@ test_log_view_follow_cursor_browse_keeps_short_top_page_pinned() {
   [ -n "$id" ] || return 1
   sleep 0.15
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; time.sleep(0.25); out.write(b"\x1b[B"); out.flush(); time.sleep(1.8); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  # Up is the key that leaves the live edge and summons the cursor; Down at
+  # the tail is a no-op (there is nothing below the newest line).
+  python3 -c 'import sys,time; out=sys.stdout.buffer; time.sleep(0.25); out.write(b"\x1b[A"); out.flush(); time.sleep(1.8); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty -echo rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-pinshort.out" 2>"$TEST_ROOT/view-follow-pinshort.err"
   rc=$?
   set -e
@@ -1665,7 +1673,7 @@ test_log_view_follow_page_up_stops_at_first_filtered_match() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"filtered-target"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"filtered-target"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-filtered-top.out" 2>"$TEST_ROOT/view-follow-filtered-top.err"
   rc=$?
   set -e
@@ -1699,7 +1707,7 @@ test_log_view_printable_f_starts_dynamic_filter() {
   [ -n "$id" ] || return 1
   sleep 0.3
   set +e
-  python3 -c 'import sys,time; sys.stdout.write("fq"); sys.stdout.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; sys.stdout.write("f\x1b"); sys.stdout.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 100; $HOLD_BIN logs $id --interactive --debug-stats" /dev/null >"$TEST_ROOT/view-filter-f.out" 2>"$TEST_ROOT/view-filter-f.err"
   rc=$?
   set -e
@@ -1716,7 +1724,7 @@ test_log_view_follow_exited_page_up_keeps_backward_navigation() {
   id=$(printf '%s\n' "$out" | extract_id)
   [ -n "$id" ] || return 1
   set +e
-  python3 -c 'import sys,time; time.sleep(0.8); out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
+  python3 -c 'import sys,time; time.sleep(0.8); out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-exited-page-up.out" 2>"$TEST_ROOT/view-follow-exited-page-up.err"
   rc=$?
   set -e
@@ -1749,7 +1757,7 @@ test_log_view_follow_browsed_away_marks_newer_without_yank() {
   [ -n "$id" ] || return 1
   sleep 0.2
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"away-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(1.1); out.write(b"q"); out.flush()' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"away-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(1.1); out.write(b"\x1b"); out.flush()' |
     script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-away.out" 2>"$TEST_ROOT/view-follow-away.err"
   rc=$?
   set -e
@@ -1768,7 +1776,7 @@ test_log_view_follow_ignores_nonmatching_newer_data() {
   [ -n "$id" ] || return 1
   sleep 0.2
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"nomatch-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(1.1); out.write(b"q"); out.flush()' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"nomatch-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(1.1); out.write(b"\x1b"); out.flush()' |
     script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-nonmatching-away.out" 2>"$TEST_ROOT/view-follow-nonmatching-away.err"
   rc=$?
   set -e
@@ -1787,7 +1795,7 @@ test_log_view_follow_finds_sparse_newer_match_after_large_burst() {
   [ -n "$id" ] || return 1
   sleep 0.2
   set +e
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"burst-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(2.0); out.write(b"q"); out.flush()' |
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"burst-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(2.0); out.write(b"\x1b"); out.flush()' |
     script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-large-burst.out" 2>"$TEST_ROOT/view-follow-large-burst.err"
   rc=$?
   set -e
@@ -4369,7 +4377,7 @@ run_test "internal viewer Home key pins oldest page without tail loop" test_log_
 run_test "internal viewer modified Home key pins oldest page without tail loop" test_log_view_modified_home_key_pins_oldest_page_without_tail_loop
 run_test "internal viewer modified PageUp reaches oldest page without tail loop" test_log_view_modified_page_up_reaches_oldest_page_without_tail_loop
 run_test "internal viewer follow page-down from top does not wrap to tail" test_log_view_follow_page_down_from_top_does_not_wrap_to_tail
-run_test "internal viewer follow page-down stops on the last real page" test_log_view_follow_page_down_stops_on_last_real_page
+run_test "internal viewer follow page-down past the last page resumes tailing" test_log_view_follow_page_down_stops_on_last_real_page
 run_test "internal viewer follow page-up returns to top after paging down" test_log_view_follow_page_up_after_top_page_down_returns_to_top
 run_test "internal viewer filter changes preserve browsed-away page" test_log_view_follow_filter_change_preserves_browsed_page
 run_test "internal viewer exclude changes preserve browsed-away page" test_log_view_follow_exclude_preserves_browsed_page

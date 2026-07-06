@@ -22,20 +22,26 @@ fixture_root="${1:-review-fixtures/demo}"
 fixture_root="$(mkdir -p "$fixture_root" && cd "$fixture_root" && pwd)"
 demo_home="$fixture_root/home"
 demo_bin="$fixture_root/bin"
-ids_file="$fixture_root/RUNS.env"
+ids_file="$fixture_root/CALLS.env"
 readme="$fixture_root/README.txt"
 
-# Stop any previous live demo runs in this fixture before replacing it.
+# End any previous live demo calls in this fixture before replacing it.
 if [[ -f "$ids_file" ]]; then
   # shellcheck disable=SC1090
   source "$ids_file" || true
-  for id in ${WEB_RUN_ID:-} ${SLOW_RUN_ID:-}; do
+  for id in ${WEB_CALL_ID:-} ${SLOW_CALL_ID:-}; do
     if [[ -n "$id" ]]; then
       HOME="$demo_home" "$hold_bin" end "$id" >/dev/null 2>&1 || true
     fi
   done
 fi
 
+# Refuse to wipe a directory this script does not recognize as its own:
+# a fixture root is either empty or carries the CALLS.env it wrote last time.
+if [[ ! -f "$ids_file" && -n "$(ls -A "$fixture_root" 2>/dev/null)" ]]; then
+  echo "review fixture: $fixture_root is not empty and has no CALLS.env; refusing to wipe it" >&2
+  exit 1
+fi
 rm -rf "$fixture_root"
 mkdir -p "$demo_home" "$demo_bin"
 
@@ -113,27 +119,62 @@ run_hold() {
   HOME="$demo_home" "$hold_bin" "$@"
 }
 
-# Place the calls; -d prints the bare 64-hex call id on stdout.
-web_run="$(run_hold -d -- "$demo_bin/web-demo" 2>/dev/null)"
-slow_run="$(run_hold -d -- "$demo_bin/slow-demo" 2>/dev/null)"
-finished_run="$(run_hold -d -- "$demo_bin/finished-demo" 2>/dev/null)"
-burst_run="$(run_hold -d -- "$demo_bin/burst-demo" 2>/dev/null)"
+# Place the calls; -d prints the bare 64-hex call id on stdout. A launch
+# that yields anything else fails the fixture here, with a message, rather
+# than surfacing later as a baffling rename error.
+place_call() {
+  local label=$1
+  shift
+  local id
+  id="$(run_hold -d -- "$@" 2>/dev/null || true)"
+  if [[ ! "$id" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "review fixture: placing $label failed (expected a 64-hex call id from $hold_bin, got '${id:-nothing}')" >&2
+    exit 1
+  fi
+  printf '%s' "$id"
+}
+
+web_call="$(place_call web-demo "$demo_bin/web-demo")"
+slow_call="$(place_call slow-demo "$demo_bin/slow-demo")"
+finished_call="$(place_call finished-demo "$demo_bin/finished-demo")"
+burst_call="$(place_call burst-demo "$demo_bin/burst-demo")"
 
 sleep 2
 # Naming a call also saves it, so the fixture survives purge sweeps.
-run_hold rename "$web_run" web-demo >/dev/null
-run_hold rename "$slow_run" slow-demo >/dev/null
-run_hold rename "$finished_run" finished-demo >/dev/null
-run_hold rename "$burst_run" burst-demo >/dev/null
+run_hold rename "$web_call" web-demo >/dev/null
+run_hold rename "$slow_call" slow-demo >/dev/null
+run_hold rename "$finished_call" finished-demo >/dev/null
+run_hold rename "$burst_call" burst-demo >/dev/null
 
+# Record the ids before verifying, so a fixture that fails its own checks
+# is still recognized by the next run's pre-clean instead of stranding a
+# directory the wipe guard refuses to touch.
 cat > "$ids_file" <<ENV
 export HOLD_BIN='$hold_bin'
 export HOLD_REVIEW_HOME='$demo_home'
-export WEB_RUN_ID='$web_run'
-export SLOW_RUN_ID='$slow_run'
-export FINISHED_RUN_ID='$finished_run'
-export BURST_RUN_ID='$burst_run'
+export WEB_CALL_ID='$web_call'
+export SLOW_CALL_ID='$slow_call'
+export FINISHED_CALL_ID='$finished_call'
+export BURST_CALL_ID='$burst_call'
 ENV
+
+# The fixture verifies its own promise before handing itself to a reviewer:
+# two calls still up, both once-runs complete, and the haystack really
+# contains its needle. grep -c reads each log to EOF; grep -q would quit at
+# the first match, hand hold a SIGPIPE mid-dump, and trip pipefail.
+live_count="$(run_hold list -l 2>/dev/null | tail -n +2 | grep -c . || true)"
+if [[ "$live_count" -ne 2 ]]; then
+  echo "review fixture: expected 2 live calls, list -l shows $live_count" >&2
+  exit 1
+fi
+if [[ "$(run_hold logs finished-demo -p 2>/dev/null | grep -c 'finished-demo complete')" -eq 0 ]]; then
+  echo "review fixture: finished-demo log did not run to completion" >&2
+  exit 1
+fi
+if [[ "$(run_hold logs burst-demo -p 2>/dev/null | grep -c 'RARE_MATCH')" -eq 0 ]]; then
+  echo "review fixture: burst-demo log is missing its RARE_MATCH needle" >&2
+  exit 1
+fi
 
 cat > "$readme" <<README
 Hold review fixture
@@ -151,10 +192,10 @@ Load convenience variables:
 Quick commands:
 
   HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN list
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$WEB_RUN_ID
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$WEB_RUN_ID --follow
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$FINISHED_RUN_ID
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$BURST_RUN_ID
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$WEB_CALL_ID
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$WEB_CALL_ID --follow
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$FINISHED_CALL_ID
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$BURST_CALL_ID
 
 Viewer things to try:
 
@@ -170,19 +211,19 @@ Viewer things to try:
   Backspace relaxes the filter.
   Space excludes lines like the highlighted line; Ctrl-R resets filters.
   PgUp/PgDn move through filtered windows.
-  q quits.
+  Esc quits (Ctrl-C works too).
 
 Targets created:
 
-  WEB_RUN_ID=$web_run        live noisy service log
-  SLOW_RUN_ID=$slow_run       live slower worker log
-  FINISHED_RUN_ID=$finished_run   completed import log
-  BURST_RUN_ID=$burst_run      completed 1200-line sparse-match log
+  WEB_CALL_ID=$web_call        live noisy service log
+  SLOW_CALL_ID=$slow_call       live slower worker log
+  FINISHED_CALL_ID=$finished_call   completed import log
+  BURST_CALL_ID=$burst_call      completed 1200-line sparse-match log
 
-Cleanup live demo runs:
+Cleanup live demo calls:
 
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN end \$WEB_RUN_ID
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN end \$SLOW_RUN_ID
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN end \$WEB_CALL_ID
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN end \$SLOW_CALL_ID
 
 The calls are named, so they are saved; a plain purge leaves them for
 re-inspection. Remove one for good with:
@@ -195,7 +236,7 @@ printf '  root:       %s\n' "$fixture_root"
 printf '  env:        %s\n' "$ids_file"
 printf '  readme:     %s\n' "$readme"
 printf '  hold:       %s\n' "$hold_bin"
-printf '  web run:    %s\n' "$web_run"
-printf '  slow run:   %s\n' "$slow_run"
-printf '  finished:   %s\n' "$finished_run"
-printf '  burst:      %s\n' "$burst_run"
+printf '  web call:    %s\n' "$web_call"
+printf '  slow call:   %s\n' "$slow_call"
+printf '  finished:    %s\n' "$finished_call"
+printf '  burst:       %s\n' "$burst_call"
