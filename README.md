@@ -37,7 +37,7 @@ Or build from source with any C11 compiler:
 make && ./hold --help
 ```
 
-Details, checksums, and offline installs: [docs/install.md](docs/install.md).
+Details, checksums, and offline installs: `sh install.sh --help`.
 
 Hold does **not** create containers. It does not isolate filesystems, publish
 ports, mount volumes, or pretend a host process has Docker networking. It
@@ -68,9 +68,10 @@ hold <id|name>              # redial: restart a retained call from its recipe
 ```
 
 Flags mirror Docker where they exist: `-d`, `-i`, `-t`, `-e`, `--env-file`,
-`--name`, `--rm`, `--restart`, `--detach-keys`. Fake substrate flags
-(`-p`, `-P`, `-v`) are honestly rejected. Use `--` when the command could be
-mistaken for a call name.
+`--name`, `--rm`, `--restart`, `--detach-keys`. `--restart-delay <seconds>`
+is the one Hold-native launch flag. Fake substrate flags (`-p`, `-P`, `-v`)
+and privilege flags (`--privileged`, `--cap-add`, `--cap-drop`) are honestly
+rejected. Use `--` when the command could be mistaken for a call name.
 
 A redialed call replays its recorded recipe, including its session mode: a
 call placed with `-it` reattaches, one placed with `-d` detaches again.
@@ -124,7 +125,7 @@ read without Hold's help.
 
 ```sh
 hold logs web               # full-screen viewer (filter as you type)
-hold logs -f web            # follow (tail is an alias)
+hold logs -f web            # follow (hold tail web is shorthand)
 hold logs -p -n 100 web     # plain text, last 100 records
 ```
 
@@ -147,5 +148,5 @@ make
 ./hold --help
 ```
 
-Requires a C11 compiler and POSIX. Linux is the primary target. The design
-contract lives in [docs/hold-on-identity.md](docs/hold-on-identity.md).
+Requires a C11 compiler and POSIX. Linux is the primary target. The contract
+is the code and the tests that pin it (`tests/test_hold.sh`).

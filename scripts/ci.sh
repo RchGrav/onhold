@@ -2,7 +2,7 @@
 # One entrypoint, same rigor everywhere. Runs the full local mirror of the
 # GitHub CI matrix against the current tree:
 #   static -Werror build -> dynamic -Werror build -> regression suite +
-#   profile-hash vector + 0.4 Docker-shaped smoke -> ASan/UBSan build+test ->
+#   0.4 Docker-shaped smoke -> ASan/UBSan build+test ->
 #   cppcheck -> layer-dependency lint.
 #
 # Runs identically on macOS and Linux. Each check that the local toolchain
@@ -49,7 +49,7 @@ must make clean
 must make hold-dynamic CC="$CC_BIN" CFLAGS="$WERROR"
 mark_ok "dynamic-build"
 
-step "regression suite + profile-hash vector"
+step "regression suite + Docker-shaped smoke"
 must make clean
 must make test CC="$CC_BIN" CFLAGS="$WERROR"
 must make test-040 CC="$CC_BIN" CFLAGS="$WERROR"

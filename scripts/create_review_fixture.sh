@@ -31,7 +31,7 @@ if [[ -f "$ids_file" ]]; then
   source "$ids_file" || true
   for id in ${WEB_RUN_ID:-} ${SLOW_RUN_ID:-}; do
     if [[ -n "$id" ]]; then
-      HOME="$demo_home" "$hold_bin" stop "$id" >/dev/null 2>&1 || true
+      HOME="$demo_home" "$hold_bin" end "$id" >/dev/null 2>&1 || true
     fi
   done
 fi
@@ -113,17 +113,18 @@ run_hold() {
   HOME="$demo_home" "$hold_bin" "$@"
 }
 
-# Create profiles and runs.
-web_run="$(run_hold run -- "$demo_bin/web-demo" 2>&1 | awk '/started/ {print $3; exit}')"
-slow_run="$(run_hold run -- "$demo_bin/slow-demo" 2>&1 | awk '/started/ {print $3; exit}')"
-finished_run="$(run_hold run -- "$demo_bin/finished-demo" 2>&1 | awk '/started/ {print $3; exit}')"
-burst_run="$(run_hold run -- "$demo_bin/burst-demo" 2>&1 | awk '/started/ {print $3; exit}')"
+# Place the calls; -d prints the bare 64-hex call id on stdout.
+web_run="$(run_hold -d -- "$demo_bin/web-demo" 2>/dev/null)"
+slow_run="$(run_hold -d -- "$demo_bin/slow-demo" 2>/dev/null)"
+finished_run="$(run_hold -d -- "$demo_bin/finished-demo" 2>/dev/null)"
+burst_run="$(run_hold -d -- "$demo_bin/burst-demo" 2>/dev/null)"
 
 sleep 2
-run_hold profile save "$web_run" as web-demo >/dev/null
-run_hold profile save "$slow_run" as slow-demo >/dev/null
-run_hold profile save "$finished_run" as finished-demo >/dev/null
-run_hold profile save "$burst_run" as burst-demo >/dev/null
+# Naming a call also saves it, so the fixture survives purge sweeps.
+run_hold rename "$web_run" web-demo >/dev/null
+run_hold rename "$slow_run" slow-demo >/dev/null
+run_hold rename "$finished_run" finished-demo >/dev/null
+run_hold rename "$burst_run" burst-demo >/dev/null
 
 cat > "$ids_file" <<ENV
 export HOLD_BIN='$hold_bin'
@@ -149,8 +150,7 @@ Load convenience variables:
 
 Quick commands:
 
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN status
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN profiles -v
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN list
   HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$WEB_RUN_ID
   HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$WEB_RUN_ID --follow
   HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN logs \$FINISHED_RUN_ID
@@ -181,8 +181,13 @@ Targets created:
 
 Cleanup live demo runs:
 
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN stop \$WEB_RUN_ID \$SLOW_RUN_ID
-  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN prune all
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN end \$WEB_RUN_ID
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN end \$SLOW_RUN_ID
+
+The calls are named, so they are saved; a plain purge leaves them for
+re-inspection. Remove one for good with:
+
+  HOME=\$HOLD_REVIEW_HOME \$HOLD_BIN purge web-demo --force
 README
 
 printf 'Review fixture created:\n'
