@@ -7,13 +7,13 @@ On Hold publishes small release artifacts for supported Linux and macOS targets.
 ## One-line install
 
 ```sh
-curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh | sh
 ```
 
 If the system has `wget` instead of `curl`:
 
 ```sh
-wget -qO- https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh
+wget -qO- https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh | sh
 ```
 
 By default, the installer uses `/usr/local/bin` when the current process can write there. That covers root installs and machines where `/usr/local/bin` is intentionally group-writable.
@@ -28,19 +28,19 @@ $HOME/.local/bin/hold
 Run the same installer through root when you want a system install:
 
 ```sh
-curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sudo sh
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh | sudo sh
 ```
 
 You can also force a system install from a normal shell. This targets `/usr/local/bin` and asks for a `sudo` password only if the current process cannot write there:
 
 ```sh
-curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh -s -- --system
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh | sh -s -- --system
 ```
 
 For CI or scripted use, the equivalent environment switch is:
 
 ```sh
-curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh |
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh |
   HOLD_INSTALL_SYSTEM=1 sh
 ```
 
@@ -57,7 +57,7 @@ export PATH="$HOME/.local/bin:$PATH"
 A child installer process cannot change the parent shell's current `PATH`. In scripts, ask the installer to write an environment handoff file, then source it:
 
 ```sh
-curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh |
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh |
   HOLD_ENV_FILE="$PWD/.hold-env" sh
 . "$PWD/.hold-env"
 
@@ -77,7 +77,7 @@ Use `"$HOLD_BIN"` for the 0.4.0 operator CLI, or `"$HOLD_BIN"` when you intentio
 ## Custom install directory
 
 ```sh
-curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh |
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh |
   HOLD_INSTALL_DIR="$PWD/.bin" \
   HOLD_ENV_FILE="$PWD/.hold-env" \
   sh
@@ -93,8 +93,8 @@ same mode flags the install used. Every successful install prints the exact
 matching command.
 
 ```sh
-curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh -s -- --uninstall
-curl -LsSf https://github.com/RchGrav/onhold/releases/latest/download/install.sh | sh -s -- --uninstall --system
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh | sh -s -- --uninstall
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/latest/download/install.sh | sh -s -- --uninstall --system
 ```
 
 This removes the binary and the installer's marked PATH block from your shell
@@ -107,7 +107,7 @@ remove those directories manually only if you really mean it.
 By default the installer uses the latest GitHub release. Pin a release when reproducibility matters:
 
 ```sh
-curl -LsSf https://github.com/RchGrav/onhold/releases/download/vX.Y.Z/install.sh | sh
+curl -LsSf https://github.com/RchGrav/HoldOn/releases/download/vX.Y.Z/install.sh | sh
 ```
 
 You can also run the latest installer against a specific release by setting `HOLD_VERSION`; values with and without the leading `v` are equivalent.
