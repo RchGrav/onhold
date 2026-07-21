@@ -186,7 +186,54 @@ unit-level pinning. **P3** = edge/exact-string pinning.
 
 Total: 13 + 21 + 9 = **43**.
 
+## P1 pinning pass (2026-07-21) — results and divergences
+
+All 13 P1 gaps now have pinning tests in `tests/test_hold.sh` (registered at the
+end of the suite). Twelve pinned green on first run against the current binary:
+G1 (`test_env_file_populates_recipe_env`), G9 (`test_legacy_saved_key_still_protects`),
+G10 (`test_end_plain_call_escalates_to_kill`), G11
+(`test_signal_delivers_to_group_after_leader_exit`), G13
+(`test_hold_on_off_spellings`), G14 (`test_attach_verb_matches_console`), G19
+(`test_logs_non_tty_auto_plain`), G24 (`test_list_user_scope_only_personal`,
+root lane), G25 (`test_drop_alias_matches_prune`), G35
+(`test_orphan_public_entry_swept`, root lane), G37 (`test_restart_unless_stopped`).
+G42 is closed structurally: `make test` now invokes `make test-040`, so the
+orphaned surface smoke can no longer be de-wired without CI going red.
+
+**Divergences (code ≠ docs), test written but unregistered pending a decision:**
+
+- **D-G18 `logs -p -t/--time` and `--date`** — hold-on-identity.md documents
+  `-t/--time prepends times, --date adds date+time` on `hold logs <call> -p`,
+  but the logs parser (`src/runtime/signal.c`, `hold_cmd_view_action`) accepts
+  neither: `hold logs <id> -p -t` exits 5 with
+  `usage: hold logs <target> [--follow|-f] [--plain|--interactive]`.
+  `test_logs_plain_timestamp_flags` is written and commented out at its
+  `run_test` line; either implement the flags (sidecar-derived, per the doc)
+  and re-register it, or amend the identity doc and delete the test.
+
 Highest reconstruction risk, restated: the identity-doc verb surface (on/off, attach,
 drop, list -u) is entirely unpinned while tests pin the old spellings — a faithful
 test-driven rewrite would reconstruct yesterday's CLI, not the documented one. Close
 G13/G14/G24/G25 (or formally retire the renames) before writing any cli/specs code.
+
+rsi validator: ACCEPTED — fresh-context verification, 2026-07-21 ~19:55. HEAD is
+41c2841 with the P1 work uncommitted on top (contract-gaps.md, Makefile,
+tests/test_hold.sh — the tree was NOT clean at verification; the builder had not
+committed, consistent with their "monitor will wake me at the summary line" claim,
+and no suite process was running). Clean `make clean && make` succeeds (only the
+pre-existing glibc static-link warning). Independent full `make test` run:
+**summary: 160 passed, 0 failed, 0 skipped** (149 baseline + 11 new), plus
+viewer-filter-test, version/installer tests, and test-040 ("hold-on surface smoke")
+all green, rc=0. All 11 registered P1 tests read as substantive — each carries
+positive and negative assertions against real binary behavior, none vacuous. The
+D-G18 divergence is genuine: independently reproduced `hold logs <id> -p -t` →
+rc 5 with `usage: hold logs <target> [--follow|-f] [--plain|--interactive]`, while
+hold-on-identity.md:64 promises `-t/--time` and `--date`; the test exists, is
+commented out at its `run_test` line with an evidence comment pointing here. G42:
+`make test` now invokes `make test-040`, verified in the run. Two nits: (1) the
+pass summary above says "Twelve pinned green" but lists eleven (13 P1 = 11 green
++ G18 diverged + G42 structural); (2) G42's proposed marker-file tripwire was not
+implemented — the wiring itself is still silently removable from the Makefile.
+Neither blocks acceptance. This verdict commit carries the builder's doc section
+in this file; the Makefile and test_hold.sh changes are left for the builder to
+commit.
