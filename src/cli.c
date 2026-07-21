@@ -183,10 +183,6 @@ bool hold_cli_command_is_parser_owned(const char *s) {
     return find_public_command_spec(s) != NULL;
 }
 
-bool hold_cli_command_is_public(const char *s) {
-    return find_public_command_spec(s) != NULL;
-}
-
 bool hold_cli_command_allows_all(const char *s) {
     const struct hold_cli_command_spec *spec = find_public_command_spec(s);
     return spec && (spec->flags & HOLD_CLI_ALLOW_ALL);

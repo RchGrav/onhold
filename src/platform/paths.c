@@ -34,6 +34,20 @@ int hold_lookup_passwd_by_uid(uid_t uid, struct hold_passwd_entry *out) {
     }
     memset(out, 0, sizeof(*out));
 
+    /* getpwuid consults the platform's account database (OpenDirectory on
+     * macOS, NSS on glibc); real macOS users never appear in /etc/passwd.
+     * The file parse below stays as the fallback for static Linux builds,
+     * where glibc's NSS lookup can be unavailable. */
+    struct passwd *pw = getpwuid(uid);
+    if (pw && pw->pw_name && *pw->pw_name) {
+        if (hold_checked_snprintf(out->name, sizeof(out->name), "%s", pw->pw_name) != 0) return -1;
+        if (pw->pw_dir && *pw->pw_dir &&
+            hold_checked_snprintf(out->home, sizeof(out->home), "%s", pw->pw_dir) != 0) return -1;
+        if (pw->pw_shell && *pw->pw_shell &&
+            hold_checked_snprintf(out->shell, sizeof(out->shell), "%s", pw->pw_shell) != 0) return -1;
+        return 0;
+    }
+
     FILE *fp = fopen("/etc/passwd", "r");
     if (!fp) return -1;
 

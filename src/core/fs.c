@@ -57,33 +57,6 @@ int hold_chown_dir_no_symlink_if_root(const char *dir, uid_t uid, gid_t gid) {
     return close(fd);
 }
 
-int hold_open_unique_temp(const char *dir, const char *prefix, mode_t mode, char *tmp, size_t tmp_n) {
-    if (!dir || !*dir || !prefix || !*prefix || !tmp || tmp_n == 0 || strchr(prefix, '/')) {
-        errno = EINVAL;
-        return -1;
-    }
-    for (int i = 0; i < 64; i++) {
-        unsigned char nonce[8];
-        char hex[sizeof(nonce) * 2 + 1];
-        if (hold_rand_bytes(nonce, sizeof(nonce)) != 0) {
-            return -1;
-        }
-        hold_hex_encode(nonce, sizeof(nonce), hex, sizeof(hex));
-        if (hold_checked_snprintf(tmp, tmp_n, "%s/.%s.%ld.%s.tmp", dir, prefix, (long)getpid(), hex) != 0) {
-            return -1;
-        }
-        int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, mode);
-        if (fd >= 0) {
-            return fd;
-        }
-        if (errno != EEXIST) {
-            return -1;
-        }
-    }
-    errno = EEXIST;
-    return -1;
-}
-
 int hold_mkdir_p0700(const char *dir) {
     return hold_mkdir_p_mode(dir, 0700);
 }
@@ -232,18 +205,6 @@ int hold_read_owned_file_no_symlink(const char *path, char **out) {
     }
     *out = j;
     return 0;
-}
-
-int hold_fsync_dir_path(const char *dir) {
-    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dfd < 0) {
-        return -1;
-    }
-    int rc = fsync(dfd);
-    int saved = errno;
-    close(dfd);
-    errno = saved;
-    return rc;
 }
 
 int hold_read_small_file(const char *path, char **out) {

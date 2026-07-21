@@ -158,8 +158,8 @@ static int append_private_run_name_target(struct hold_resolved_target **targets,
     if (!hold_valid_alias(name)) return 0;
     DIR *d = opendir(store->record_dir);
     if (!d) return 0;
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
     char matched[ID_STR_LEN] = {0};
     int matches = 0;
     const struct dirent *e;
@@ -174,7 +174,7 @@ static int append_private_run_name_target(struct hold_resolved_target **targets,
             hold_free_run_record(&r);
             continue;
         }
-        enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+        enum run_state st = hold_eval_state(&r, boot_id);
         if (hold_record_matches_run_name_intent(command, &r, st)) {
             matches++;
             snprintf(matched, sizeof(matched), "%s", r.id);

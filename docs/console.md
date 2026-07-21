@@ -91,9 +91,9 @@ Do not use `Ctrl-C` when you mean detach. `Ctrl-C` is delivered to the attached 
 
 ## Resolution and authority
 
-`console` is an action command and uses the same resolver as `tail`, `dump`, `stop`, `kill`, and `prune`. A run ID targets one run. A profile resolves only to running profile-labeled records with a console socket. More than one profile candidate exits 6 unless the command supports `--all`; `console` does not support `--all`.
+`attach` (alias `console`) is an action command and uses the same resolver as `logs`, `end`, `kill`, and `purge`. A call ID targets one call. A call name resolves only to a running call with a console socket; an ambiguous name exits 6.
 
-Root-managed console attaches require root authority or self-elevation through the same system target and profile capability paths as other privileged actions. This is necessary because the console socket is private root state and because interactive process access is at least as sensitive as log or signal access.
+Root-managed console attaches require root — Hold never elevates on a user's behalf. This is necessary because the console socket is private root state and because interactive process access is at least as sensitive as log or signal access.
 
 ## Logging behavior
 

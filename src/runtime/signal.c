@@ -26,66 +26,6 @@ static void handle_tail_sigint(int signo) {
     g_tail_interrupted = 1;
 }
 
-struct decoded_log_stream {
-    char *line;
-    size_t len;
-    size_t cap;
-};
-
-static void decoded_log_stream_free(struct decoded_log_stream *s) {
-    if (!s) return;
-    free(s->line);
-    s->line = NULL;
-    s->len = 0;
-    s->cap = 0;
-}
-
-static int decoded_log_stream_emit(struct decoded_log_stream *s) {
-    if (!s || s->len == 0) return 0;
-    char *line = malloc(s->len + 1);
-    if (!line) return -1;
-    memcpy(line, s->line, s->len);
-    line[s->len] = '\0';
-    char *decoded = NULL;
-    int rc = hold_decode_json_log_line(line, &decoded);
-    free(line);
-    if (rc < 0) {
-        free(decoded);
-        return -1;
-    }
-    size_t n = strlen(decoded);
-    int write_rc = n == 0 ? 0 : hold_write_all(STDOUT_FILENO, decoded, n);
-    free(decoded);
-    s->len = 0;
-    return write_rc;
-}
-
-static int decoded_log_stream_write(struct decoded_log_stream *s, const char *buf, size_t n) {
-    if (!s || (!buf && n > 0)) {
-        errno = EINVAL;
-        return -1;
-    }
-    for (size_t i = 0; i < n; i++) {
-        if (s->len + 1 >= s->cap) {
-            size_t next_cap = s->cap ? s->cap * 2 : 4096;
-            while (next_cap <= s->len + 1) next_cap *= 2;
-            char *next = realloc(s->line, next_cap);
-            if (!next) return -1;
-            s->line = next;
-            s->cap = next_cap;
-        }
-        s->line[s->len++] = buf[i];
-        if (buf[i] == '\n' && decoded_log_stream_emit(s) != 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-static int decoded_log_stream_flush(struct decoded_log_stream *s) {
-    return decoded_log_stream_emit(s);
-}
-
 static int validate_signal_target(const char *id,
                                   const struct hold_run_record *r,
                                   bool require_live,
@@ -102,9 +42,9 @@ static int validate_signal_target(const char *id,
         return 5;
     }
 
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
-    if (r->has_boot && have_boot && strcmp(r->boot_id, boot) != 0) {
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
+    if (r->has_boot && boot_id && strcmp(r->boot_id, boot_id) != 0) {
         fprintf(stderr, "hold: error: call %s is stale and cannot be signaled\n", id);
         return 2;
     }
@@ -177,7 +117,7 @@ int hold_tail_log_until_exit(const struct hold_run_record *r, bool from_end, boo
     }
 
     char boot[128] = {0};
-    bool have_boot = r->has_boot && hold_current_boot_id(boot, sizeof(boot));
+    const char *boot_id = r->has_boot ? hold_boot_id_or_null(boot) : NULL;
     if (from_end) {
         lseek(fd, 0, SEEK_END);
     }
@@ -188,14 +128,14 @@ int hold_tail_log_until_exit(const struct hold_run_record *r, bool from_end, boo
     sigaction(SIGINT, &sa, &old_sa);
     g_tail_interrupted = 0;
 
+    /* Logs are raw captured bytes (the pre-0.5 JSON-lines encoding is no
+     * longer decoded); tailing is a straight copy to stdout. */
     char buf[4096];
-    struct decoded_log_stream decoder = {0};
     int sleep_polls = 0;
     while (!g_tail_interrupted) {
         ssize_t n = read(fd, buf, sizeof(buf));
         if (n > 0) {
-            if (decoded_log_stream_write(&decoder, buf, (size_t)n) != 0) {
-                decoded_log_stream_free(&decoder);
+            if (hold_write_all(STDOUT_FILENO, buf, (size_t)n) != 0) {
                 close(fd);
                 sigaction(SIGINT, &old_sa, NULL);
                 hold_die_errno("hold: failed writing tailed output");
@@ -206,7 +146,6 @@ int hold_tail_log_until_exit(const struct hold_run_record *r, bool from_end, boo
             if (errno == EINTR) {
                 continue;
             }
-            decoded_log_stream_free(&decoder);
             close(fd);
             sigaction(SIGINT, &old_sa, NULL);
             hold_die_errno("hold: failed while tailing log");
@@ -218,20 +157,13 @@ int hold_tail_log_until_exit(const struct hold_run_record *r, bool from_end, boo
         nanosleep(&sl, NULL);
         sleep_polls++;
         if (sleep_polls % 10 == 0) {
-            enum run_state st = hold_eval_state(r, have_boot ? boot : NULL);
+            enum run_state st = hold_eval_state(r, boot_id);
             if (st != STATE_RUNNING) {
                 break;
             }
         }
     }
 
-    if (decoded_log_stream_flush(&decoder) != 0) {
-        decoded_log_stream_free(&decoder);
-        close(fd);
-        sigaction(SIGINT, &old_sa, NULL);
-        hold_die_errno("hold: failed writing tailed output");
-    }
-    decoded_log_stream_free(&decoder);
     close(fd);
     sigaction(SIGINT, &old_sa, NULL);
     return 0;
@@ -436,9 +368,9 @@ int hold_cmd_tail_action(const struct hold_invocation *inv,
         free(targets);
         return 5;
     }
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
-    enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
+    enum run_state st = hold_eval_state(&r, boot_id);
     rc = hold_tail_log_until_exit(&r, st == STATE_RUNNING, st == STATE_RUNNING);
     hold_free_run_record(&r);
     free(targets);
@@ -517,7 +449,7 @@ static int stream_view_follow_until_exit(int fd,
                                          bool follow_until_exit,
                                          bool debug_stats) {
     char boot[128] = {0};
-    bool have_boot = r->has_boot && hold_current_boot_id(boot, sizeof(boot));
+    const char *boot_id = r->has_boot ? hold_boot_id_or_null(boot) : NULL;
     if (from_end) {
         lseek(fd, 0, SEEK_END);
     }
@@ -555,7 +487,7 @@ static int stream_view_follow_until_exit(int fd,
         nanosleep(&sl, NULL);
         sleep_polls++;
         if (sleep_polls % 10 == 0) {
-            enum run_state st = hold_eval_state(r, have_boot ? boot : NULL);
+            enum run_state st = hold_eval_state(r, boot_id);
             if (st != STATE_RUNNING) {
                 struct hold_log_filter_result final_result;
                 if (hold_log_filter_fd(fd, opts, &final_result) == 0) {
@@ -712,9 +644,9 @@ int hold_cmd_inspect_action(const struct hold_invocation *inv,
         free(targets);
         return 5;
     }
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
-    enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
+    enum run_state st = hold_eval_state(&r, boot_id);
     /* Live fd targets are observable state, added only for a running call whose
      * leader still exists; ended calls fall back to the verbatim record. */
     char *stdio_obj = NULL;
@@ -884,9 +816,9 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
             hold_die_errno("hold: failed while viewing log");
         }
     } else if (follow) {
-        char boot[128] = {0};
-        bool have_boot = hold_current_boot_id(boot, sizeof(boot));
-        enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+        char boot[128];
+        const char *boot_id = hold_boot_id_or_null(boot);
+        enum run_state st = hold_eval_state(&r, boot_id);
         rc = stream_view_follow_until_exit(fd, &r, &opts, st == STATE_RUNNING, st == STATE_RUNNING, debug_stats);
     } else {
         struct hold_log_filter_result result;

@@ -102,9 +102,9 @@ static int restart_existing_run(const struct hold_invocation *inv,
         console_mode = old.recipe.mode_tty;
         interactive_stdin = old.recipe.mode_interactive;
     }
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
-    enum run_state st = hold_eval_state(&old, have_boot ? boot : NULL);
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
+    enum run_state st = hold_eval_state(&old, boot_id);
     if (st == STATE_RUNNING) {
         char display[ID_DISPLAY_HEX_LEN + 1];
         hold_run_id_display(old.id, display);
@@ -142,14 +142,6 @@ static int restart_existing_run(const struct hold_invocation *inv,
         .exec_path = argv[0],
         .envc = old.recipe.envc,
         .env = old.recipe.env,
-        .portc = old.recipe.portc,
-        .ports = old.recipe.ports,
-        .volumec = old.recipe.volumec,
-        .volumes = old.recipe.volumes,
-        .cap_addc = old.recipe.cap_addc,
-        .cap_add = old.recipe.cap_add,
-        .cap_dropc = old.recipe.cap_dropc,
-        .cap_drop = old.recipe.cap_drop,
         .restart_policy = restart_policy ? restart_policy : (old.recipe.has_restart_policy ? old.recipe.restart_policy : NULL),
         .restart_delay_seconds = restart_policy ? restart_delay_seconds : old.recipe.restart_delay_seconds,
         .existing_id = old.id,
@@ -208,19 +200,18 @@ int hold_cmd_redial(const struct hold_invocation *inv,
                                 restart_delay_seconds, restart_id);
 }
 
-int hold_cmd_rename_action(const struct hold_invocation *inv,
-                             const struct hold_store *user_store,
-                             const struct hold_store *system_store,
-                             const char *target_token,
-                             const char *new_name) {
-    if (!hold_valid_alias(new_name)) {
-        fprintf(stderr, "hold: error: invalid call name '%s'\n", new_name);
-        return 5;
-    }
+/* save and rename share one shape: resolve with the widest (inspect) intent,
+ * load, mutate the protection/name state, rewrite atomically, refresh the
+ * public projection for global calls, confirm on stderr. new_name==NULL
+ * means save; non-NULL means rename (which also saves — naming a call
+ * declares the intent to keep it). */
+static int protect_record_action(const struct hold_invocation *inv,
+                                 const struct hold_store *user_store,
+                                 const struct hold_store *system_store,
+                                 const char *target_token,
+                                 const char *new_name) {
     struct hold_resolved_target *targets = NULL;
     int ntargets = 0;
-    /* Both live and ended calls are renameable, so resolve with the widest
-     * (inspect) intent. */
     int rc = hold_resolve_action_token(inv, user_store, system_store, "inspect", target_token, false, &targets, &ntargets);
     if (rc != 0) {
         free(targets);
@@ -235,7 +226,7 @@ int hold_cmd_rename_action(const struct hold_invocation *inv,
         free(targets);
         return hold_report_requires_root(target.id);
     }
-    if (run_name_exists_in_store(&target.store, new_name, target.id)) {
+    if (new_name && run_name_exists_in_store(&target.store, new_name, target.id)) {
         fprintf(stderr, "hold: error: call name '%s' already exists\n", new_name);
         free(targets);
         return 5;
@@ -246,75 +237,12 @@ int hold_cmd_rename_action(const struct hold_invocation *inv,
         free(targets);
         return 5;
     }
-    char *j = NULL;
-    char **argv = NULL;
-    int argc = 0;
-    if (hold_read_owned_file_no_symlink(record_path, &j) != 0 ||
-        hold_json_get_argv_alloc(j, &argv, &argc) != 0) {
-        fprintf(stderr, "hold: error: failed to load call record for %s\n", target.id);
-        free(j);
-        hold_free_run_record(&r);
-        free(targets);
-        return 5;
-    }
-    snprintf(r.name, sizeof(r.name), "%s", new_name);
-    r.has_name = true;
-    /* Naming a call declares the intent to keep it: rename also saves. */
-    bool newly_saved = !r.saved;
-    r.saved = true;
-    char out_path[HOLD_PATH_MAX];
-    if (hold_write_record_atomic(target.store.record_dir, &r, argc, argv, out_path, sizeof(out_path)) != 0) {
-        hold_die_errno("hold: failed to write renamed call record");
-    }
-    if (target.store.kind == STORE_SYSTEM_MANAGED) {
-        (void)hold_write_public_index_atomic(&target.store, &r, NULL);
-    }
     char display_id[ID_DISPLAY_HEX_LEN + 1];
     hold_run_id_display(r.id, display_id);
-    hold_sig_note(inv, "hold: renamed %s to %s%s\n", display_id, new_name,
-                  newly_saved ? " (saved)" : "");
-    hold_free_argv_alloc(argv, argc);
-    free(j);
-    hold_free_run_record(&r);
-    free(targets);
-    return 0;
-}
-
-int hold_cmd_save_action(const struct hold_invocation *inv,
-                           const struct hold_store *user_store,
-                           const struct hold_store *system_store,
-                           const char *target_token) {
-    struct hold_resolved_target *targets = NULL;
-    int ntargets = 0;
-    /* Both live and ended calls are savable, so resolve with the widest
-     * (inspect) intent. */
-    int rc = hold_resolve_action_token(inv, user_store, system_store, "inspect", target_token, false, &targets, &ntargets);
-    if (rc != 0) {
-        free(targets);
-        return rc;
-    }
-    if (ntargets == 0) {
-        free(targets);
-        return hold_report_not_found(target_token);
-    }
-    struct hold_resolved_target target = targets[0];
-    if (target.requires_root) {
-        free(targets);
-        return hold_report_requires_root(target.id);
-    }
-    struct hold_run_record r;
-    char record_path[HOLD_PATH_MAX];
-    if (hold_load_record_by_id(target.store.record_dir, target.id, &r, record_path, sizeof(record_path)) != 0) {
-        free(targets);
-        return 5;
-    }
-    char display_id[ID_DISPLAY_HEX_LEN + 1];
-    hold_run_id_display(r.id, display_id);
-    const char *label = r.has_name ? r.name : display_id;
     /* Saving is idempotent: an already-saved call needs no rewrite, but still
      * confirms the protected state on stderr and exits 0. */
-    if (r.saved) {
-        hold_sig_note(inv, "hold: saved %s (%s)\n", display_id, label);
+    if (!new_name && r.saved) {
+        hold_sig_note(inv, "hold: saved %s (%s)\n", display_id, r.has_name ? r.name : display_id);
         hold_free_run_record(&r);
         free(targets);
         return 0;
@@ -330,20 +258,50 @@ int hold_cmd_save_action(const struct hold_invocation *inv,
         free(targets);
         return 5;
     }
+    bool newly_saved = !r.saved;
+    if (new_name) {
+        snprintf(r.name, sizeof(r.name), "%s", new_name);
+        r.has_name = true;
+    }
     r.saved = true;
     char out_path[HOLD_PATH_MAX];
     if (hold_write_record_atomic(target.store.record_dir, &r, argc, argv, out_path, sizeof(out_path)) != 0) {
-        hold_die_errno("hold: failed to write saved call record");
+        hold_die_errno(new_name ? "hold: failed to write renamed call record"
+                                : "hold: failed to write saved call record");
     }
     if (target.store.kind == STORE_SYSTEM_MANAGED) {
         (void)hold_write_public_index_atomic(&target.store, &r, NULL);
     }
-    hold_sig_note(inv, "hold: saved %s (%s)\n", display_id, label);
+    if (new_name) {
+        hold_sig_note(inv, "hold: renamed %s to %s%s\n", display_id, new_name,
+                      newly_saved ? " (saved)" : "");
+    } else {
+        hold_sig_note(inv, "hold: saved %s (%s)\n", display_id, r.has_name ? r.name : display_id);
+    }
     hold_free_argv_alloc(argv, argc);
     free(j);
     hold_free_run_record(&r);
     free(targets);
     return 0;
+}
+
+int hold_cmd_rename_action(const struct hold_invocation *inv,
+                             const struct hold_store *user_store,
+                             const struct hold_store *system_store,
+                             const char *target_token,
+                             const char *new_name) {
+    if (!hold_valid_alias(new_name)) {
+        fprintf(stderr, "hold: error: invalid call name '%s'\n", new_name);
+        return 5;
+    }
+    return protect_record_action(inv, user_store, system_store, target_token, new_name);
+}
+
+int hold_cmd_save_action(const struct hold_invocation *inv,
+                           const struct hold_store *user_store,
+                           const struct hold_store *system_store,
+                           const char *target_token) {
+    return protect_record_action(inv, user_store, system_store, target_token, NULL);
 }
 
 int hold_generate_run_name_for_id(const struct hold_store *store, const char *id, const char *requested, char out[ALIAS_MAX_LEN + 1]) {

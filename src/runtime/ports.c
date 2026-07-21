@@ -37,9 +37,9 @@ int hold_cmd_ports_action(const struct hold_invocation *inv,
         free(targets);
         return 5;
     }
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
-    enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
+    enum run_state st = hold_eval_state(&r, boot_id);
     if (st != STATE_RUNNING) {
         /* An ended call holds no sockets; that is a clean empty result, not an
          * error, so scripts can loop over it. */

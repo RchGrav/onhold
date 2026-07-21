@@ -53,9 +53,9 @@ int hold_cmd_console_action(const struct hold_invocation *inv,
         free(targets);
         return 5;
     }
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
-    enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
+    enum run_state st = hold_eval_state(&r, boot_id);
     rc = attach_console_record(inv, &r, st);
     hold_free_run_record(&r);
     free(targets);
@@ -76,7 +76,7 @@ void hold_usage(void) {
            "  hold on                      guarded shell; Ctrl-P Ctrl-Q holds a program\n"
            "  hold off                     end the current hold on session\n\n"
            "MANAGE YOUR CALLS\n"
-           "  hold list                    the call table (ps is an alias)\n"
+           "  hold list                    your ledger of calls (hold ps: the Docker view)\n"
            "  hold attach <target>         pick the call back up (Ctrl-P Ctrl-Q detaches)\n"
            "  hold logs <target> [-f]      open the log viewer (-p dumps plain text)\n"
            "  hold inspect <target>        structured JSON details\n"

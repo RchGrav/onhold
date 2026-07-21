@@ -306,6 +306,7 @@ static void broker_serve(const struct hold_store *store,
     struct console_replay_buffer replay;
     hold_console_replay_init(&replay);
     bool target_done = false;
+    bool target_marked = false;
     int target_status = 0;
     while (1) {
         if (!adopted && !target_done) {
@@ -315,7 +316,10 @@ static void broker_serve(const struct hold_store *store,
                 target_done = true;
                 target_status = st;
                 if (store && run_id && *run_id) {
-                    (void)hold_mark_run_finished(store, run_id, target_status);
+                    /* Best-effort while serving: an instantly-exiting target
+                     * can beat the parent's record write, so a failure here
+                     * is retried patiently after the serve loop ends. */
+                    target_marked = hold_mark_run_finished(store, run_id, target_status) == 0;
                 }
                 target = -1;
             }
@@ -427,12 +431,22 @@ static void broker_serve(const struct hold_store *store,
         if (got == target) {
             target_done = true;
             target_status = st;
-            if (store && run_id && *run_id) {
-                (void)hold_mark_run_finished(store, run_id, target_status);
-            }
             target = -1;
         } else if (got < 0 && errno == ECHILD) {
             target = -1;
+        }
+    }
+    if (!adopted && target_done && !target_marked && store && run_id && *run_id) {
+        /* The exit stamp must not be lost to the launch race: retry until the
+         * parent's record exists. rc 1 means the record was purged while the
+         * call was exiting — that removal is final, do not resurrect it. */
+        for (int i = 0; i < 50; i++) {
+            int mark_rc = hold_mark_run_finished(store, run_id, target_status);
+            if (mark_rc == 0 || mark_rc == 1) break;
+            struct timespec sl = {.tv_sec = 0, .tv_nsec = 100 * 1000000L};
+            while (nanosleep(&sl, &sl) != 0 && errno == EINTR) {
+                continue;
+            }
         }
     }
     if (adopted && hup_pid > 0) {

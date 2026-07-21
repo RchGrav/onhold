@@ -198,29 +198,18 @@ static int consume_line(struct hold_log_filter_result *result,
                         size_t n,
                         off_t line_offset,
                         bool *done) {
-    char *decoded = NULL;
-    const char *visible = line;
-    size_t visible_n = n;
-    if (hold_decode_json_log_line(line, &decoded) >= 0 && decoded) {
-        visible = decoded;
-        visible_n = strlen(decoded);
-    }
     result->lines_scanned++;
     if (!source_visible(opts, line_offset)) {
-        free(decoded);
         return 0;
     }
-    if (!line_matches(state, visible)) {
-        free(decoded);
+    if (!line_matches(state, line)) {
         return 0;
     }
     result->match_count++;
     push_match_offset(result, opts, line_offset);
-    if (push_visible(result, opts, visible, visible_n, line_offset) != 0) {
-        free(decoded);
+    if (push_visible(result, opts, line, n, line_offset) != 0) {
         return -1;
     }
-    free(decoded);
     if (result->line_count >= opts->max_results || result->line_count >= opts->visible_capacity) *done = true;
     return 0;
 }
@@ -431,20 +420,14 @@ int hold_log_filter_backward_fd(int fd,
             result->lines_scanned++;
             char saved = buf[line_start + line_len];
             buf[line_start + line_len] = '\0';
-            char *decoded = NULL;
             const char *visible = buf + line_start;
             size_t visible_len = line_len;
-            if (hold_decode_json_log_line(buf + line_start, &decoded) >= 0 && decoded) {
-                visible = decoded;
-                visible_len = strlen(decoded);
-            }
             bool matches = source_visible(&opts, line_off) && line_matches(&state, visible);
             buf[line_start + line_len] = saved;
             if (matches) {
                 result->match_count++;
                 push_match_offset(result, &opts, line_off);
                 char *copy = dup_line(visible, visible_len);
-                free(decoded);
                 if (!copy) {
                     free(buf);
                     for (size_t j = 0; j < ring_count; j++) {
@@ -472,8 +455,6 @@ int hold_log_filter_backward_fd(int fd,
                     ring_next_offsets[ring_start] = line_next_off;
                     ring_start = (ring_start + 1) % cap;
                 }
-            } else {
-                free(decoded);
             }
         }
         line_start = i + 1;

@@ -21,14 +21,6 @@ struct hold_start_options {
     const char *run_name;
     int envc;
     char **env;
-    int portc;
-    char **ports;
-    int volumec;
-    char **volumes;
-    int cap_addc;
-    char **cap_add;
-    int cap_dropc;
-    char **cap_drop;
     const char *restart_policy;
     int restart_delay_seconds;
     const char *existing_id;

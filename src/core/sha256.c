@@ -100,50 +100,6 @@ void hold_hex_encode(const unsigned char *bytes, size_t n, char *out, size_t out
     out[n * 2] = '\0';
 }
 
-int hold_rand_bytes(uint8_t *buf, size_t n) {
-    size_t off = 0;
-#if defined(__linux__)
-    bool fallback = false;
-    while (off < n && !fallback) {
-        ssize_t r = getrandom(buf + off, n - off, 0);
-        if (r > 0) {
-            off += (size_t)r;
-            continue;
-        }
-        if (r < 0 && errno == EINTR) {
-            continue;
-        }
-        if (r < 0 && (errno == ENOSYS || errno == EINVAL)) {
-            fallback = true;
-            break;
-        }
-        return -1;
-    }
-    if (!fallback) {
-        return 0;
-    }
-#endif
-
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0) {
-        return -1;
-    }
-    while (off < n) {
-        ssize_t x = read(fd, buf + off, n - off);
-        if (x > 0) {
-            off += (size_t)x;
-            continue;
-        }
-        if (x < 0 && errno == EINTR) {
-            continue;
-        }
-        close(fd);
-        return -1;
-    }
-    close(fd);
-    return 0;
-}
-
 static void sha256_update_cstr(struct sha256_ctx *ctx, const char *s) {
     hold_sha256_update(ctx, s, strlen(s));
 }

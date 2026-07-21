@@ -69,7 +69,7 @@ flowchart LR
 
 `write_record_atomic` writes one private JSON record per run. Required identity fields include `id`, `run_id`, `pid`, `pgid`, `sid`, `start_unix_ns`, `argv`, `uid`, `gid`, `proc_starttime_ticks`, `exe_dev`, and `exe_ino`. The recorded `argv[0]` is the resolved executable path, even when the user launched a relative path such as `../bin/daemon`; profiles later reuse that absolute recipe. Optional fields are written only when the corresponding `has_*` flag is set, including `alias`, `console_sock`, `started_at`, `ended_at`, `state`, `exit_code`, `term_signal`, `launch_error`, `log_path`, `boot_id`, and root invocation provenance.
 
-`write_public_index_atomic` writes a redacted system discovery projection: `id`, `root_managed`, `requires_elevation`, optional `alias`/`name`, `state_hint`, timestamps, and a Docker-shaped `State` object. It still does not write argv, command display, log paths, console socket paths, boot ID, executable identity, sudo provenance, environment, or profile hashes.
+`write_public_index_atomic` writes a redacted system discovery projection in the native schema: `id`, `root_managed`, optional `name`, `state_hint`, timestamps (`started_at`/`created_at`/`ended_at`), `observed_ports`, `exit_code`, `pid`/`pgid`/`sid`, and `running`. It never writes argv, command display, log paths, console socket paths, boot ID, executable identity, sudo provenance, or environment.
 
 ## Atomic writes
 
@@ -103,7 +103,7 @@ This pattern matters because On Hold has no daemon to reconstruct partially writ
 
 Private records are authoritative. Public root indexes exist so normal users can discover that a root-managed run exists and decide whether an action should self-elevate. Normal list output reads both the user-local private store and the system public index, while root/system list reads private system records.
 
-Public root rows carry the latest projected `state_hint` and `State` written by Hold. New runs use Hold-owned supervisor/reaper paths to project final exit state when the child exits. The private record remains authoritative: root actions re-load private state and evaluate live process identity before signaling or pruning.
+Public root rows carry the latest projected `state_hint` and lifecycle fields written by Hold. New runs use Hold-owned supervisor/reaper paths to project final exit state when the child exits. The private record remains authoritative: root actions re-load private state and evaluate live process identity before signaling or pruning.
 
 ## Pruning
 

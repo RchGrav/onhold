@@ -38,12 +38,15 @@ orphan; `sudo hold purge` sweeps it so no view can resurrect it.
 
 ## Records
 
-One JSON record per call, Docker-inspect-style keys, written atomically
-(temp file + rename) and never partially visible. The record is the recipe:
-redial replays its argv, environment, and session mode. `Saved: true`
-protects it from sweeps. IDs are 64-hex, derived from creation material;
-names are generated `adjective_noun`, unique per store, user-renameable
-(renaming saves).
+One JSON record per call in a single native snake_case schema, written
+atomically (temp file + rename) and never partially visible. Docker parity
+lives at the CLI surface (flags and tables), not in storage; the parallel
+Docker-shaped keys written before 0.7 are neither written nor read (one
+legacy shim: the old `Saved` spelling of the saved flag still loads).
+The record is the recipe: redial replays its argv, environment, and session
+mode (`mode{}` bits). `saved: true` protects it from sweeps. IDs are 64-hex,
+derived from creation material; names are generated `adjective_noun`,
+unique per store, user-renameable (renaming saves).
 
 ## Logs
 

@@ -95,3 +95,8 @@ skills/
 # claude-mem plugin context files (machine-local, not project content)
 CLAUDE.md
 **/CLAUDE.md
+
+# TEMPO working material: the methodology repo/engine lives outside this
+# project; its per-run ledgers are machine-local, not project content
+tempo/
+.tempo/

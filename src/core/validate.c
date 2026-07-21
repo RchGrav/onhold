@@ -84,7 +84,7 @@ bool hold_valid_record(const struct hold_run_record *r) {
            (r->run_id[0] == '\0' || hold_valid_id(r->run_id));
 }
 
-int hold_parse_uid_env(const char *s, uid_t *out) {
+static int parse_id_number_env(const char *s, unsigned long long *out) {
     if (!s || !*s) {
         return -1;
     }
@@ -94,32 +94,24 @@ int hold_parse_uid_env(const char *s, uid_t *out) {
     if (end == s || *end != '\0' || errno != 0) {
         return -1;
     }
+    *out = v;
+    return 0;
+}
+
+int hold_parse_uid_env(const char *s, uid_t *out) {
+    unsigned long long v = 0;
+    if (parse_id_number_env(s, &v) != 0) return -1;
     uid_t narrowed = (uid_t)v;
-    if ((unsigned long long)narrowed != v) {
-        return -1;
-    }
+    if ((unsigned long long)narrowed != v) return -1;
     *out = narrowed;
     return 0;
 }
 
 int hold_parse_gid_env(const char *s, gid_t *out) {
-    if (!s || !*s) {
-        return -1;
-    }
-    char *end = NULL;
-    errno = 0;
-    unsigned long long v = strtoull(s, &end, 10);
-    if (end == s || *end != '\0' || errno != 0) {
-        return -1;
-    }
+    unsigned long long v = 0;
+    if (parse_id_number_env(s, &v) != 0) return -1;
     gid_t narrowed = (gid_t)v;
-    if ((unsigned long long)narrowed != v) {
-        return -1;
-    }
+    if ((unsigned long long)narrowed != v) return -1;
     *out = narrowed;
     return 0;
-}
-
-bool hold_valid_target_atom(const char *id) {
-    return hold_valid_id_prefix(id) || hold_valid_alias(id);
 }

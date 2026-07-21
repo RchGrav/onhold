@@ -5,17 +5,11 @@
 #include "hold/config.h"
 #include "hold/types.h"
 
-int hold_chown_root_if_root(const char *path);
 int hold_init_user_store_from_home(const char *home, struct hold_store *store);
 int hold_ensure_user_store_for_current_user(struct hold_store *store);
 int hold_ensure_invoking_user_store(const struct hold_invocation *inv, struct hold_store *store);
 int hold_init_system_store(struct hold_store *store);
 int hold_ensure_system_store(struct hold_store *store);
-int hold_gen_id_for_store(const struct hold_store *primary,
-                            const struct hold_store *avoid_public_store,
-                            const struct hold_store *avoid_user_store,
-                            char *out,
-                            size_t out_n);
 int hold_write_record_atomic(const char *dir, const struct hold_run_record *r, int argc, char **argv, char *out_json_path, size_t out_n);
 int hold_write_public_index_atomic(const struct hold_store *store, const struct hold_run_record *r,
                                      const char *observed_ports_csv);

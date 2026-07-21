@@ -6,6 +6,7 @@
 #include "hold/platform.h"
 #include "hold/console.h"
 #include "hold/console_internal.h"
+#include "hold/observe.h"
 
 struct shell_raw_terminal {
     struct termios original;
@@ -129,56 +130,6 @@ static int spawn_shell_child(int master, const char *slave_path, const char *she
 }
 
 #if defined(__linux__)
-static int shell_read_proc_ids(pid_t pid, pid_t *pgid_out, pid_t *sid_out, char *state_out) {
-    char path[128], buf[4096];
-    if (hold_checked_snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid) != 0) return -1;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return -1;
-    ssize_t nr;
-    do {
-        nr = read(fd, buf, sizeof(buf) - 1);
-    } while (nr < 0 && errno == EINTR);
-    int saved = errno;
-    close(fd);
-    if (nr <= 0) {
-        errno = nr < 0 ? saved : EIO;
-        return -1;
-    }
-    buf[nr] = '\0';
-    char *rp = strrchr(buf, ')');
-    if (!rp) {
-        errno = EINVAL;
-        return -1;
-    }
-    char *fields = rp + 2;
-    char *save = NULL;
-    int idx = 0;
-    bool got_pgid = false, got_sid = false, got_state = false;
-    pid_t pgid = 0, sid = 0;
-    char state = 0;
-    for (char *tok = strtok_r(fields, " ", &save); tok; tok = strtok_r(NULL, " ", &save), idx++) {
-        if (idx == 0) {
-            state = tok[0];
-            got_state = true;
-        } else if (idx == 2) {
-            pgid = (pid_t)strtol(tok, NULL, 10);
-            got_pgid = true;
-        } else if (idx == 3) {
-            sid = (pid_t)strtol(tok, NULL, 10);
-            got_sid = true;
-            break;
-        }
-    }
-    if ((pgid_out && !got_pgid) || (sid_out && !got_sid) || (state_out && !got_state)) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (pgid_out) *pgid_out = pgid;
-    if (sid_out) *sid_out = sid;
-    if (state_out) *state_out = state;
-    return 0;
-}
-
 static int find_process_in_pgid(pid_t pgid, pid_t *pid_out, pid_t *sid_out) {
     DIR *d = opendir("/proc");
     if (!d) return -1;
@@ -191,7 +142,7 @@ static int find_process_in_pgid(pid_t pgid, pid_t *pid_out, pid_t *sid_out) {
         if (end == e->d_name || *end != '\0' || pid_long <= 0) continue;
         pid_t proc_pgid = 0, proc_sid = 0;
         char state = 0;
-        if (shell_read_proc_ids((pid_t)pid_long, &proc_pgid, &proc_sid, &state) != 0) continue;
+        if (hold_proc_read_ids((pid_t)pid_long, &proc_pgid, &proc_sid, &state) != 0) continue;
         if (proc_pgid != pgid || state == 'Z') continue;
         if ((pid_t)pid_long == pgid) {
             best = (pid_t)pid_long;

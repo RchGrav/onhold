@@ -371,9 +371,15 @@ static int scan_proc_net_file(const char *path,
             fields[nf++] = tok;
         }
         if (nf <= 9) continue;
-        /* TCP: only LISTEN sockets (state 0A). UDP has no listen state, so a
-         * bound socket (nonzero local port) is the honest analogue. */
+        /* TCP: only LISTEN sockets (state 0A). UDP has no listen state, so an
+         * unconnected bound socket is the honest analogue — a socket with a
+         * remote address set is an outbound client (e.g. an ephemeral DNS
+         * port) and never belongs in PORTS. */
         if (is_tcp && strcmp(fields[3], "0A") != 0) continue;
+        if (!is_tcp && fields[2]) {
+            const char *rem_port = strchr(fields[2], ':');
+            if (rem_port && strtoul(rem_port + 1, NULL, 16) != 0) continue;
+        }
         unsigned long long inode = strtoull(fields[9], NULL, 10);
         if (!inode_set_contains(set, inode)) continue;
         char addr_hex[64] = {0};

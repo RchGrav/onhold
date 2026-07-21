@@ -15,25 +15,6 @@ static bool parse_docker_run_flag(const char *arg,
                                   bool *tty,
                                   bool *privileged);
 static int append_env_assignment(const char *arg, char ***env_out, int *envc_out);
-static int append_string_option(const char *what, const char *arg, char ***items_out, int *count_out);
-static int append_string_option(const char *what, const char *arg, char ***items_out, int *count_out) {
-    if (!arg || !*arg) {
-        fprintf(stderr, "hold: error: %s requires a value\n", what);
-        return 5;
-    }
-    char *copy = strdup(arg);
-    if (!copy) return 3;
-    char **next = realloc(*items_out, ((size_t)*count_out + 1) * sizeof(*next));
-    if (!next) {
-        free(copy);
-        return 3;
-    }
-    next[*count_out] = copy;
-    *items_out = next;
-    (*count_out)++;
-    return 0;
-}
-
 static int reject_publish_option(void);
 static int reject_volume_option(void);
 static int parse_restart_policy_arg(const char *arg, char out[64]);
@@ -51,14 +32,6 @@ struct cli_run_options {
     const char *name;
     char **env;
     int envc;
-    char **ports;
-    int portc;
-    char **volumes;
-    int volumec;
-    char **cap_add;
-    int cap_addc;
-    char **cap_drop;
-    int cap_dropc;
     char restart_policy[64];
     int restart_delay_seconds;
     bool restart_delay_seen;
@@ -67,10 +40,6 @@ struct cli_run_options {
 static void free_run_options(struct cli_run_options *run) {
     if (!run) return;
     hold_free_argv_alloc(run->env, run->envc);
-    hold_free_argv_alloc(run->ports, run->portc);
-    hold_free_argv_alloc(run->volumes, run->volumec);
-    hold_free_argv_alloc(run->cap_add, run->cap_addc);
-    hold_free_argv_alloc(run->cap_drop, run->cap_dropc);
     memset(run, 0, sizeof(*run));
 }
 
@@ -90,14 +59,6 @@ static struct hold_start_options start_options_from_run(const struct cli_run_opt
         .run_name = run->name,
         .envc = run->envc,
         .env = run->env,
-        .portc = run->portc,
-        .ports = run->ports,
-        .volumec = run->volumec,
-        .volumes = run->volumes,
-        .cap_addc = run->cap_addc,
-        .cap_add = run->cap_add,
-        .cap_dropc = run->cap_dropc,
-        .cap_drop = run->cap_drop,
         .restart_policy = run->restart_policy[0] ? run->restart_policy : NULL,
         .restart_delay_seconds = run->restart_delay_seconds,
     };
@@ -267,11 +228,11 @@ static int append_env_assignment(const char *arg, char ***env_out, int *envc_out
         hold_die_errno("hold: failed to set launch environment");
     }
     char *copy = strdup(arg);
-    if (!copy) return 3;
+    if (!copy) return 1;
     char **next = realloc(*env_out, ((size_t)*envc_out + 1) * sizeof(*next));
     if (!next) {
         free(copy);
-        return 3;
+        return 1;
     }
     next[*envc_out] = copy;
     *env_out = next;
@@ -394,37 +355,15 @@ static int parse_run_options(int argc,
     if (!strcmp(arg, "-v") || !strcmp(arg, "--volume") || !strncmp(arg, "--volume=", 9)) {
         return reject_volume_option();
     }
-    if (!strcmp(arg, "--cap-add")) {
-        if (*index + 1 >= argc) {
-            fprintf(stderr, "hold: error: --cap-add requires a capability\n");
-            return 5;
-        }
-        int rc = append_string_option("--cap-add", argv[*index + 1], &run->cap_add, &run->cap_addc);
-        if (rc != 0) return rc;
-        *index += 2;
-        return 0;
-    }
-    if (!strncmp(arg, "--cap-add=", 10)) {
-        int rc = append_string_option("--cap-add", arg + 10, &run->cap_add, &run->cap_addc);
-        if (rc != 0) return rc;
-        (*index)++;
-        return 0;
-    }
-    if (!strcmp(arg, "--cap-drop")) {
-        if (*index + 1 >= argc) {
-            fprintf(stderr, "hold: error: --cap-drop requires a capability\n");
-            return 5;
-        }
-        int rc = append_string_option("--cap-drop", argv[*index + 1], &run->cap_drop, &run->cap_dropc);
-        if (rc != 0) return rc;
-        *index += 2;
-        return 0;
-    }
-    if (!strncmp(arg, "--cap-drop=", 11)) {
-        int rc = append_string_option("--cap-drop", arg + 11, &run->cap_drop, &run->cap_dropc);
-        if (rc != 0) return rc;
-        (*index)++;
-        return 0;
+    if (!strcmp(arg, "--cap-add") || !strncmp(arg, "--cap-add=", 10) ||
+        !strcmp(arg, "--cap-drop") || !strncmp(arg, "--cap-drop=", 11)) {
+        /* Grants-era remnant: capabilities left with that subsystem. Reject
+         * honestly like the other substrate flags rather than accept-and-ignore. */
+        fprintf(stderr,
+                "hold: error: %s is not supported; hold does not manage capabilities.\n"
+                "  Constrain the command itself instead, e.g. via capsh or systemd-run.\n",
+                arg);
+        return 5;
     }
     if (!strcmp(arg, "--detach-keys")) {
         if (*index + 1 >= argc) {
@@ -565,7 +504,7 @@ int hold_cli_main(int argc, char **argv) {
     if (owned) {
         cmd_argv = calloc((size_t)(argc - argi + 1), sizeof(char *));
         if (!cmd_argv) {
-            return 3;
+            return 1;
         }
         bool literal_owned_arg = false;
         for (int i = argi; i < argc; i++) {
@@ -591,13 +530,15 @@ int hold_cli_main(int argc, char **argv) {
             /* Commands that accept the -s/--system and -u/--user scope flags. */
             bool scoped = is_list_cmd || purges;
             /* -a: Docker's include-ended on list/ps, the scope-widening BOTH on
-             * list, the include-stale widener on purge. */
+             * list, the include-stale widener on purge. Any command whose spec
+             * allows --all accepts -a as its short form too (end/kill included
+             * — previously -a fell through and was mis-read as a target). */
             bool sweeps = is_list_cmd || is_ps_cmd || purges;
             if (!literal_owned_arg && hold_cli_command_allows_all(command) && !strcmp(argv[i], "--all")) {
                 all = true;
                 continue;
             }
-            if (!literal_owned_arg && sweeps && !strcmp(argv[i], "-a")) {
+            if (!literal_owned_arg && (sweeps || hold_cli_command_allows_all(command)) && !strcmp(argv[i], "-a")) {
                 all = true;
                 continue;
             }
@@ -894,9 +835,7 @@ int hold_cli_main(int argc, char **argv) {
          * re-enters here already privileged and sweeps directly. */
         if (purge_system && !target && !inv.euid_root) {
             char self[HOLD_PATH_MAX];
-            ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-            if (n > 0) {
-                self[n] = '\0';
+            if (hold_resolve_self_executable_path(argv[0], self, sizeof(self)) == 0) {
                 char *sudo_argv[8];
                 int k = 0;
                 sudo_argv[k++] = "sudo";

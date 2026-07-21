@@ -14,6 +14,7 @@ struct hold_passwd_entry {
 };
 
 bool hold_current_boot_id(char *buf, size_t n);
+const char *hold_boot_id_or_null(char buf[128]);
 enum group_liveness hold_group_session_liveness(pid_t pgid, pid_t sid);
 int hold_count_session_escapees(pid_t sid, pid_t expected_pgid);
 int hold_read_proc_stat_tokens(pid_t pid, char *state_out, uint64_t *starttime_out);

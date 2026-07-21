@@ -175,25 +175,6 @@ void hold_format_rfc3339_utc_from_ns(int64_t unix_ns, char *out, size_t n) {
     }
 }
 
-void hold_format_relative_age(int64_t start_unix_ns, char *out, size_t n) {
-    struct timespec now;
-    if (clock_gettime(CLOCK_REALTIME, &now) != 0 || start_unix_ns <= 0) {
-        snprintf(out, n, "-");
-        return;
-    }
-    int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
-    int64_t age_s = (now_ns > start_unix_ns) ? (now_ns - start_unix_ns) / 1000000000LL : 0;
-    if (age_s < 60) {
-        snprintf(out, n, "%" PRId64 "s", age_s);
-    } else if (age_s < 3600) {
-        snprintf(out, n, "%" PRId64 "m", age_s / 60);
-    } else if (age_s < 86400) {
-        snprintf(out, n, "%" PRId64 "h", age_s / 3600);
-    } else {
-        snprintf(out, n, "%" PRId64 "d", age_s / 86400);
-    }
-}
-
 /* Docker's go-units HumanDuration, character for character: the phrasing the
  * call table borrows for CREATED ("2 minutes") and STATUS ("Up 2 minutes",
  * "Exited (0) 2 days ago"). The caller appends " ago" where the reference is

@@ -13,14 +13,6 @@ struct hold_recipe {
     char **argv;
     int envc;
     char **env;
-    int portc;
-    char **ports;
-    int volumec;
-    char **volumes;
-    int cap_addc;
-    char **cap_add;
-    int cap_dropc;
-    char **cap_drop;
     bool mode_interactive;
     bool mode_tty;
     bool mode_detach;
@@ -74,13 +66,6 @@ struct hold_run_record {
     bool has_created_at;
     bool has_console;
     bool saved;
-    bool has_stdio_config;
-    bool attach_stdin;
-    bool attach_stdout;
-    bool attach_stderr;
-    bool tty;
-    bool open_stdin;
-    bool stdin_once;
     struct hold_recipe recipe;
     bool has_observed;
     char observed_exe[HOLD_PATH_MAX];

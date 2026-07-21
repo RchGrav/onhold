@@ -378,39 +378,6 @@ int hold_write_indexed_log_bytes_fd(int log_fd, int idx_fd, const char *stream, 
     return 0;
 }
 
-int hold_write_json_log_entry_fd(int fd, const char *stream, const char *data, size_t n) {
-    return hold_write_indexed_log_bytes_fd(fd, -1, stream, data, n);
-}
-
-int hold_write_json_log_bytes_fd(int fd, const char *stream, const char *data, size_t n) {
-    return hold_write_indexed_log_bytes_fd(fd, -1, stream, data, n);
-}
-
-int hold_decode_json_log_line(const char *line, char **out) {
-    if (!line || !out) {
-        errno = EINVAL;
-        return -1;
-    }
-    *out = NULL;
-    if (line[0] == '{') {
-        const char *v = NULL;
-        if (hold_json_find_key(line, "log", &v) == 0) {
-            size_t cap = strlen(line) + 1;
-            char *decoded = malloc(cap);
-            if (!decoded) return -1;
-            if (hold_json_get_str(line, "log", decoded, cap) == 0) {
-                *out = decoded;
-                return 1;
-            }
-            free(decoded);
-        }
-    }
-    char *copy = strdup(line);
-    if (!copy) return -1;
-    *out = copy;
-    return 0;
-}
-
 const char *hold_run_id_display(const char *id, char out[ID_DISPLAY_HEX_LEN + 1]) {
     if (!out) return "";
     if (!id) {

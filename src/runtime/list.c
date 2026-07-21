@@ -185,8 +185,8 @@ static int collect_list_private(const struct hold_store *store,
     if (!d) {
         return 0;
     }
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
     const struct dirent *e;
     while ((e = readdir(d))) {
         char file_id[ID_HEX_LEN + 1];
@@ -211,7 +211,7 @@ static int collect_list_private(const struct hold_store *store,
             hold_free_run_record(&r);
             continue;
         }
-        enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+        enum run_state st = hold_eval_state(&r, boot_id);
         if (running_only && st != STATE_RUNNING) {
             hold_free_run_record(&r);
             continue;
@@ -490,8 +490,8 @@ static void refresh_system_public_ports(const struct hold_store *store) {
     if (!d) {
         return;
     }
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
     const struct dirent *e;
     while ((e = readdir(d))) {
         char file_id[ID_HEX_LEN + 1];
@@ -510,7 +510,7 @@ static void refresh_system_public_ports(const struct hold_store *store) {
             hold_free_run_record(&r);
             continue;
         }
-        if (hold_eval_state(&r, have_boot ? boot : NULL) == STATE_RUNNING) {
+        if (hold_eval_state(&r, boot_id) == STATE_RUNNING) {
             /* Only listening TCP and bound UDP sockets are observed here (the
              * hold_observe_run_ports filter); outbound connections are never
              * published, so the projection cannot leak who a call talks to. */
@@ -659,10 +659,60 @@ struct prune_sweep_stats {
     int kept_saved;
 };
 
+/* One orphan sweep: any artifact in dir with the given suffix whose id has
+ * no record left is removed (a public entry, log, or console socket whose
+ * record is gone must never resurrect a call). is_log also drops the
+ * .log.idx sidecar beside each removed log. */
+static void sweep_orphaned_artifacts(const struct hold_store *store,
+                                     const char *dir,
+                                     const char *suffix,
+                                     bool is_log,
+                                     struct prune_sweep_stats *stats) {
+    DIR *d = opendir(dir);
+    if (!d) {
+        return;
+    }
+    const struct dirent *e;
+    size_t suffix_len = strlen(suffix);
+    while ((e = readdir(d))) {
+        if (!hold_has_suffix(e->d_name, suffix)) {
+            continue;
+        }
+        size_t len = strlen(e->d_name);
+        if (len <= suffix_len) {
+            continue;
+        }
+        char id[ID_STR_LEN];
+        size_t id_len = len - suffix_len;
+        if (id_len >= sizeof(id)) {
+            continue;
+        }
+        memcpy(id, e->d_name, id_len);
+        id[id_len] = '\0';
+        if (!hold_valid_id(id)) {
+            continue;
+        }
+        char json_path[HOLD_PATH_MAX], artifact_path[HOLD_PATH_MAX];
+        if (hold_checked_snprintf(json_path, sizeof(json_path), "%s/%s.json", store->record_dir, id) != 0 ||
+            hold_checked_snprintf(artifact_path, sizeof(artifact_path), "%s/%s", dir, e->d_name) != 0) {
+            continue;
+        }
+        if (access(json_path, F_OK) != 0) {
+            if (is_log) {
+                unlink_log_index_for_log(artifact_path);
+            }
+            unlink(artifact_path);
+            stats->removed++;
+        }
+    }
+    closedir(d);
+}
+
+
 static int cmd_prune_store_all(const struct hold_store *store, bool include_stale, struct prune_sweep_stats *stats) {
     memset(stats, 0, sizeof(*stats));
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
     const struct dirent *e;
     DIR *d = opendir(store->record_dir);
     if (!d) {
@@ -687,7 +737,7 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
             hold_free_run_record(&r);
             continue;
         }
-        enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+        enum run_state st = hold_eval_state(&r, boot_id);
         /* The sweep accounts for everything it sees: live calls are end's
          * business, stale needs -a, and saved calls need a targeted --force. */
         if (st == STATE_RUNNING) {
@@ -716,113 +766,9 @@ static int cmd_prune_store_all(const struct hold_store *store, bool include_stal
     closedir(d);
 
 sweep_logs:
-    d = opendir(store->log_dir);
-    if (!d) {
-        goto sweep_consoles;
-    }
-    while ((e = readdir(d))) {
-        if (!hold_has_suffix(e->d_name, ".log")) {
-            continue;
-        }
-        size_t len = strlen(e->d_name);
-        if (len <= 4) {
-            continue;
-        }
-        char id[ID_STR_LEN];
-        size_t id_len = len - 4;
-        if (id_len >= sizeof(id)) {
-            continue;
-        }
-        memcpy(id, e->d_name, id_len);
-        id[id_len] = '\0';
-        if (!hold_valid_id(id)) {
-            continue;
-        }
-        char json_path[HOLD_PATH_MAX], log_path[HOLD_PATH_MAX];
-        if (hold_checked_snprintf(json_path, sizeof(json_path), "%s/%s.json", store->record_dir, id) != 0) {
-            continue;
-        }
-        if (hold_checked_snprintf(log_path, sizeof(log_path), "%s/%s", store->log_dir, e->d_name) != 0) {
-            continue;
-        }
-        if (access(json_path, F_OK) != 0) {
-            unlink_log_index_for_log(log_path);
-            unlink(log_path);
-            stats->removed++;
-        }
-    }
-    closedir(d);
-
-sweep_consoles:
-    d = opendir(store->console_dir);
-    if (!d) {
-        goto sweep_public;
-    }
-    while ((e = readdir(d))) {
-        if (!hold_has_suffix(e->d_name, ".sock")) {
-            continue;
-        }
-        size_t len = strlen(e->d_name);
-        if (len <= 5) {
-            continue;
-        }
-        char id[ID_STR_LEN];
-        size_t id_len = len - 5;
-        if (id_len >= sizeof(id)) {
-            continue;
-        }
-        memcpy(id, e->d_name, id_len);
-        id[id_len] = '\0';
-        if (!hold_valid_id(id)) {
-            continue;
-        }
-        char json_path[HOLD_PATH_MAX], sock_path[HOLD_PATH_MAX];
-        if (hold_checked_snprintf(json_path, sizeof(json_path), "%s/%s.json", store->record_dir, id) != 0 ||
-            hold_checked_snprintf(sock_path, sizeof(sock_path), "%s/%s", store->console_dir, e->d_name) != 0) {
-            continue;
-        }
-        if (access(json_path, F_OK) != 0) {
-            unlink(sock_path);
-            stats->removed++;
-        }
-    }
-    closedir(d);
-
-sweep_public:
-    d = opendir(store->public_dir);
-    if (!d) {
-        return 0;
-    }
-    while ((e = readdir(d))) {
-        if (!hold_has_suffix(e->d_name, ".json")) {
-            continue;
-        }
-        size_t len = strlen(e->d_name);
-        if (len <= 5) {
-            continue;
-        }
-        char id[ID_STR_LEN];
-        size_t id_len = len - 5;
-        if (id_len >= sizeof(id)) {
-            continue;
-        }
-        memcpy(id, e->d_name, id_len);
-        id[id_len] = '\0';
-        if (!hold_valid_id(id)) {
-            continue;
-        }
-        char json_path[HOLD_PATH_MAX], public_path[HOLD_PATH_MAX];
-        if (hold_checked_snprintf(json_path, sizeof(json_path), "%s/%s.json", store->record_dir, id) != 0 ||
-            hold_checked_snprintf(public_path, sizeof(public_path), "%s/%s", store->public_dir, e->d_name) != 0) {
-            continue;
-        }
-        /* A public index entry whose record is gone is an orphan; ps must not resurrect it. */
-        if (access(json_path, F_OK) != 0) {
-            unlink(public_path);
-            stats->removed++;
-        }
-    }
-    closedir(d);
+    sweep_orphaned_artifacts(store, store->log_dir, ".log", true, stats);
+    sweep_orphaned_artifacts(store, store->console_dir, ".sock", false, stats);
+    sweep_orphaned_artifacts(store, store->public_dir, ".json", false, stats);
     return 0;
 }
 
@@ -847,16 +793,23 @@ int hold_cmd_purge_action(const struct hold_invocation *inv,
         if (rc == 0) {
             /* Account for everything the sweep saw, so "purged 6" while the
              * visible list still has entries is never a mystery. */
+            /* snprintf returns the would-have-written length; clamp so a
+             * (theoretical) truncation can never wrap `sizeof(kept) - off`
+             * into a huge size on the next append. */
             char kept[128] = "";
             size_t off = 0;
+            int w;
             if (stats.kept_live > 0) {
-                off += (size_t)snprintf(kept + off, sizeof(kept) - off, "%s%d live", off ? ", " : "; kept ", stats.kept_live);
+                w = snprintf(kept + off, sizeof(kept) - off, "%s%d live", off ? ", " : "; kept ", stats.kept_live);
+                if (w > 0) off = (size_t)w >= sizeof(kept) - off ? sizeof(kept) - 1 : off + (size_t)w;
             }
             if (stats.kept_stale > 0) {
-                off += (size_t)snprintf(kept + off, sizeof(kept) - off, "%s%d stale", off ? ", " : "; kept ", stats.kept_stale);
+                w = snprintf(kept + off, sizeof(kept) - off, "%s%d stale", off ? ", " : "; kept ", stats.kept_stale);
+                if (w > 0) off = (size_t)w >= sizeof(kept) - off ? sizeof(kept) - 1 : off + (size_t)w;
             }
             if (stats.kept_saved > 0) {
-                off += (size_t)snprintf(kept + off, sizeof(kept) - off, "%s%d saved", off ? ", " : "; kept ", stats.kept_saved);
+                w = snprintf(kept + off, sizeof(kept) - off, "%s%d saved", off ? ", " : "; kept ", stats.kept_saved);
+                if (w > 0) off = (size_t)w >= sizeof(kept) - off ? sizeof(kept) - 1 : off + (size_t)w;
             }
             const char *hint = stats.kept_stale > 0 ? " (purge -a sweeps stale)" : "";
             if (stats.removed > 0) {
@@ -888,8 +841,8 @@ int hold_cmd_purge_action(const struct hold_invocation *inv,
             return rc;
         }
     }
-    char boot[128] = {0};
-    bool have_boot = hold_current_boot_id(boot, sizeof(boot));
+    char boot[128];
+    const char *boot_id = hold_boot_id_or_null(boot);
     /* Saved calls are protected: a targeted purge without --force refuses and
      * echoes the exact command the user meant, ready to copy. */
     if (!force) {
@@ -924,7 +877,7 @@ int hold_cmd_purge_action(const struct hold_invocation *inv,
             struct hold_run_record r;
             char rp[HOLD_PATH_MAX];
             if (hold_load_record_by_id(targets[i].store.record_dir, targets[i].id, &r, rp, sizeof(rp)) == 0) {
-                enum run_state st = hold_eval_state(&r, have_boot ? boot : NULL);
+                enum run_state st = hold_eval_state(&r, boot_id);
                 hold_free_run_record(&r);
                 if (st == STATE_RUNNING) {
                     char *one[1] = { targets[i].id };
@@ -938,7 +891,7 @@ int hold_cmd_purge_action(const struct hold_invocation *inv,
             }
         }
         bool removed = false;
-        rc = hold_prune_one_run(&targets[i].store, targets[i].id, have_boot ? boot : NULL, true, &removed);
+        rc = hold_prune_one_run(&targets[i].store, targets[i].id, boot_id, true, &removed);
         if (removed) {
             removed_count++;
         }

@@ -25,6 +25,24 @@ USER_CREATED=0
 ROOT_SAFE_HOLD_DIR=""
 HOLD_TEST_TIMEOUT="${HOLD_TEST_TIMEOUT:-25}"
 
+# util-linux script(1) and BSD/macOS script(1) disagree on flags; detect once.
+SCRIPT_FLAVOR=""
+if command -v script >/dev/null 2>&1; then
+  if script -qfec true /dev/null </dev/null >/dev/null 2>&1; then
+    SCRIPT_FLAVOR=linux
+  else
+    SCRIPT_FLAVOR=bsd
+  fi
+fi
+
+pty_run() {
+  if [ "$SCRIPT_FLAVOR" = linux ]; then
+    script -qfec "$1" /dev/null
+  else
+    script -q /dev/null /bin/sh -c "$1"
+  fi
+}
+
 PASSES=0
 SKIPS=0
 pass() { echo "PASS: $1"; PASSES=$((PASSES + 1)); }
@@ -441,7 +459,7 @@ find_prefixed_artifact() {
     return 0
   fi
   count=$(find "$store" -maxdepth 1 -type f -name "$id*$suffix" 2>/dev/null | wc -l)
-  [ "$count" = "1" ] || return 1
+  [ "$count" -eq 1 ] || return 1
   path=$(find "$store" -maxdepth 1 -type f -name "$id*$suffix" -print -quit 2>/dev/null)
   [ -n "$path" ] || return 1
   printf '%s\n' "$path"
@@ -477,7 +495,7 @@ if [ -e "$store/$id$suffix" ]; then
   exit 0
 fi
 count=$(find "$store" -maxdepth 1 -type f -name "$id*$suffix" 2>/dev/null | wc -l)
-[ "$count" = "1" ] || exit 1
+[ "$count" -eq 1 ] || exit 1
 find "$store" -maxdepth 1 -type f -name "$id*$suffix" -print -quit 2>/dev/null
 ' sh "$store" "$id" "$suffix"
 }
@@ -925,7 +943,7 @@ test_hold_logs_follow_opens_dynamic_tty_filter() {
   [ -n "$id" ] || return 1
   set +e
   python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("logs-live"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("q"); sys.stdout.flush()' |
-    script -qfec "$HOLD_BIN logs $id --follow --interactive --debug-stats" /dev/null >"$TEST_ROOT/logs-follow.out" 2>"$TEST_ROOT/logs-follow.err"
+    pty_run "$HOLD_BIN logs $id --follow --interactive --debug-stats" >"$TEST_ROOT/logs-follow.out" 2>"$TEST_ROOT/logs-follow.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/logs-follow.err" >&2; return 1; }
@@ -943,7 +961,7 @@ test_log_view_follow_dynamic_tty_filter() {
   [ -n "$id" ] || return 1
   set +e
   python3 -c 'import sys,time; time.sleep(0.1); sys.stdout.write("needle"); sys.stdout.flush(); time.sleep(1.0); sys.stdout.write("q"); sys.stdout.flush()' |
-    script -qfec "$HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-dynamic.out" 2>"$TEST_ROOT/view-follow-dynamic.err"
+    pty_run "$HOLD_BIN __view $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-dynamic.out" 2>"$TEST_ROOT/view-follow-dynamic.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-dynamic.err" >&2; return 1; }
@@ -966,8 +984,11 @@ test_log_viewer_integrated_chrome_help_and_info() {
   set +e
   # Ctrl-T cycles timestamps to time; Ctrl-Y shows the source column; Ctrl-H
   # opens the footer help; the next key dismisses it; q quits.
-  python3 -c 'import sys,time; o=sys.stdout.buffer; o.write(b"\x14\x19"); o.flush(); time.sleep(0.2); o.write(b"\x08"); o.flush(); time.sleep(0.2); o.write(b"q"); o.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 10 cols 80; $HOLD_BIN logs $id --interactive" /dev/null >"$TEST_ROOT/viewer-chrome.out" 2>"$TEST_ROOT/viewer-chrome.err"
+  # Two trailing q's: on macOS the byte stream around the help toggle differs
+  # (BSD line discipline), and the first q lands as the help-dismiss key; the
+  # second one quits. On Linux the second q arrives after exit and is ignored.
+  python3 -c 'import sys,time; o=sys.stdout.buffer; time.sleep(0.3); o.write(b"\x14\x19"); o.flush(); time.sleep(0.2); o.write(b"\x08"); o.flush(); time.sleep(0.2); o.write(b"q"); o.flush(); time.sleep(0.2); o.write(b"q"); o.flush(); time.sleep(0.1)' |
+    pty_run "stty rows 10 cols 80; $HOLD_BIN logs $id --interactive" >"$TEST_ROOT/viewer-chrome.out" 2>"$TEST_ROOT/viewer-chrome.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/viewer-chrome.err" >&2; return 1; }
@@ -996,7 +1017,7 @@ test_log_viewer_space_excludes_and_ctrl_r_resets_filters() {
   # stays visible and the excluded line disappears.
   set +e
   python3 -c 'import sys,time; sys.stdout.buffer.write(b" "); sys.stdout.flush(); time.sleep(0.3); sys.stdout.buffer.write(b"q"); sys.stdout.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 8 cols 90; $HOLD_BIN logs $id --interactive" /dev/null >"$TEST_ROOT/viewer-exclude.out" 2>"$TEST_ROOT/viewer-exclude.err"
+    pty_run "stty rows 8 cols 90; $HOLD_BIN logs $id --interactive" >"$TEST_ROOT/viewer-exclude.out" 2>"$TEST_ROOT/viewer-exclude.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/viewer-exclude.err" >&2; return 1; }
@@ -1013,7 +1034,7 @@ PY
   # Ctrl-R restores every excluded record.
   set +e
   python3 -c 'import sys,time; sys.stdout.buffer.write(b" "); sys.stdout.flush(); time.sleep(0.2); sys.stdout.buffer.write(b"\x12"); sys.stdout.flush(); time.sleep(0.2); sys.stdout.buffer.write(b"q"); sys.stdout.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 8 cols 90; $HOLD_BIN logs $id --interactive" /dev/null >"$TEST_ROOT/viewer-reset.out" 2>"$TEST_ROOT/viewer-reset.err"
+    pty_run "stty rows 8 cols 90; $HOLD_BIN logs $id --interactive" >"$TEST_ROOT/viewer-reset.out" 2>"$TEST_ROOT/viewer-reset.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/viewer-reset.err" >&2; return 1; }
@@ -1038,7 +1059,7 @@ test_log_view_selection_uses_cached_rows() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; sys.stdout.write("needlejjkkq"); sys.stdout.flush(); time.sleep(0.1)' |
-    script -qfec "$HOLD_BIN __view $id --interactive --debug-stats" /dev/null >"$TEST_ROOT/view-cache-selection.out" 2>"$TEST_ROOT/view-cache-selection.err"
+    pty_run "$HOLD_BIN __view $id --interactive --debug-stats" >"$TEST_ROOT/view-cache-selection.out" 2>"$TEST_ROOT/view-cache-selection.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-cache-selection.err" >&2; return 1; }
@@ -1058,7 +1079,7 @@ test_log_view_follow_pages_filtered_windows() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"page-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-pages.out" 2>"$TEST_ROOT/view-follow-pages.err"
+    pty_run "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-pages.out" 2>"$TEST_ROOT/view-follow-pages.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-pages.err" >&2; return 1; }
@@ -1087,7 +1108,7 @@ test_log_view_follow_page_up_stays_at_start() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 15); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top.out" 2>"$TEST_ROOT/view-follow-top.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-top.out" 2>"$TEST_ROOT/view-follow-top.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-top.err" >&2; return 1; }
@@ -1124,7 +1145,7 @@ test_log_view_follow_oldest_page_does_not_wrap_to_tail() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"\x1b[A" * 8); out.flush(); time.sleep(0.7); out.write(b"\x1b[A" * 3); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-nowrap-tail.out" 2>"$TEST_ROOT/view-follow-nowrap-tail.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-nowrap-tail.out" 2>"$TEST_ROOT/view-follow-nowrap-tail.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-nowrap-tail.err" >&2; return 1; }
@@ -1158,7 +1179,7 @@ test_log_view_follow_arrow_up_to_top_does_not_wrap_to_tail() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[A" * 80); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-arrow-top.out" 2>"$TEST_ROOT/view-follow-arrow-top.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-arrow-top.out" 2>"$TEST_ROOT/view-follow-arrow-top.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-arrow-top.err" >&2; return 1; }
@@ -1193,7 +1214,7 @@ test_log_view_follow_top_navigation_is_idempotent() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 30); out.flush(); time.sleep(0.1); out.write((b"\x1b[A" * 5 + b"\x1b[5~") * 4); out.flush(); time.sleep(0.7); out.write((b"\x1b[A" * 3 + b"\x1b[5~") * 2); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top-idempotent.out" 2>"$TEST_ROOT/view-follow-top-idempotent.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-top-idempotent.out" 2>"$TEST_ROOT/view-follow-top-idempotent.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-top-idempotent.err" >&2; return 1; }
@@ -1229,7 +1250,7 @@ test_log_view_follow_repeated_top_commands_ignore_live_growth() {
   sleep 0.15
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 40); out.flush(); time.sleep(0.2); out.write((b"\x1b[H" + b"\x1b[5~") * 5); out.flush(); time.sleep(1.4); out.write((b"\x1b[H" + b"\x1b[5~") * 3); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-repeated-top-live.out" 2>"$TEST_ROOT/view-follow-repeated-top-live.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-repeated-top-live.out" 2>"$TEST_ROOT/view-follow-repeated-top-live.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-repeated-top-live.err" >&2; return 1; }
@@ -1265,7 +1286,7 @@ test_log_view_modified_page_up_reaches_oldest_page_without_tail_loop() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5;5~" * 30); out.flush(); time.sleep(0.2); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-modpgup.out" 2>"$TEST_ROOT/view-follow-modpgup.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-modpgup.out" 2>"$TEST_ROOT/view-follow-modpgup.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-modpgup.err" >&2; return 1; }
@@ -1298,7 +1319,7 @@ test_log_view_modified_home_key_pins_oldest_page_without_tail_loop() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[1;5H"); out.flush(); time.sleep(0.9); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-modhomepin.out" 2>"$TEST_ROOT/view-follow-modhomepin.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-modhomepin.out" 2>"$TEST_ROOT/view-follow-modhomepin.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-modhomepin.err" >&2; return 1; }
@@ -1331,7 +1352,7 @@ test_log_view_home_key_pins_oldest_page_without_tail_loop() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[H"); out.flush(); time.sleep(0.9); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-homepin.out" 2>"$TEST_ROOT/view-follow-homepin.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-homepin.out" 2>"$TEST_ROOT/view-follow-homepin.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-homepin.err" >&2; return 1; }
@@ -1364,7 +1385,7 @@ test_log_view_follow_page_down_from_top_does_not_wrap_to_tail() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~"); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top-down-not-tail.out" 2>"$TEST_ROOT/view-follow-top-down-not-tail.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-top-down-not-tail.out" 2>"$TEST_ROOT/view-follow-top-down-not-tail.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-top-down-not-tail.err" >&2; return 1; }
@@ -1397,7 +1418,7 @@ test_log_view_follow_page_down_stops_on_last_real_page() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 12); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~" * 4); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-page-down-last-real.out" 2>"$TEST_ROOT/view-follow-page-down-last-real.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-page-down-last-real.out" 2>"$TEST_ROOT/view-follow-page-down-last-real.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-page-down-last-real.err" >&2; return 1; }
@@ -1433,7 +1454,7 @@ test_log_view_follow_page_up_after_top_page_down_returns_to_top() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"\x1b[6~"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-top-down-up.out" 2>"$TEST_ROOT/view-follow-top-down-up.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-top-down-up.out" 2>"$TEST_ROOT/view-follow-top-down-up.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-top-down-up.err" >&2; return 1; }
@@ -1468,7 +1489,7 @@ test_log_view_follow_filter_change_preserves_browsed_page() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b"target"); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-filter-preserve.out" 2>"$TEST_ROOT/view-follow-filter-preserve.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-filter-preserve.out" 2>"$TEST_ROOT/view-follow-filter-preserve.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-filter-preserve.err" >&2; return 1; }
@@ -1501,7 +1522,7 @@ test_log_view_follow_exclude_preserves_browsed_page() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[5~" * 25); out.flush(); time.sleep(0.1); out.write(b" "); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-exclude-preserve.out" 2>"$TEST_ROOT/view-follow-exclude-preserve.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-exclude-preserve.out" 2>"$TEST_ROOT/view-follow-exclude-preserve.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-exclude-preserve.err" >&2; return 1; }
@@ -1532,7 +1553,7 @@ test_log_view_follow_exclude_at_live_edge_pins_current_page() {
   sleep 0.05
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b" "); out.flush(); time.sleep(1.2); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-exclude-live-pin.out" 2>"$TEST_ROOT/view-follow-exclude-live-pin.err"
+    pty_run "stty rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-exclude-live-pin.out" 2>"$TEST_ROOT/view-follow-exclude-live-pin.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-exclude-live-pin.err" >&2; return 1; }
@@ -1565,7 +1586,7 @@ test_log_view_follow_top_refills_as_live_log_grows() {
   [ -n "$id" ] || return 1
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; time.sleep(0.02); out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.9); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-growtop.out" 2>"$TEST_ROOT/view-follow-growtop.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-growtop.out" 2>"$TEST_ROOT/view-follow-growtop.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-growtop.err" >&2; return 1; }
@@ -1597,7 +1618,7 @@ test_log_view_follow_cursor_navigation_disables_tail_yank() {
   sleep 0.15
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[B\x1b[B\x1b[A"); out.flush(); time.sleep(0.7); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-cursor-yank.out" 2>"$TEST_ROOT/view-follow-cursor-yank.err"
+    pty_run "stty rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-cursor-yank.out" 2>"$TEST_ROOT/view-follow-cursor-yank.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-cursor-yank.err" >&2; return 1; }
@@ -1629,7 +1650,7 @@ test_log_view_follow_cursor_browse_keeps_short_top_page_pinned() {
   sleep 0.15
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; time.sleep(0.25); out.write(b"\x1b[B"); out.flush(); time.sleep(1.8); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty -echo rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-pinshort.out" 2>"$TEST_ROOT/view-follow-pinshort.err"
+    pty_run "stty -echo rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-pinshort.out" 2>"$TEST_ROOT/view-follow-pinshort.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-pinshort.err" >&2; return 1; }
@@ -1666,7 +1687,7 @@ test_log_view_follow_page_up_stops_at_first_filtered_match() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"filtered-target"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-filtered-top.out" 2>"$TEST_ROOT/view-follow-filtered-top.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-filtered-top.out" 2>"$TEST_ROOT/view-follow-filtered-top.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-filtered-top.err" >&2; return 1; }
@@ -1700,7 +1721,7 @@ test_log_view_printable_f_starts_dynamic_filter() {
   sleep 0.3
   set +e
   python3 -c 'import sys,time; sys.stdout.write("fq"); sys.stdout.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 100; $HOLD_BIN logs $id --interactive --debug-stats" /dev/null >"$TEST_ROOT/view-filter-f.out" 2>"$TEST_ROOT/view-filter-f.err"
+    pty_run "stty rows 6 cols 100; $HOLD_BIN logs $id --interactive --debug-stats" >"$TEST_ROOT/view-filter-f.out" 2>"$TEST_ROOT/view-filter-f.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-filter-f.err" >&2; return 1; }
@@ -1717,7 +1738,7 @@ test_log_view_follow_exited_page_up_keeps_backward_navigation() {
   [ -n "$id" ] || return 1
   set +e
   python3 -c 'import sys,time; time.sleep(0.8); out=sys.stdout.buffer; out.write(b"\x1b[5~" * 20); out.flush(); time.sleep(0.1); out.write(b"q"); out.flush(); time.sleep(0.1)' |
-    script -qfec "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-exited-page-up.out" 2>"$TEST_ROOT/view-follow-exited-page-up.err"
+    pty_run "stty rows 6 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-exited-page-up.out" 2>"$TEST_ROOT/view-follow-exited-page-up.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-exited-page-up.err" >&2; return 1; }
@@ -1750,7 +1771,7 @@ test_log_view_follow_browsed_away_marks_newer_without_yank() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"away-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(1.1); out.write(b"q"); out.flush()' |
-    script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-away.out" 2>"$TEST_ROOT/view-follow-away.err"
+    pty_run "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-away.out" 2>"$TEST_ROOT/view-follow-away.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-away.err" >&2; return 1; }
@@ -1769,7 +1790,7 @@ test_log_view_follow_ignores_nonmatching_newer_data() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"nomatch-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(1.1); out.write(b"q"); out.flush()' |
-    script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-nonmatching-away.out" 2>"$TEST_ROOT/view-follow-nonmatching-away.err"
+    pty_run "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-nonmatching-away.out" 2>"$TEST_ROOT/view-follow-nonmatching-away.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-nonmatching-away.err" >&2; return 1; }
@@ -1788,7 +1809,7 @@ test_log_view_follow_finds_sparse_newer_match_after_large_burst() {
   sleep 0.2
   set +e
   python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"burst-hit"); out.flush(); time.sleep(0.1); out.write(b"\x1b[5~"); out.flush(); time.sleep(2.0); out.write(b"q"); out.flush()' |
-    script -qfec "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" /dev/null >"$TEST_ROOT/view-follow-large-burst.out" 2>"$TEST_ROOT/view-follow-large-burst.err"
+    pty_run "stty rows 7 cols 100; $HOLD_BIN __view $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-large-burst.out" 2>"$TEST_ROOT/view-follow-large-burst.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/view-follow-large-burst.err" >&2; return 1; }
@@ -1989,7 +2010,7 @@ test_console_exit_code_is_recorded() {
   done
   grep -q '"state": "exited"' "$record" || { cat "$record" >&2; return 1; }
   grep -q '"exit_code": 7' "$record" || { cat "$record" >&2; return 1; }
-  grep -q '"ExitCode": 7' "$record" || { cat "$record" >&2; return 1; }
+  ! grep -q '"ExitCode"' "$record" || { echo "legacy Docker key in native record" >&2; cat "$record" >&2; return 1; }
   "$HOLD_BIN" ps -a | grep -Eq "^$id[[:space:]].*Exited \(7\)" || return 1
   "$HOLD_BIN" prune "$id" >/dev/null || return 1
 }
@@ -2009,7 +2030,8 @@ test_console_socket_lives_in_store_dir() {
   record=$(record_path "$id" "$store") || return 1
   sock=$(sed -n 's/.*"console_sock":[[:space:]]*"\([^"]*\)".*/\1/p' "$record" | head -n1)
   case "$sock" in
-    "$store/console/$id"*.sock) ;;
+    # macOS TMPDIR round-trips through the /private symlink; accept both spellings.
+    "$store/console/$id"*.sock|"/private$store/console/$id"*.sock) ;;
     *)
     echo "console socket not in store console dir (got: $sock)" >&2
     "$HOLD_BIN" stop "$id" >/dev/null 2>&1 || true
@@ -2280,7 +2302,7 @@ test_save_marks_record_and_is_idempotent() {
   out=$("$HOLD_BIN" save "$id" 2>"$TEST_ROOT/save1.err") || { echo "save rc nonzero" >&2; cat "$TEST_ROOT/save1.err" >&2; return 1; }
   [ -z "$out" ] || { echo "save wrote to stdout: [$out]" >&2; return 1; }
   grep -qF "hold: saved $id ($name)" "$TEST_ROOT/save1.err" || { cat "$TEST_ROOT/save1.err" >&2; return 1; }
-  grep -q '"Saved": true' "$(record_path "$id")" || { echo "record not marked saved" >&2; return 1; }
+  grep -q '"saved": true' "$(record_path "$id")" || { echo "record not marked saved" >&2; return 1; }
   # Second save is idempotent: still exit 0, same note, no stdout.
   out=$("$HOLD_BIN" save "$name" 2>"$TEST_ROOT/save2.err") || { echo "idempotent save rc nonzero" >&2; return 1; }
   [ -z "$out" ] || { echo "idempotent save wrote to stdout: [$out]" >&2; return 1; }
@@ -2370,7 +2392,7 @@ test_rename_of_saved_call_keeps_protection() {
   "$HOLD_BIN" save "$id" >/dev/null 2>&1 || return 1
   record_ended_soon "$id" || return 1
   "$HOLD_BIN" rename "$id" keptsafe >/dev/null 2>&1 || { echo "rename failed" >&2; return 1; }
-  grep -q '"Saved": true' "$(record_path "$id")" || { echo "rename cleared the saved flag" >&2; return 1; }
+  grep -q '"saved": true' "$(record_path "$id")" || { echo "rename cleared the saved flag" >&2; return 1; }
   set +e; "$HOLD_BIN" purge keptsafe 2>"$TEST_ROOT/rename-refuse.err"; rc=$?; set -e
   [ "$rc" -eq 2 ] || { echo "renamed saved call not protected: rc=$rc" >&2; return 1; }
   grep -qF "hold: 'keptsafe' is saved" "$TEST_ROOT/rename-refuse.err" || { cat "$TEST_ROOT/rename-refuse.err" >&2; return 1; }
@@ -2385,7 +2407,7 @@ test_rename_saves_an_unsaved_call() {
   # Naming a call declares intent to keep it: rename implies save.
   "$HOLD_BIN" rename "$id" nowkept 2>"$TEST_ROOT/rename-save.err" || { echo "rename failed" >&2; return 1; }
   grep -qF "(saved)" "$TEST_ROOT/rename-save.err" || { cat "$TEST_ROOT/rename-save.err" >&2; return 1; }
-  grep -q '"Saved": true' "$(record_path "$id")" || { echo "rename did not save the call" >&2; return 1; }
+  grep -q '"saved": true' "$(record_path "$id")" || { echo "rename did not save the call" >&2; return 1; }
   set +e; "$HOLD_BIN" purge nowkept 2>"$TEST_ROOT/rename-save-refuse.err"; rc=$?; set -e
   [ "$rc" -eq 2 ] || { echo "renamed call not protected: rc=$rc" >&2; return 1; }
   "$HOLD_BIN" purge nowkept --force >/dev/null 2>&1 || true
@@ -2416,19 +2438,19 @@ test_redial_honors_recorded_detached_mode() {
 test_redial_honors_recorded_console_mode() {
   command -v script >/dev/null 2>&1 || skip "script not available"
   local sm id out
-  script -qec "$HOLD_BIN -it --name itredial /bin/sh -c 'echo it-live-hit; sleep 0.4'" /dev/null >/dev/null 2>&1 || true
-  sm=$("$HOLD_BIN" inspect itredial 2>/dev/null | sed -n 's/.*"SessionMode": "\([a-z]*\)".*/\1/p' | head -n1)
-  [ "$sm" = "console" ] || { echo "itredial SessionMode=$sm (want console)" >&2; return 1; }
+  pty_run "$HOLD_BIN -it --name itredial /bin/sh -c 'echo it-live-hit; sleep 0.4'" >/dev/null 2>&1 || true
+  sm=$("$HOLD_BIN" inspect itredial 2>/dev/null | sed -n 's/.*"tty": \(true\).*/\1/p' | head -n1)
+  [ "$sm" = "true" ] || { echo "itredial recipe tty=$sm (want true)" >&2; return 1; }
   id=$("$HOLD_BIN" inspect itredial 2>/dev/null | sed -n 's/.*"id": "\([0-9a-f]*\)".*/\1/p' | head -n1)
   [ -n "$id" ] || return 1
   record_ended_soon "$id" || return 1
   # Console recipe: bare redial replays on a PTY (attaches) rather than detaching.
-  out=$(script -qec "$HOLD_BIN itredial" /dev/null 2>&1) || true
+  out=$(pty_run "$HOLD_BIN itredial" 2>&1) || true
   printf '%s\n' "$out" | grep -q 'it-live-hit' || { printf '%s\n' "$out" >&2; echo "console redial did not replay on a PTY" >&2; return 1; }
   ! printf '%s\n' "$out" | grep -qE '^[0-9a-f]{64}$' || { echo "console redial detached instead of attaching" >&2; return 1; }
   record_ended_soon "$id" || return 1
-  sm=$("$HOLD_BIN" inspect itredial 2>/dev/null | sed -n 's/.*"SessionMode": "\([a-z]*\)".*/\1/p' | head -n1)
-  [ "$sm" = "console" ] || { echo "console redial rewrote SessionMode=$sm (want console)" >&2; return 1; }
+  sm=$("$HOLD_BIN" inspect itredial 2>/dev/null | sed -n 's/.*"tty": \(true\).*/\1/p' | head -n1)
+  [ "$sm" = "true" ] || { echo "console redial rewrote recipe tty=$sm (want true)" >&2; return 1; }
 }
 
 test_prune_by_id() {
@@ -2514,95 +2536,22 @@ JSON
 
 
 
-test_root_capability_drop_all_then_add_preserves_added_cap() {
-  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "root actor unavailable"
-  [ -r /proc/self/status ] || skip "/proc status unavailable"
-  local out cap_hex
-  out=$(as_root "$HOLD_REAL_BIN" --rm --cap-drop ALL --cap-add NET_BIND_SERVICE -- /bin/sh -c 'grep "^CapEff:" /proc/self/status' 2>&1) || {
-    printf '%s
-' "$out" >&2
-    return 1
-  }
-  cap_hex=$(printf '%s
-' "$out" | awk '/^CapEff:/ { print $2; exit }')
-  [ -n "$cap_hex" ] || { printf '%s
-' "$out" >&2; return 1; }
-  python3 - "$cap_hex" <<'PY'
-import sys
-cap_eff = int(sys.argv[1], 16)
-net_bind_service = 1 << 10
-if cap_eff != net_bind_service:
-    raise SystemExit(f"expected only CAP_NET_BIND_SERVICE after cap-drop ALL + cap-add NET_BIND_SERVICE, got 0x{cap_eff:x}")
-PY
+test_cap_flags_are_rejected() {
+  # The grants-era capability flags were deleted; like -p/-v they are
+  # rejected honestly rather than accepted and ignored.
+  set +e
+  "$HOLD_BIN" --cap-add NET_BIND_SERVICE -- true >/dev/null 2>"$TEST_ROOT/cap-add.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { echo "cap-add: rc=$rc (want 5)" >&2; cat "$TEST_ROOT/cap-add.err" >&2; return 1; }
+  grep -q 'does not manage capabilities' "$TEST_ROOT/cap-add.err" || { cat "$TEST_ROOT/cap-add.err" >&2; return 1; }
+  set +e
+  "$HOLD_BIN" --cap-drop=ALL -- true >/dev/null 2>"$TEST_ROOT/cap-drop.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 5 ] || { echo "cap-drop: rc=$rc (want 5)" >&2; cat "$TEST_ROOT/cap-drop.err" >&2; return 1; }
+  grep -q 'does not manage capabilities' "$TEST_ROOT/cap-drop.err" || { cat "$TEST_ROOT/cap-drop.err" >&2; return 1; }
 }
-
-test_direct_capability_metadata_projects_to_inspect() {
-  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "root actor unavailable"
-  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
-  local out id
-  out=$(as_root "$HOLD_REAL_BIN" -d --cap-add NET_BIND_SERVICE --cap-drop ALL -- /bin/sleep 60 2>&1) || {
-    printf '%s\n' "$out" >&2
-    return 1
-  }
-  id=$(printf '%s\n' "$out" | extract_id)
-  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
-  as_root "$HOLD_REAL_BIN" inspect "$id" >"$TEST_ROOT/direct-cap-inspect.json" || return 1
-  python3 - "$TEST_ROOT/direct-cap-inspect.json" <<'PY' || { cat "$TEST_ROOT/direct-cap-inspect.json" >&2; return 1; }
-import json, sys
-r = json.load(open(sys.argv[1], encoding="utf-8"))[0]
-cfg = r.get("Config") or {}
-if cfg.get("CapAdd") != ["NET_BIND_SERVICE"]:
-    raise SystemExit(f"CapAdd mismatch: {cfg!r}")
-if cfg.get("CapDrop") != ["ALL"]:
-    raise SystemExit(f"CapDrop mismatch: {cfg!r}")
-PY
-  as_root "$HOLD_REAL_BIN" stop "$id" >/dev/null || return 1
-}
-
-test_restart_worker_applies_capability_metadata() {
-  [ "$ROOT_ACTOR_AVAILABLE" -eq 1 ] || skip "root actor unavailable"
-  [ -r /proc/self/status ] || skip "/proc status unavailable"
-  local script out id count logs
-  script="$TEST_ROOT/restart-cap.sh"
-  cat >"$script" <<'EOS' || return 1
-#!/bin/sh
-grep '^CapEff:' /proc/self/status
-exit 7
-EOS
-  chmod 755 "$script" || return 1
-  out=$(as_root "$HOLD_REAL_BIN" -d --restart on-failure:1 --restart-delay 0 \
-      --cap-drop ALL --cap-add NET_BIND_SERVICE -- \
-      "$script" 2>&1) || {
-    printf '%s\n' "$out" >&2
-    return 1
-  }
-  id=$(printf '%s\n' "$out" | extract_id)
-  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
-  for _ in $(seq 1 40); do
-    logs=$(as_root "$HOLD_REAL_BIN" logs "$id" --plain -n 50 2>/dev/null || true)
-    count=$(printf '%s\n' "$logs" | grep -c '^CapEff:' || true)
-    [ "$count" -ge 2 ] && break
-    sleep 0.1
-  done
-  [ "$count" -ge 2 ] || { echo "restart capability attempts: $count" >&2; as_root "$HOLD_REAL_BIN" logs "$id" --plain -n 50 >&2 || true; return 1; }
-  logs=$(as_root "$HOLD_REAL_BIN" logs "$id" --plain -n 50) || return 1
-  printf '%s\n' "$logs" >"$TEST_ROOT/restart-cap.log" || return 1
-  python3 - "$TEST_ROOT/restart-cap.log" <<'PY' || { printf '%s\n' "$logs" >&2; return 1; }
-import sys
-lines = [line.split()[1] for line in open(sys.argv[1], encoding="utf-8") if line.startswith("CapEff:")]
-if len(lines) < 2:
-    raise SystemExit(f"expected at least 2 CapEff lines, got {lines!r}")
-want = 1 << 10
-for line in lines:
-    got = int(line, 16)
-    if got != want:
-        raise SystemExit(f"restart worker capabilities not constrained: got 0x{got:x}, want 0x{want:x}")
-PY
-  as_root "$HOLD_REAL_BIN" stop "$id" >/dev/null 2>&1 || true
-}
-
-
-
 
 test_docker_rm_removes_run_artifacts_after_exit() {
   local out id store json log
@@ -2669,22 +2618,12 @@ test_public_root_index_list_reads_projected_state() {
 {
   "id": "deadbeefcafe0000000000000000000000000000000000000000000000000000",
   "root_managed": true,
-  "requires_elevation": true,
+  "state_hint": "exited",
   "created_at": "2026-06-15T18:42:10Z",
-  "State": {
-    "Status": "exited",
-    "Running": false,
-    "Paused": false,
-    "Restarting": false,
-    "Dead": false,
-    "Pid": 0,
-    "Pgid": 0,
-    "Sid": 0,
-    "ExitCode": 7,
-    "Error": "",
-    "StartedAt": "2026-06-15T18:42:11Z",
-    "FinishedAt": "2026-06-15T18:42:12Z"
-  },
+  "started_at": "2026-06-15T18:42:11Z",
+  "ended_at": "2026-06-15T18:42:12Z",
+  "exit_code": 7,
+  "running": false,
   "argv": ["secret"],
   "cmdline_display": "secret command"
 }
@@ -2949,32 +2888,24 @@ test_normal_start_writes_user_local_state() {
   python3 - "$json" <<'PY' || { cat "$json" >&2; return 1; }
 import json, sys
 obj = json.load(open(sys.argv[1], encoding='utf-8'))
-required_top = {'Id', 'Created', 'Path', 'Args', 'State', 'LogPath', 'LogIdx', 'Name', 'RestartCount', 'Config'}
+required_top = {'saved', 'version', 'id', 'run_id', 'pid', 'pgid', 'sid', 'start_unix_ns', 'created_unix_ns', 'argv', 'name', 'state', 'started_at', 'created_at', 'log_path', 'log_idx_path', 'boot_id', 'proc_starttime_ticks', 'exe_dev', 'exe_ino'}
 missing = required_top - set(obj)
 if missing:
-    raise SystemExit(f'missing Docker-shaped run fields: {sorted(missing)}')
-state_keys = {'Status', 'Running', 'Paused', 'Restarting', 'Dead', 'Pid', 'Pgid', 'Sid', 'ExitCode', 'Error', 'StartedAt', 'FinishedAt'}
-missing = state_keys - set(obj.get('State') or {})
-if missing:
-    raise SystemExit(f'missing State keys: {sorted(missing)}')
-config_keys = {'AttachStdin', 'AttachStdout', 'AttachStderr', 'Tty', 'OpenStdin', 'StdinOnce', 'Env', 'WorkingDir', 'CapAdd', 'CapDrop', 'Privileged', 'LogConfig'}
-missing = config_keys - set(obj.get('Config') or {})
-if missing:
-    raise SystemExit(f'missing Config keys: {sorted(missing)}')
-if obj['Path'] != (obj.get('argv') or [''])[0]:
-    raise SystemExit(f'Path does not match recorded exec argv0: {obj["Path"]!r} vs {obj.get("argv")!r}')
-if obj['Args'] != (obj.get('argv') or [])[1:]:
-    raise SystemExit(f'Args should be argv after argv0: {obj["Args"]!r} vs {obj.get("argv")!r}')
-working_dir = (obj.get('Config') or {}).get('WorkingDir')
+    raise SystemExit(f'missing native record fields: {sorted(missing)}')
+for legacy in ('Id', 'State', 'Config', 'Path', 'Args', 'LogPath', 'SessionMode', 'CapAdd'):
+    if legacy in obj:
+        raise SystemExit(f'legacy Docker-shaped key present in native record: {legacy}')
+if not obj.get('argv'):
+    raise SystemExit('record argv missing/empty')
 observed_cwd = (obj.get('observed') or {}).get('cwd')
-if observed_cwd and working_dir != observed_cwd:
-    raise SystemExit(f'Config.WorkingDir should mirror observed cwd: {working_dir!r} vs {observed_cwd!r}')
-if working_dir and (not working_dir.startswith('/') or (working_dir != '/' and working_dir.endswith('/'))):
-    raise SystemExit(f'Config.WorkingDir is not a normalized absolute path: {working_dir!r}')
+if observed_cwd and (not observed_cwd.startswith('/') or (observed_cwd != '/' and observed_cwd.endswith('/'))):
+    raise SystemExit(f'observed cwd is not a normalized absolute path: {observed_cwd!r}')
 PY
 }
 
-test_docker_shaped_record_fallback_reader() {
+test_native_record_is_readable_when_hand_authored() {
+  # A minimal hand-authored native record (the one schema since 0.7) loads and
+  # renders; unknown/legacy keys are ignored, never fatal.
   local id store record logdir logpath idxpath ps_out
   id=fe4a4b8fbc063e25cd4bcb6798791b1dd03caca62f6a0b4c1304f28940992c52
   store="$HOME/.local/state/hold"
@@ -2988,49 +2919,25 @@ test_docker_shaped_record_fallback_reader() {
   record="$store/$id.json"
   cat >"$record" <<JSON
 {
-  "Id": "$id",
-  "Created": "2026-06-28T17:30:47.520199158Z",
-  "Path": "/usr/bin/python3",
-  "Args": ["-m", "http.server", "8080"],
-  "State": {
-    "Status": "exited",
-    "Running": false,
-    "Paused": false,
-    "Restarting": false,
-    "Dead": false,
-    "Pid": 999999,
-    "Pgid": 999999,
-    "Sid": 999999,
-    "ExitCode": 7,
-    "Error": "",
-    "StartedAt": "2026-06-28T17:30:47.559521995Z",
-    "FinishedAt": "2026-06-28T17:30:48.000000000Z"
-  },
-  "LogPath": "$logpath",
-  "LogIdx": "$idxpath",
-  "Name": "adjective_noun",
-  "RestartCount": 0,
-  "Config": {
-    "User": "",
-    "AttachStdin": true,
-    "AttachStdout": true,
-    "AttachStderr": true,
-    "Tty": false,
-    "OpenStdin": false,
-    "StdinOnce": false,
-    "Env": ["HOLD_DOCKER_SHAPED_READER=1"],
-    "Origin": "web",
-    "WorkingDir": "$TEST_ROOT",
-    "CapAdd": ["NET_BIND_SERVICE"],
-    "CapDrop": ["ALL"],
-    "Privileged": false,
-    "LogConfig": {"Type": "local", "Config": {}}
-  },
+  "saved": false,
   "version": 1,
   "id": "$id",
   "run_id": "$id",
+  "pid": 999999,
+  "pgid": 999999,
+  "sid": 999999,
   "start_unix_ns": 0,
   "created_unix_ns": 0,
+  "argv": ["/usr/bin/python3", "-m", "http.server", "8080"],
+  "name": "adjective_noun",
+  "state": "exited",
+  "exit_code": 7,
+  "started_at": "2026-06-28T17:30:47Z",
+  "created_at": "2026-06-28T17:30:47Z",
+  "ended_at": "2026-06-28T17:30:48Z",
+  "log_path": "$logpath",
+  "log_idx_path": "$idxpath",
+  "LegacyIgnoredKey": {"nested": true},
   "uid": $(id -u),
   "gid": $(id -g),
   "proc_starttime_ticks": 0,
@@ -3039,11 +2946,11 @@ test_docker_shaped_record_fallback_reader() {
 }
 JSON
   chmod 600 "$record" || return 1
-  ps_out=$("$HOLD_BIN" ps -a 2>"$TEST_ROOT/docker-reader.err") || {
-    cat "$TEST_ROOT/docker-reader.err" >&2
+  ps_out=$("$HOLD_BIN" ps -a 2>"$TEST_ROOT/native-reader.err") || {
+    cat "$TEST_ROOT/native-reader.err" >&2
     return 1
   }
-  ! grep -q 'skipping corrupt record' "$TEST_ROOT/docker-reader.err" || { cat "$TEST_ROOT/docker-reader.err" >&2; return 1; }
+  ! grep -q 'skipping corrupt record' "$TEST_ROOT/native-reader.err" || { cat "$TEST_ROOT/native-reader.err" >&2; return 1; }
   printf '%s\n' "$ps_out" | grep -q '^fe4a4b8fbc06' || { printf '%s\n' "$ps_out" >&2; return 1; }
   printf '%s\n' "$ps_out" | grep -q '"/usr/bin/python3 -m http' || { printf '%s\n' "$ps_out" >&2; return 1; }
   printf '%s\n' "$ps_out" | grep -q 'adjective_noun' || { printf '%s\n' "$ps_out" >&2; return 1; }
@@ -3067,9 +2974,8 @@ test_root_start_writes_system_store_and_public_unknown() {
   mode=$(file_mode "$public_json") || return 1
   [ "$mode" = 644 ] || return 1
   grep -Eq '"state_hint": "(running|exited)"' "$public_json" || { cat "$public_json" >&2; return 1; }
-  grep -q '"State": {' "$public_json" || { cat "$public_json" >&2; return 1; }
-  grep -q '"Pid": [1-9]' "$public_json" || { cat "$public_json" >&2; return 1; }
-  grep -q '"StartedAt": "' "$public_json" || { cat "$public_json" >&2; return 1; }
+  grep -q '"pid": [1-9]' "$public_json" || { cat "$public_json" >&2; return 1; }
+  grep -q '"started_at": "' "$public_json" || { cat "$public_json" >&2; return 1; }
   matched=0
   for _ in $(seq 1 30); do
     as_root cat "$json" >"$TEST_ROOT/root-private-state.json" || return 1
@@ -3077,23 +2983,21 @@ test_root_start_writes_system_store_and_public_unknown() {
 import json, sys
 private = json.load(open(sys.argv[1], encoding='utf-8'))
 public = json.load(open(sys.argv[2], encoding='utf-8'))
-projection_keys = {'Id', 'Created', 'Name', 'Config', 'State'}
+projection_keys = {'id', 'state_hint', 'started_at', 'created_at', 'pid', 'pgid', 'sid', 'running'}
 missing_projection = projection_keys - set(public)
 if missing_projection:
-    raise SystemExit(f'public projection missing Docker-shaped keys: {sorted(missing_projection)}')
-if public['Id'] != private['Id']:
-    raise SystemExit(f'public/private Id drift: {public["Id"]!r} != {private["Id"]!r}')
-if public['Created'] != private['Created']:
-    raise SystemExit(f'public/private Created drift: {public["Created"]!r} != {private["Created"]!r}')
-state_keys = {'Status', 'Running', 'Paused', 'Restarting', 'Dead', 'Pid', 'Pgid', 'Sid', 'ExitCode', 'Error', 'StartedAt', 'FinishedAt'}
-for label, obj in [('private', private), ('public', public)]:
-    state = obj.get('State') or {}
-    missing = state_keys - set(state)
-    if missing:
-        raise SystemExit(f'{label} State missing keys: {sorted(missing)}')
-for key in state_keys:
-    if private['State'][key] != public['State'][key]:
-        raise SystemExit(f'public/private State drift for {key}: {private["State"][key]!r} != {public["State"][key]!r}')
+    raise SystemExit(f'public projection missing keys: {sorted(missing_projection)}')
+# The projection must never leak what only root may see.
+for forbidden in ('argv', 'env', 'cmdline_display', 'invoked_by_user', 'observed', 'Config'):
+    if forbidden in public:
+        raise SystemExit(f'public projection leaks private key: {forbidden}')
+if public['id'] != private['id']:
+    raise SystemExit(f'public/private id drift: {public["id"]!r} != {private["id"]!r}')
+for key in ('pid', 'pgid', 'sid'):
+    if public[key] != private[key]:
+        raise SystemExit(f'public/private drift for {key}: {private[key]!r} != {public[key]!r}')
+if public.get('state_hint') != private.get('state'):
+    raise SystemExit(f'state drift: public {public.get("state_hint")!r} != private {private.get("state")!r}')
 PY
     then
       matched=1
@@ -3475,18 +3379,18 @@ test_docker_run_foreground_follows_output_by_default() {
 
 test_docker_unsupported_options_fail_loudly() {
   local rc
-  "$HOLD_BIN" --detach-keys ctrl-p,ctrl-q /bin/true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-default.err" || {
+  "$HOLD_BIN" --detach-keys ctrl-p,ctrl-q true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-default.err" || {
     cat "$TEST_ROOT/docker-detach-keys-default.err" >&2
     return 1
   }
 
-  "$HOLD_BIN" --detach-keys ctrl-a /bin/true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-custom.err" || {
+  "$HOLD_BIN" --detach-keys ctrl-a true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-custom.err" || {
     cat "$TEST_ROOT/docker-detach-keys-custom.err" >&2
     return 1
   }
 
   set +e
-  "$HOLD_BIN" --detach-keys ctrl-not-a-key /bin/true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-invalid.err"
+  "$HOLD_BIN" --detach-keys ctrl-not-a-key true >/dev/null 2>"$TEST_ROOT/docker-detach-keys-invalid.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { echo "invalid --detach-keys: rc=$rc (want 5)" >&2; return 1; }
@@ -3494,13 +3398,13 @@ test_docker_unsupported_options_fail_loudly() {
 
   "$HOLD_BIN" prune all >/dev/null 2>&1 || true
   "$HOLD_BIN" ps -a >"$TEST_ROOT/docker-unsupported-ps.out" || return 1
-  ! grep -q '/bin/true' "$TEST_ROOT/docker-unsupported-ps.out" || { cat "$TEST_ROOT/docker-unsupported-ps.out" >&2; return 1; }
+  ! grep -q '/true' "$TEST_ROOT/docker-unsupported-ps.out" || { cat "$TEST_ROOT/docker-unsupported-ps.out" >&2; return 1; }
 }
 
 
 test_docker_restart_policy_restarts_failures() {
   local out id count got
-  out=$("$HOLD_BIN" -d --restart on-failure:2 --restart-delay 0 -- /bin/sh -c 'mkdir -p "$HOME"; echo attempt >> "$HOME/restart-count"; c=$(wc -l < "$HOME/restart-count"); echo restart-attempt-$c; [ "$c" -lt 3 ] && exit 7 || sleep 1' 2>&1) || {
+  out=$("$HOLD_BIN" -d --restart on-failure:2 --restart-delay 0 -- /bin/sh -c 'mkdir -p "$HOME"; echo attempt >> "$HOME/restart-count"; c=$(wc -l < "$HOME/restart-count"); c=$((c)); echo restart-attempt-$c; [ "$c" -lt 3 ] && exit 7 || sleep 1' 2>&1) || {
     printf '%s\n' "$out" >&2
     return 1
   }
@@ -3526,21 +3430,21 @@ test_docker_restart_policy_restarts_failures() {
 test_docker_restart_validation_and_tty_gate() {
   local rc
   set +e
-  "$HOLD_BIN" --restart nonsense /bin/true >/dev/null 2>"$TEST_ROOT/restart-invalid.err"
+  "$HOLD_BIN" --restart nonsense true >/dev/null 2>"$TEST_ROOT/restart-invalid.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { echo "invalid restart rc=$rc" >&2; return 1; }
   grep -q 'invalid --restart policy' "$TEST_ROOT/restart-invalid.err" || { cat "$TEST_ROOT/restart-invalid.err" >&2; return 1; }
 
   set +e
-  "$HOLD_BIN" --restart-delay 1 /bin/true >/dev/null 2>"$TEST_ROOT/restart-delay-alone.err"
+  "$HOLD_BIN" --restart-delay 1 true >/dev/null 2>"$TEST_ROOT/restart-delay-alone.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { echo "restart-delay without restart rc=$rc" >&2; return 1; }
   grep -q -- '--restart-delay requires --restart' "$TEST_ROOT/restart-delay-alone.err" || { cat "$TEST_ROOT/restart-delay-alone.err" >&2; return 1; }
 
   set +e
-  "$HOLD_BIN" -t --restart always /bin/true >/dev/null 2>"$TEST_ROOT/restart-tty.err"
+  "$HOLD_BIN" -t --restart always true >/dev/null 2>"$TEST_ROOT/restart-tty.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { echo "restart tty rc=$rc" >&2; return 1; }
@@ -3582,14 +3486,14 @@ test_start_existing_run_appends_retained_log() {
 test_docker_publish_and_volume_rejected() {
   local rc
   set +e
-  "$HOLD_BIN" -p 8080:3000 -- /bin/true >"$TEST_ROOT/docker-publish.out" 2>"$TEST_ROOT/docker-publish.err"
+  "$HOLD_BIN" -p 8080:3000 -- true >"$TEST_ROOT/docker-publish.out" 2>"$TEST_ROOT/docker-publish.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { cat "$TEST_ROOT/docker-publish.out" "$TEST_ROOT/docker-publish.err" >&2; return 1; }
   grep -q 'does not publish or forward ports' "$TEST_ROOT/docker-publish.err" || { cat "$TEST_ROOT/docker-publish.err" >&2; return 1; }
 
   set +e
-  "$HOLD_BIN" -v "$TEST_ROOT:/work" -- /bin/true >"$TEST_ROOT/docker-volume.out" 2>"$TEST_ROOT/docker-volume.err"
+  "$HOLD_BIN" -v "$TEST_ROOT:/work" -- true >"$TEST_ROOT/docker-volume.out" 2>"$TEST_ROOT/docker-volume.err"
   rc=$?
   set -e
   [ "$rc" -eq 5 ] || { cat "$TEST_ROOT/docker-volume.out" "$TEST_ROOT/docker-volume.err" >&2; return 1; }
@@ -3627,7 +3531,7 @@ sleep 30
 EOF
   chmod +x "$TEST_ROOT/docker-tty-child.sh"
   set +e
-  python3 - <<'PY' | script -qfec "$HOLD_BIN -it $TEST_ROOT/docker-tty-child.sh" /dev/null >"$TEST_ROOT/docker-tty.out" 2>"$TEST_ROOT/docker-tty.err"
+  python3 - <<'PY' | pty_run "$HOLD_BIN -it $TEST_ROOT/docker-tty-child.sh" >"$TEST_ROOT/docker-tty.out" 2>"$TEST_ROOT/docker-tty.err"
 import sys, time
 out = sys.stdout.buffer
 time.sleep(0.5)
@@ -3667,7 +3571,7 @@ sleep 30
 EOF
   chmod +x "$TEST_ROOT/docker-tty-custom-child.sh"
   set +e
-  python3 - <<'PY' | script -qfec "$HOLD_BIN -it --detach-keys ctrl-a $TEST_ROOT/docker-tty-custom-child.sh" /dev/null >"$TEST_ROOT/docker-tty-custom.out" 2>"$TEST_ROOT/docker-tty-custom.err"
+  python3 - <<'PY' | pty_run "$HOLD_BIN -it --detach-keys ctrl-a $TEST_ROOT/docker-tty-custom-child.sh" >"$TEST_ROOT/docker-tty-custom.out" 2>"$TEST_ROOT/docker-tty-custom.err"
 import sys, time
 out = sys.stdout.buffer
 time.sleep(0.5)
@@ -4193,7 +4097,7 @@ run_test "transactional launch rollback on record write failure" test_transactio
 run_test "raw start does not steal trailing --system" test_raw_start_does_not_steal_trailing_system
 run_test "long command appears in list, truncated with ..." test_long_command_list_truncates_instead_of_skips
 run_test "normal start writes user-local state" test_normal_start_writes_user_local_state
-run_test "Docker-shaped run record is readable without duplicate legacy argv fields" test_docker_shaped_record_fallback_reader
+run_test "hand-authored native record is readable; legacy keys ignored" test_native_record_is_readable_when_hand_authored
 run_test "root starts use system store and public state is projected" test_root_start_writes_system_store_and_public_unknown
 run_test "sudo start writes system state with invoking-user metadata" test_sudo_start_writes_system_store_with_invoking_metadata
 run_test "sudo --system home executable uses invoking-user store" test_sudo_system_start_of_home_executable_uses_user_store
@@ -4210,9 +4114,7 @@ run_test "purge -s re-execs the global sweep through sudo" test_purge_system_ree
 run_test "root list -a labels owners and walks user homes" test_root_list_all_labels_owner_and_walks_homes
 run_test "normal run does not self-elevate on local/root ID conflict" test_user_local_wins_over_public_root_collision
 run_test "explicit user:<id> targets user-local run" test_explicit_user_target
-run_test "root capability drop-all then add applies requested cap" test_root_capability_drop_all_then_add_preserves_added_cap
-run_test "direct capability metadata projects to inspect" test_direct_capability_metadata_projects_to_inspect
-run_test "restart worker applies capability metadata" test_restart_worker_applies_capability_metadata
+run_test "deleted capability flags are rejected honestly" test_cap_flags_are_rejected
 run_test "Docker --rm removes run artifacts after exit" test_docker_rm_removes_run_artifacts_after_exit
 run_test "tail Ctrl-C detaches from tail and does not stop run" test_tail_ctrl_c_detaches_from_tail_and_keeps_run
 run_test "build artifacts for static and dynamic coexist" test_build_artifact_coexistence
