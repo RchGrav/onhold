@@ -1,5 +1,34 @@
 # Work order — deep-dive findings and repair plan (2026-07-20)
 
+## RECONCILIATION PENDING (2026-07-21) — read first on resume
+
+Two independent improvement lineages exist and must be reconciled:
+
+1. **audit-refactor-2026-07-20 (ed2e316)** — the 07-20 campaign, committed.
+   Unique: single native record schema + public-projection rewrite w/ leak
+   tests; legacy JSON log path removal; 17-symbol dead sweep; resurrection
+   + broker exit-stamp race fixes; macOS enablement (USER column,
+   purge -s, BSD-portable harness); record.c 4-way split; consolidation
+   tranche. Gates: Linux 133/0/0, macOS platform-gaps-only.
+2. **origin/tempo-refinement (247596d, 07-04..06)** — TEMPO-driven pass,
+   ledger preserved in-branch (194cdc1). Unique: restart supervisor
+   records exit status; foreground exits with held process's status; env
+   flags are recipe data (no setenv side effect); crash-safe record temps
+   + two-phase purge; purge derives unlinks from layout; log -n
+   semantics; +436-line viewer interactive navigation (WO-2/3 ground);
+   "The code is the contract: prose docs leave the tree" (docs deleted).
+   Overlap with (1), done differently: caps cut, ps-alias fix, stderr
+   discipline — conflict-heavy in start.c/cli_main.c/tests.
+
+Decisions Rich must make before merging: (a) which lineage leads the
+reconciliation; (b) does "the code is the contract" stand (branch deletes
+the prose docs that lineage 1 updated). Suggested method: TEMPO
+Pressure-test — select/compose/sharpen per subsystem: storage+platform
+from (1), behavior fixes+viewer from (2), caps/CLI resolved by hand.
+TEMPO is now a real engine at /home/rich/tempo (worklog 07-06: 72 tests,
+tempo run CLI, hash-chained ledger); Rich hinted the reconciliation may be
+its first real workout. tempo/ and .tempo/ are gitignored in this repo.
+
 Source: full-codebase deep dive (runtime, console, store/core/platform, CLI/tests/build)
 plus design discussion with Rich. This document is the tracker; strike items as they land.
 
