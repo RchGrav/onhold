@@ -13,22 +13,43 @@ places with one set of physics:
 2. **During tail/follow** — the transport keys are live while tailing: `.`
    `,` Space scrub the recorded history mid-tail; returning to the live
    edge resumes the tail.
-3. **Attached to a live console (time-travel)** — `Ctrl-P Ctrl-L` (revised
-   from Ctrl-W per Rich, 2026-07-22: W reads as the viewer's wrap toggle;
-   L matches the verb — you are dropping into `hold logs`' viewer; and
-   Ctrl-P Ctrl-P stays reserved for sending a literal Ctrl-P, which
-   emacs-bound shells need constantly). The sequence does not bolt scrub
-   controls into attach — it **enters the log viewer** over the same
-   indexed log, paused at the live edge, input to the held process
-   suspended. There is ONE playback implementation and it lives in the
-   viewer; attach merely switches surfaces. Inside, every key is the
-   viewer's own — no prefix needed, exactly as in normal `hold logs`.
-   **Return to real time by scrubbing forward to the realtime edge or by
-   quitting the viewer surface** (and `Ctrl-P Ctrl-L` from tail-follow
-   context is a no-op-friendly synonym where applicable) — the live edge
-   is never more than one gesture away. The detach FSM grows the one
-   suffix: Q detaches, L freezes-into-viewer. The lone-Ctrl-P 500 ms
-   flush rule is unchanged.
+3. **Attached to a live console (time-travel)** — `Ctrl-P Ctrl-V` (V for
+   viewer; revision history: Ctrl-W rejected — it is the viewer's wrap
+   toggle; Ctrl-L rejected — it is the viewer's line-numbers toggle, and
+   landing in a surface where your entry key means something else is the
+   same dissonance; doubled Ctrl-P stays reserved for sending a literal
+   Ctrl-P, which emacs-bound shells need constantly; Ctrl-V is unclaimed
+   in the viewer's key map). The sequence does not bolt scrub controls
+   into attach — it **enters the log viewer** over the same indexed log,
+   paused at the live edge, input to the held process suspended. There is
+   ONE playback implementation and it lives in the viewer; attach merely
+   switches surfaces. Inside, every key is the viewer's own — no prefix
+   needed, exactly as in normal `hold logs`. **Return to real time by
+   scrubbing forward to the realtime edge or by leaving the viewer
+   surface** — the live edge is never more than one gesture away. The
+   detach FSM grows the one suffix: Q detaches, V freezes-into-viewer.
+   The lone-Ctrl-P 500 ms flush rule is unchanged.
+
+### The viewer's canonical key map (Rich, 2026-07-22 — authority for collisions)
+
+```
+Type        Filter as you type          Ctrl-G      Go to line number
+Backspace   Relax the filter            Ctrl-L      Line numbers
+Space       Exclude lines like selected Ctrl-T      Timestamps: off, time, date
+Ctrl-R      Reset all filters           Ctrl-U      UTC or local timestamps
+Up/Down     Move the selection          Ctrl-W      Wrap long lines
+PgUp/PgDn   Page through matches        Ctrl-Y      Source column
+Home/End    Oldest page / live tail     Wheel       Scroll
+Esc         Quit
+```
+
+Playback-mode key scoping: transport keys (`Space` pause/resume, `.` FF,
+`,` RW) apply **in playback mode only**; browse-mode Space stays
+zap-exclude. Display toggles (Ctrl-T, Ctrl-U, Ctrl-W, Ctrl-Y, Ctrl-L) work
+identically in both modes — one set of physics. Filtering keys (type,
+Backspace, Space-zap, Ctrl-R) are browse-mode keys. Esc leaves the current
+mode: playback → browse; browse → quit (or back to attach realtime when
+the viewer was entered via Ctrl-P Ctrl-V).
 
 ## ANSI TUI detection and recording
 
