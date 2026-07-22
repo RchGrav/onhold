@@ -9,6 +9,12 @@
 
 enum viewer_scan_mode { VIEWER_SCAN_FORWARD = 0, VIEWER_SCAN_BACKWARD };
 
+/* Playback rate ladder (spec): 1x -> 2x -> 3x -> 4x -> 8x -> 16x. */
+static const unsigned viewer_play_rates[] = {1, 2, 3, 4, 8, 16};
+#define VIEWER_PLAY_RUNGS (sizeof(viewer_play_rates) / sizeof(viewer_play_rates[0]))
+#define VIEWER_OSD_MS 2000
+#define VIEWER_OSD_CELLS 7
+
 enum viewer_key {
     VIEWER_KEY_NONE = 0, VIEWER_KEY_QUIT, VIEWER_KEY_SUSPEND,
     VIEWER_KEY_UP, VIEWER_KEY_DOWN, VIEWER_KEY_PAGE_UP, VIEWER_KEY_PAGE_DOWN,
@@ -36,7 +42,19 @@ struct viewer_state {
     char jump_buf[12];
     /* Presentation-only view controls (never change stored records or filtering). */
     enum hold_ts_mode ts_mode;
-    bool ts_utc, wrap, source_column;
+    int ts_zone; /* 0 local, 1 UTC, 2 elapsed since capture start (monotonic display) */
+    bool wrap, source_column;
+    /* Playback transport (docs/future/playback.md): a mode of the viewer, one
+     * set of physics with browsing. play_pos is the head — how many index
+     * records time has revealed; the page renders anchored at its byte edge. */
+    bool play_mode, play_paused;
+    int play_dir;         /* +1 forward, -1 rewind */
+    int play_rung;        /* index into viewer_play_rates */
+    size_t play_pos;      /* records revealed so far */
+    uint64_t play_due_ms; /* monotonic deadline of the next head step */
+    char osd[24];         /* transport indicator (UTF-8), upper-right corner */
+    size_t osd_glyphs;
+    uint64_t osd_until_ms;
     unsigned source_mask; /* 0 == all sources visible */
     struct hold_logidx_map idx_map;
     bool idx_loaded;
@@ -574,6 +592,173 @@ static void viewer_reload_idx(struct viewer_state *state) {
     state->idx_loaded_raw_size = size;
 }
 
+/* ---- playback transport (docs/future/playback.md) ----------------------- */
+
+static uint64_t viewer_now_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+
+/* Byte offset of the playback head: everything before it has been revealed. */
+static off_t playback_edge_offset(const struct viewer_state *state) {
+    if (!state->idx_loaded || state->play_pos == 0) return 0;
+    size_t i = state->play_pos <= state->idx_map.count ? state->play_pos : state->idx_map.count;
+    const struct hold_logidx_record *rec = &state->idx_map.records[i - 1];
+    return rec->offset + (off_t)rec->len;
+}
+
+/* Re-anchor the rendered page at the playback head, like a live tail whose
+ * edge is the head instead of EOF. */
+static void playback_anchor(struct viewer_state *state) {
+    state->scan_mode = VIEWER_SCAN_BACKWARD;
+    state->start_offset = playback_edge_offset(state);
+    state->at_live_edge = false;
+    state->at_oldest_edge = false;
+    state->history_count = 0;
+    state->selected = 0;
+    clear_local_scan_limit(state);
+    cache_invalidate(state);
+}
+
+/* Flash the mode-change OSD (spec, verbatim): PLAY / PAUSED, or chevrons
+ * whose count is ladder position + 1 so the glyph itself reads as speed. */
+static void playback_osd_show(struct viewer_state *state) {
+    if (state->play_paused) {
+        snprintf(state->osd, sizeof(state->osd), "PAUSED");
+        state->osd_glyphs = 6;
+    } else if (state->play_rung == 0 && state->play_dir > 0) {
+        snprintf(state->osd, sizeof(state->osd), "PLAY");
+        state->osd_glyphs = 4;
+    } else {
+        const char *glyph = state->play_dir > 0 ? "\xe2\x96\xb6" : "\xe2\x97\x80"; /* U+25B6 / U+25C0 */
+        size_t nglyphs = (size_t)state->play_rung + 1;
+        for (size_t i = 0; i < nglyphs; i++) memcpy(state->osd + i * 3, glyph, 3);
+        state->osd[nglyphs * 3] = '\0';
+        state->osd_glyphs = nglyphs;
+    }
+    state->osd_until_ms = viewer_now_ms() + VIEWER_OSD_MS;
+}
+
+static void playback_enter(struct viewer_state *state, size_t pos, int dir, bool paused) {
+    state->play_mode = true;
+    state->play_paused = paused;
+    state->play_dir = dir;
+    state->play_rung = 0;
+    state->play_pos = pos;
+    state->play_due_ms = viewer_now_ms();
+    state->newer_available = false;
+    state->newer_scan_offset = state->newer_floor_offset = state->tail_anchor;
+    playback_osd_show(state);
+    playback_anchor(state);
+}
+
+/* Esc/q leave playback into browsing; reaching the live edge of a followed
+ * log resumes the tail (spec: scrub-to-live-edge resumes the tail). */
+static void playback_leave(struct viewer_state *state, bool to_tail) {
+    state->play_mode = false;
+    state->play_paused = false;
+    state->osd[0] = '\0';
+    state->osd_until_ms = 0;
+    if (to_tail && state->follow) {
+        jump_to_newest_page(state);
+        return;
+    }
+    cache_invalidate(state); /* repaint as a browse page: the cursor appears */
+}
+
+/* Advance the head on its schedule: sleep the recorded deltas, scaled by the
+ * rate ladder. Returns true when the frame must repaint. */
+static bool playback_tick(struct viewer_state *state) {
+    if (!state->play_mode || state->play_paused || !state->idx_loaded) return false;
+    uint64_t now = viewer_now_ms();
+    if (now < state->play_due_ms) return false;
+    unsigned rate = viewer_play_rates[state->play_rung];
+    bool changed = false, moved = false;
+    for (int guard = 4096; guard > 0 && now >= state->play_due_ms; guard--) {
+        if (state->play_dir > 0) {
+            if (state->play_pos >= state->idx_map.count) {
+                viewer_reload_idx(state); /* a live log may have grown */
+                if (state->play_pos >= state->idx_map.count) {
+                    if (state->follow) {
+                        playback_leave(state, true);
+                        return true;
+                    }
+                    state->play_paused = true; /* end of a finished log */
+                    playback_osd_show(state);
+                    changed = true;
+                    break;
+                }
+            }
+            state->play_pos++;
+        } else {
+            if (state->play_pos == 0) {
+                state->play_paused = true; /* rewound to the start of time */
+                playback_osd_show(state);
+                changed = true;
+                break;
+            }
+            state->play_pos--;
+        }
+        moved = true;
+        /* The next boundary to cross is between records p-1 and p; sleep the
+         * recorded delta between them, scaled by the rate. */
+        size_t p = state->play_pos;
+        if (state->play_dir > 0 ? p < state->idx_map.count : p > 0) {
+            uint64_t a = state->idx_map.records[p - 1].ts_us;
+            uint64_t b = state->idx_map.records[p].ts_us;
+            state->play_due_ms += b > a ? (b - a) / 1000ULL / rate : 0;
+        }
+    }
+    if (moved) {
+        playback_anchor(state);
+        changed = true;
+    }
+    return changed;
+}
+
+/* Space: stop / resume at 1x. From the live tail it freezes the recorded
+ * edge (playback mode, paused). */
+static void transport_space(struct viewer_state *state) {
+    if (!state->play_mode) {
+        viewer_reload_idx(state);
+        if (!state->idx_loaded) return;
+        playback_enter(state, state->idx_map.count, +1, true);
+        return;
+    }
+    if (state->play_paused) {
+        state->play_paused = false;
+        state->play_dir = +1;
+        state->play_rung = 0; /* Space always resumes at 1x */
+        state->play_due_ms = viewer_now_ms();
+    } else {
+        state->play_paused = true;
+    }
+    playback_osd_show(state);
+}
+
+/* `.` / `,`: multistep FF / RW — repeat presses step the rate ladder up; a
+ * direction change starts back at 1x. From the live tail `,` starts
+ * rewinding; `.` has nothing ahead of real time. */
+static void transport_rate(struct viewer_state *state, int dir) {
+    if (!state->play_mode) {
+        if (dir > 0) return;
+        viewer_reload_idx(state);
+        if (!state->idx_loaded) return;
+        playback_enter(state, state->idx_map.count, -1, false);
+        return;
+    }
+    if (state->play_paused || state->play_dir != dir) {
+        state->play_paused = false;
+        state->play_dir = dir;
+        state->play_rung = 0;
+        state->play_due_ms = viewer_now_ms();
+    } else if ((size_t)state->play_rung + 1 < VIEWER_PLAY_RUNGS) {
+        state->play_rung++;
+    }
+    playback_osd_show(state);
+}
+
 /* Re-anchor forward at `off` and rescan; the shared tail of both backward
  * refill restarts (empty backward page, oldest backward page). */
 static int refill_forward_from(struct viewer_state *state, struct hold_log_filter_options *opts,
@@ -584,12 +769,24 @@ static int refill_forward_from(struct viewer_state *state, struct hold_log_filte
     state->at_live_edge = false;
     hold_log_filter_result_free(result);
     opts->scan_byte_budget = scan_budget;
+    /* A pinned byte range (browsed-page preserve, playback head) caps forward
+     * scans on every refill path, not only the plain forward branch. */
+    if (state->local_scan_limit_active && state->local_scan_limit_end > off) {
+        off_t cap = state->local_scan_limit_end - off;
+        if ((uintmax_t)cap < (uintmax_t)opts->scan_byte_budget) opts->scan_byte_budget = (size_t)cap;
+    }
     if (lseek(state->fd, off, SEEK_SET) < 0) return -1;
     return hold_log_filter_fd(state->fd, opts, result);
 }
 
 static int refill_cache(struct viewer_state *state) {
     viewer_reload_idx(state);
+    if (state->play_mode) {
+        /* The playback head is the visible end of time: no scan on any refill
+         * path may reveal bytes past it. */
+        state->local_scan_limit_active = true;
+        state->local_scan_limit_end = playback_edge_offset(state);
+    }
     struct hold_log_filter_options opts;
     configure_filter_opts(state, &opts);
     size_t visible_rows = viewer_body_rows(state);
@@ -629,7 +826,9 @@ static int refill_cache(struct viewer_state *state) {
     clear_local_scan_limit(state);
     int rc = cache_load_result(state, &result, visible_rows);
     hold_log_filter_result_free(&result);
-    if (rc == 0) state->cache_local_limited = local_capped;
+    /* Playback pages are deliberately truncated at the head: continuation
+     * ticks must never scan past it. */
+    if (rc == 0) state->cache_local_limited = local_capped || state->play_mode;
     return rc;
 }
 
@@ -750,7 +949,20 @@ static size_t viewer_row_prefix(const struct viewer_state *state, off_t offset, 
     }
     if (state->ts_mode != HOLD_TS_NONE && rec && used + 4 < n) {
         char ts[48];
-        size_t tlen = hold_logidx_format_time(rec->ts_us, state->ts_mode, state->ts_utc, ts, sizeof(ts));
+        size_t tlen;
+        if (state->ts_zone == 2) {
+            /* Monotonic display: elapsed since the capture base, one Ctrl-U
+             * family with local and UTC (playback spec). */
+            uint64_t rel = rec->ts_us > state->idx_map.base_unix_us ? rec->ts_us - state->idx_map.base_unix_us : 0;
+            int w = snprintf(ts, sizeof(ts), "+%02llu:%02llu:%02llu.%03llu",
+                             (unsigned long long)(rel / 3600000000ULL),
+                             (unsigned long long)(rel / 60000000ULL % 60ULL),
+                             (unsigned long long)(rel / 1000000ULL % 60ULL),
+                             (unsigned long long)(rel / 1000ULL % 1000ULL));
+            tlen = w > 0 ? (size_t)w : 0;
+        } else {
+            tlen = hold_logidx_format_time(rec->ts_us, state->ts_mode, state->ts_zone == 1, ts, sizeof(ts));
+        }
         while (tlen > 0 && ts[tlen - 1] == ' ') ts[--tlen] = '\0';
         if (tlen > 0) {
             int w = snprintf(out + used, n - used, "[%s] ", ts);
@@ -817,7 +1029,7 @@ static const char *viewer_row_sgr(const struct viewer_state *state, off_t offset
  * columns without truncating itself mid-word.
  */
 static int render_help_overlay(const struct viewer_state *state, size_t body_rows) {
-    static const char *lines[] = {
+    static const char *browse_lines[] = {
         "Type        Filter as you type",
         "Backspace   Relax the filter",
         "Space       Exclude lines like the selected line",
@@ -828,13 +1040,29 @@ static int render_help_overlay(const struct viewer_state *state, size_t body_row
         "Ctrl-G      Go to line number",
         "Ctrl-L      Line numbers",
         "Ctrl-T      Timestamps: off, time, date",
-        "Ctrl-U      UTC or local timestamps",
+        "Ctrl-U      Local, UTC, or elapsed timestamps",
         "Ctrl-W      Wrap long lines",
         "Ctrl-Y      Source column",
         "Wheel       Scroll (spin faster, move faster)",
         "Esc         Quit",
     };
-    size_t n = sizeof(lines) / sizeof(lines[0]);
+    /* Playback mode shows only the keys that exist in it: transport plus the
+     * shared display toggles (one set of physics). */
+    static const char *play_lines[] = {
+        "Space       Stop / resume at 1x",
+        ".           Fast-forward: 1, 2, 3, 4, 8, 16x",
+        ",           Rewind, same ladder",
+        "Home/End    Start / live edge",
+        "Ctrl-L      Line numbers",
+        "Ctrl-T      Timestamps: off, time, date",
+        "Ctrl-U      Local, UTC, or elapsed timestamps",
+        "Ctrl-W      Wrap long lines",
+        "Ctrl-Y      Source column",
+        "Esc         Back to browsing",
+    };
+    const char *const *lines = state->play_mode ? play_lines : browse_lines;
+    size_t n = state->play_mode ? sizeof(play_lines) / sizeof(play_lines[0])
+                                : sizeof(browse_lines) / sizeof(browse_lines[0]);
     size_t width = state->cols ? state->cols : 80;
     size_t blockw = 0;
     for (size_t i = 0; i < n; i++) if (strlen(lines[i]) > blockw) blockw = strlen(lines[i]);
@@ -861,8 +1089,9 @@ static int render_body_polished(struct viewer_state *state, size_t body_rows) {
     size_t used = 0;
     /* While pinned to the live tail there is no cursor: the operator is
      * watching the stream, not pointing at a line. The selection appears
-     * when a key first pulls the view into browsing. */
-    bool show_cursor = !(state->follow && state->at_live_edge);
+     * when a key first pulls the view into browsing. Playback likewise: the
+     * head is the point of attention, not a selected row. */
+    bool show_cursor = !(state->follow && state->at_live_edge) && !state->play_mode;
     for (size_t i = 0; i < state->visible_count && used < body_rows; i++) {
         size_t dlen = 0;
         char *disp = build_display_line(state, i, &dlen);
@@ -890,10 +1119,16 @@ static int render_body_polished(struct viewer_state *state, size_t body_rows) {
 }
 
 static void viewer_status_text(const struct viewer_state *state, char *out, size_t n) {
-    if (state->follow && state->at_live_edge && state->proc_active) snprintf(out, n, "FOLLOWING ACTIVE");
-    else if (state->proc_active) snprintf(out, n, "VIEWING ACTIVE");
-    else if (state->has_exit_code) snprintf(out, n, "VIEWING EXITED (%d)", state->exit_code);
-    else snprintf(out, n, "VIEWING EXITED");
+    /* Honesty rule (playback spec): synthetic/recovered timing is labeled in
+     * the chrome, never presented as recorded truth. */
+    const char *rebuilt = state->idx_loaded && (state->idx_map.synthetic || state->idx_map.recovered)
+                              ? "timing reconstructed | "
+                              : "";
+    if (state->play_mode) snprintf(out, n, "%s%s", rebuilt, state->play_paused ? "REPLAY PAUSED" : "REPLAY");
+    else if (state->follow && state->at_live_edge && state->proc_active) snprintf(out, n, "%sFOLLOWING ACTIVE", rebuilt);
+    else if (state->proc_active) snprintf(out, n, "%sVIEWING ACTIVE", rebuilt);
+    else if (state->has_exit_code) snprintf(out, n, "%sVIEWING EXITED (%d)", rebuilt, state->exit_code);
+    else snprintf(out, n, "%sVIEWING EXITED", rebuilt);
 }
 
 static int render_header_polished(const struct viewer_state *state) {
@@ -907,7 +1142,7 @@ static int render_header_polished(const struct viewer_state *state) {
                                   : viewer_run_label(state));
     char left[128];
     snprintf(left, sizeof(left), "hold logs: %s", name);
-    char status[48];
+    char status[80];
     viewer_status_text(state, status, sizeof(status));
     size_t slen = strlen(status);
     char *bar = make_bar(width, left, status);
@@ -966,11 +1201,29 @@ static int render_footer_polished(const struct viewer_state *state) {
     return rc;
 }
 
+/* Mode-change OSD (playback spec, verbatim): blank 7 cells of the top two
+ * rows at the upper right and center the indicator there; it shows for 2 s,
+ * then the next repaint restores the blanked characters. */
+static int render_osd(const struct viewer_state *state) {
+    if (!state->osd[0]) return 0;
+    size_t width = state->cols ? state->cols : 80;
+    if (width < VIEWER_OSD_CELLS || state->osd_glyphs > VIEWER_OSD_CELLS) return 0;
+    size_t col = width - VIEWER_OSD_CELLS + 1;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "\033[0m\033[1;%zuH%*s", col, VIEWER_OSD_CELLS, "");
+    if (viewer_puts(buf) != 0) return -1;
+    int lead = (int)((VIEWER_OSD_CELLS - state->osd_glyphs) / 2);
+    int trail = (int)(VIEWER_OSD_CELLS - state->osd_glyphs) - lead;
+    snprintf(buf, sizeof(buf), "\033[2;%zuH%*s%s%*s", col, lead, "", state->osd, trail, "");
+    return viewer_puts(buf);
+}
+
 static int render_polished(struct viewer_state *state) {
     if (render_header_polished(state) != 0) return -1;
     if (render_body_polished(state, viewer_body_rows(state)) != 0) return -1;
     if (render_footer_polished(state) != 0) return -1;
-    return viewer_puts("\033[K\033[J");
+    if (viewer_puts("\033[K\033[J") != 0) return -1;
+    return render_osd(state);
 }
 
 /*
@@ -1294,6 +1547,12 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
     if (opts->literal) snprintf(state.filter, sizeof(state.filter), "%s", opts->literal);
     const char *term = getenv("TERM");
     state.colors = !state.debug_stats && !getenv("NO_COLOR") && term && strcmp(term, "dumb") != 0;
+    if (state.context.replay) {
+        /* --replay: play from the start of recorded time. An empty or
+         * unindexable log just opens the ordinary viewer. */
+        viewer_reload_idx(&state);
+        if (state.idx_loaded && state.idx_map.count > 0) playback_enter(&state, 0, +1, false);
+    }
 
     struct raw_terminal raw;
     if (raw_terminal_enter(&raw) != 0) return -1;
@@ -1312,12 +1571,28 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
             pending = VIEWER_KEY_NONE;
         } else {
             /* A pending continuation shortens the idle tick: scanning keeps
-             * its throughput while any keypress still lands instantly. */
-            key = read_key(&printable, continuation_pending(&state) ? 10 : 250);
+             * its throughput while any keypress still lands instantly. A due
+             * playback step or OSD expiry shortens it further. */
+            int timeout = continuation_pending(&state) ? 10 : 250;
+            uint64_t now = viewer_now_ms();
+            if (state.play_mode && !state.play_paused) {
+                if (state.play_due_ms <= now) timeout = 0;
+                else if (state.play_due_ms - now < (uint64_t)timeout) timeout = (int)(state.play_due_ms - now);
+            }
+            if (state.osd_until_ms > now && state.osd_until_ms - now < (uint64_t)timeout)
+                timeout = (int)(state.osd_until_ms - now);
+            key = read_key(&printable, timeout);
         }
         if (key == VIEWER_KEY_NONE) {
             if (refresh_terminal_size(&state)) need_render = true;
-            if (state.follow) {
+            if (state.osd_until_ms && viewer_now_ms() >= state.osd_until_ms) {
+                state.osd[0] = '\0';
+                state.osd_until_ms = 0;
+                need_render = true; /* restore the blanked corner */
+            }
+            if (state.play_mode) {
+                if (playback_tick(&state)) need_render = true;
+            } else if (state.follow) {
                 int tick = handle_follow_tick(&state);
                 if (tick < 0) { rc = -1; break; }
                 if (tick > 0) need_render = true;
@@ -1347,6 +1622,55 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
                 consumed = key == VIEWER_KEY_QUIT || key == VIEWER_KEY_JUMP;
             }
             if (consumed) { need_render = true; continue; }
+        }
+        if (state.play_mode) {
+            /* Playback-mode keys: transport plus the shared display toggles.
+             * Filtering and browse navigation are browse-mode keys; Esc/q
+             * leave playback into browsing (playback spec key scoping). */
+            switch (key) {
+            case VIEWER_KEY_QUIT: playback_leave(&state, false); need_render = true; continue;
+            case VIEWER_KEY_TOGGLE: transport_space(&state); need_render = true; continue;
+            case VIEWER_KEY_PRINTABLE:
+                if (printable == '.') { transport_rate(&state, +1); need_render = true; }
+                else if (printable == ',') { transport_rate(&state, -1); need_render = true; }
+                else if (printable == 'q') { playback_leave(&state, false); need_render = true; }
+                continue;
+            case VIEWER_KEY_TOP:
+                state.play_pos = 0;
+                state.play_due_ms = viewer_now_ms();
+                playback_anchor(&state);
+                need_render = true;
+                continue;
+            case VIEWER_KEY_BOTTOM:
+                /* Scrub to the live edge: a followed log resumes the tail. */
+                if (state.follow) {
+                    playback_leave(&state, true);
+                } else {
+                    viewer_reload_idx(&state);
+                    state.play_pos = state.idx_map.count;
+                    state.play_paused = true;
+                    playback_osd_show(&state);
+                    playback_anchor(&state);
+                }
+                need_render = true;
+                continue;
+            case VIEWER_KEY_UP: case VIEWER_KEY_DOWN:
+            case VIEWER_KEY_PAGE_UP: case VIEWER_KEY_PAGE_DOWN:
+            case VIEWER_KEY_WHEEL_UP: case VIEWER_KEY_WHEEL_DOWN:
+            case VIEWER_KEY_BACKSPACE: case VIEWER_KEY_RESET: case VIEWER_KEY_JUMP:
+                continue;
+            default:
+                break;
+            }
+        } else if (state.follow && state.at_live_edge &&
+                   (key == VIEWER_KEY_TOGGLE ||
+                    (key == VIEWER_KEY_PRINTABLE && (printable == '.' || printable == ',')))) {
+            /* Transport is live while tailing (playback spec): Space freezes
+             * the recorded edge, `,` starts rewinding through the history. */
+            if (key == VIEWER_KEY_TOGGLE) transport_space(&state);
+            else transport_rate(&state, printable == '.' ? +1 : -1);
+            need_render = true;
+            continue;
         }
         if (key == VIEWER_KEY_QUIT) {
             int quit_tick = mark_newer_before_quit(&state);
@@ -1396,18 +1720,14 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
             }
             break;
         }
-        case VIEWER_KEY_TOGGLE:
-            if (state.follow && state.at_live_edge && state.visible_count > 0) {
-                /* No cursor is visible at the live edge, so the first Space
-                 * only summons it (bottom row); the next Space excludes. */
-                enter_browsing_mode(&state, true);
-                state.selected = state.visible_count - 1;
-            } else {
-                const char *line = state.selected < state.visible_count ? state.visible[state.selected].line : NULL;
-                if (toggle_example(&state, line) != 0) rc = -1;
-            }
+        case VIEWER_KEY_TOGGLE: {
+            /* Browse-mode Space stays zap-exclude (playback spec key scoping;
+             * at the live edge Space is transport, handled above). */
+            const char *line = state.selected < state.visible_count ? state.visible[state.selected].line : NULL;
+            if (toggle_example(&state, line) != 0) rc = -1;
             need_render = true;
             break;
+        }
         case VIEWER_KEY_SUSPEND:
             /* Honest Ctrl-Z: restore the terminal, stop like any job, and
              * repaint when the shell resumes us. */
@@ -1424,7 +1744,7 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
                           : HOLD_TS_NONE;
             need_render = true;
             break;
-        case VIEWER_KEY_TZ_TOGGLE: state.ts_utc = !state.ts_utc; need_render = true; break;
+        case VIEWER_KEY_TZ_TOGGLE: state.ts_zone = (state.ts_zone + 1) % 3; need_render = true; break;
         case VIEWER_KEY_WRAP_TOGGLE: state.wrap = !state.wrap; need_render = true; break;
         case VIEWER_KEY_SOURCE_COL: state.source_column = !state.source_column; need_render = true; break;
         case VIEWER_KEY_LINE_NUMBERS: state.line_numbers = !state.line_numbers; need_render = true; break;

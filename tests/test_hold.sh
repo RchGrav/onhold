@@ -975,7 +975,202 @@ time.sleep(0.1); os._exit(0)' |
   [ "$(($(sidecar_field "$log.idx" 16) & 2))" -eq 2 ] || { od -An -tx1 "$log.idx" | head -6 >&2; return 1; }
 }
 
+# docs/future/playback.md: the plain --replay pipe (non-TTY) plays linearly at
+# 1x with no transport, script-safe — the emitted bytes equal the raw log.
+test_logs_replay_non_tty_is_linear_pipe() {
+  local out id log
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "replay one"; echo "replay two"; echo "replay three"; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  log=$(log_path "$id") || return 1
+  record_ended_soon "$id" || return 1
+  "$HOLD_BIN" logs "$id" --replay >"$TEST_ROOT/replay-pipe.out" 2>"$TEST_ROOT/replay-pipe.err" || return 1
+  cmp -s "$TEST_ROOT/replay-pipe.out" "$log" || { cat "$TEST_ROOT/replay-pipe.out" >&2; return 1; }
+  # Recorded timing is not reconstructed timing: no honesty label here.
+  ! grep -q 'timing reconstructed' "$TEST_ROOT/replay-pipe.err" || { cat "$TEST_ROOT/replay-pipe.err" >&2; return 1; }
+}
 
+# A missing sidecar rebuilds synthetically at 50 ms per line: the pipe sleeps
+# those deltas (>= 0.3 s for 8 lines) and labels the timing reconstructed.
+test_logs_replay_synthetic_pipe_sleeps_and_labels() {
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id log
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in 1 2 3 4 5 6 7 8; do echo "synth-replay-$i"; done; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  log=$(log_path "$id") || return 1
+  record_ended_soon "$id" || return 1
+  rm -f "$log.idx" || return 1
+  python3 - "$HOLD_BIN" "$id" "$TEST_ROOT/replay-synth.out" "$TEST_ROOT/replay-synth.err" <<'PY' || return 1
+import subprocess, sys, time
+t = time.time()
+with open(sys.argv[3], 'wb') as out, open(sys.argv[4], 'wb') as err:
+    rc = subprocess.run([sys.argv[1], 'logs', sys.argv[2], '--replay'], stdout=out, stderr=err).returncode
+d = time.time() - t
+if rc != 0:
+    raise SystemExit(f'replay pipe exited {rc}')
+if d < 0.3:
+    raise SystemExit(f'synthetic replay finished in {d:.2f}s: recorded deltas were not slept')
+PY
+  cmp -s "$TEST_ROOT/replay-synth.out" "$log" || { cat "$TEST_ROOT/replay-synth.out" >&2; return 1; }
+  grep -q 'timing reconstructed' "$TEST_ROOT/replay-synth.err" || { cat "$TEST_ROOT/replay-synth.err" >&2; return 1; }
+}
+
+# Interactive --replay: playback is a mode of the viewer. The rate ladder
+# steps per press and every mode change flashes the corner OSD (PLAY/PAUSED/
+# chevrons, count = ladder position + 1); Esc leaves playback into browsing.
+test_logs_replay_viewer_transport_rate_ladder_osd() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  # Real recorded deltas (0.3 s apart): the rate ladder needs playback that is
+  # still traversing them when the second press of a pair lands.
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "ladder one"; sleep 0.3; echo "ladder two"; sleep 0.3; echo "ladder three"; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  record_ended_soon "$id" || return 1
+  set +e
+  # Playback (0.6 s of recorded time) auto-pauses at the end. Then `,`
+  # rewinds (1x), `,` again steps to 2x while still rewinding, `.` flips
+  # forward to 1x, `.` again steps to 2x; Esc leaves playback, next Esc quits.
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(1.2); w(b",")
+time.sleep(0.15); w(b",")
+time.sleep(0.5); w(b".")
+time.sleep(0.15); w(b".")
+time.sleep(0.6); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive --replay" >"$TEST_ROOT/replay-osd.out" 2>"$TEST_ROOT/replay-osd.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/replay-osd.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/replay-osd.out" <<'PY' || { cat "$TEST_ROOT/replay-osd.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw).replace('\r', '')
+if 'REPLAY' not in plain:
+    raise SystemExit('viewer never entered playback mode chrome')
+if 'REPLAY PAUSED' not in plain:
+    raise SystemExit('finished replay did not pause at the end of the log')
+if '◀◀' not in plain:
+    raise SystemExit('second `,` did not flash the RW 2x chevrons')
+if '▶▶' not in plain:
+    raise SystemExit('second `.` did not flash the FF 2x chevrons')
+for wanted in ('ladder one', 'ladder three'):
+    if wanted not in plain:
+        raise SystemExit(f'replayed content missing {wanted!r}')
+final = 'hold logs:' + plain.split('hold logs:')[-1]
+if 'REPLAY' in final:
+    raise SystemExit('Esc did not leave playback into browsing before quitting')
+PY
+}
+
+# Honesty rule: a rebuilt index is labeled in the viewer chrome, never
+# presented as recorded truth.
+test_logs_replay_viewer_labels_reconstructed_timing() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id log rc
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "rebuilt one"; echo "rebuilt two"; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  log=$(log_path "$id") || return 1
+  record_ended_soon "$id" || return 1
+  rm -f "$log.idx" || return 1
+  set +e
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(0.6); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive --replay" >"$TEST_ROOT/replay-label.out" 2>"$TEST_ROOT/replay-label.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/replay-label.err" >&2; return 1; }
+  grep -a -q 'timing reconstructed' "$TEST_ROOT/replay-label.out" || { cat "$TEST_ROOT/replay-label.out" >&2; return 1; }
+}
+
+# Transport is live while tailing: Space freezes the recorded edge (playback
+# paused), `,` rewinds through the captured history, and End scrubs back to
+# the live edge, which resumes the tail.
+test_logs_live_tail_transport_pause_rewind_resume() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 70); do echo "transport-tick-$i"; sleep 0.05; done' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.4
+  set +e
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(0.6); w(b" ")
+time.sleep(0.4); w(b",")
+time.sleep(0.3); w(b"\x1b[F")
+time.sleep(0.6); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive" >"$TEST_ROOT/tail-transport.out" 2>"$TEST_ROOT/tail-transport.err"
+  rc=$?
+  set -e
+  "$HOLD_BIN" end "$id" >/dev/null 2>&1 || true
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/tail-transport.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/tail-transport.out" <<'PY' || { cat "$TEST_ROOT/tail-transport.out" >&2; return 1; }
+import re, sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+plain = re.sub(r'\x1b\[[0-9;?]*[A-Za-z~]', '', raw).replace('\r', '')
+if 'REPLAY PAUSED' not in plain:
+    raise SystemExit('Space at the live edge did not freeze into paused playback')
+if '◀' not in plain:
+    raise SystemExit('`,` at the frozen edge did not flash the rewind OSD')
+final = 'hold logs:' + plain.split('hold logs:')[-1]
+if 'FOLLOWING ACTIVE' not in final:
+    raise SystemExit('End did not scrub back to the live edge and resume the tail')
+PY
+}
+
+# Monotonic display: Ctrl-U cycles local -> UTC -> elapsed-since-start, the
+# same keystroke family in browsing and playback (one set of physics).
+test_log_viewer_elapsed_timestamps_via_ctrl_u() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "mono one"; echo "mono two"; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  record_ended_soon "$id" || return 1
+  set +e
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(0.4); w(b"\x14")
+time.sleep(0.2); w(b"\x15\x15")
+time.sleep(0.3); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive" >"$TEST_ROOT/viewer-elapsed.out" 2>"$TEST_ROOT/viewer-elapsed.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/viewer-elapsed.err" >&2; return 1; }
+  local plain="$TEST_ROOT/viewer-elapsed.plain"
+  python3 -c 'import re,sys; raw=open(sys.argv[1],"rb").read().decode("utf-8","ignore"); sys.stdout.write(re.sub(r"\x1b\[[0-9;?]*[A-Za-z~]","",raw).replace("\r",""))' "$TEST_ROOT/viewer-elapsed.out" >"$plain"
+  grep -Eq '\[\+[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}\] mono one' "$plain" || { cat "$plain" >&2; return 1; }
+}
 
 test_log_view_internal_seed_filters() {
   local out id viewed stats similar plain
@@ -1776,9 +1971,10 @@ test_log_view_follow_exclude_at_live_edge_pins_current_page() {
   [ -n "$id" ] || return 1
   sleep 0.05
   set +e
-  # At the live edge the first Space only summons the cursor (bottom row);
-  # Up walks it to the top line, and the second Space excludes it.
-  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b" "); out.flush(); time.sleep(0.2); out.write(b"\x1b[A" * 5); out.flush(); time.sleep(0.2); out.write(b" "); out.flush(); time.sleep(1.2); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
+  # Space at the live edge is transport now (playback spec): Up is the key
+  # that leaves the edge and summons the cursor (bottom row); more Ups walk
+  # it to the top line, and Space excludes it there (browse-mode zap).
+  python3 -c 'import sys,time; out=sys.stdout.buffer; out.write(b"\x1b[A"); out.flush(); time.sleep(0.2); out.write(b"\x1b[A" * 5); out.flush(); time.sleep(0.2); out.write(b" "); out.flush(); time.sleep(1.2); out.write(b"\x1b"); out.flush(); time.sleep(0.1)' |
     pty_run "stty rows 8 cols 120; $HOLD_BIN logs $id --interactive --follow --debug-stats" >"$TEST_ROOT/view-follow-exclude-live-pin.out" 2>"$TEST_ROOT/view-follow-exclude-live-pin.err"
   rc=$?
   set -e
@@ -4889,6 +5085,12 @@ run_test "special characters are preserved in argv JSON" test_special_chars_args
 run_test "logging captures stdout+stderr" test_log_capture
 run_test "corrupt sidecar self-heals by CRC realignment under the viewer" test_sidecar_corrupt_self_heals
 run_test "missing sidecar rebuilds as synthetic v2 timing" test_sidecar_missing_synthetic_rebuild
+run_test "logs --replay to a non-TTY is a linear script-safe pipe" test_logs_replay_non_tty_is_linear_pipe
+run_test "synthetic replay pipe sleeps rebuilt deltas and labels them" test_logs_replay_synthetic_pipe_sleeps_and_labels
+run_test "replay viewer steps the rate ladder and flashes the OSD" test_logs_replay_viewer_transport_rate_ladder_osd
+run_test "replay viewer labels reconstructed timing in the chrome" test_logs_replay_viewer_labels_reconstructed_timing
+run_test "live tail transport: Space pauses, comma rewinds, End resumes" test_logs_live_tail_transport_pause_rewind_resume
+run_test "Ctrl-U cycles local, UTC, and elapsed timestamps" test_log_viewer_elapsed_timestamps_via_ctrl_u
 run_test "internal viewer harness seeds literal and similarity filters" test_log_view_internal_seed_filters
 run_test "internal viewer follows live logs through filter engine" test_log_view_follow_filters_live_output
 run_test "logs follow opens dynamic TTY filter" test_hold_logs_follow_opens_dynamic_tty_filter

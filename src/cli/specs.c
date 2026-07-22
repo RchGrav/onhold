@@ -64,7 +64,7 @@ static const char help_kill[] =
 static const char help_tail[] =
     "Follow a call's live output. Shorthand for hold logs <target> -f.\n";
 static const char help_logs[] =
-    "Open the log viewer for a call. In a TTY, type directly in the full-screen viewer to filter dynamically; Backspace relaxes the filter, Space excludes lines like the highlighted line, and Ctrl-R resets filters. Non-TTY output stays script-friendly; -p/--print/--plain always dumps plain text.\n";
+    "Open the log viewer for a call. In a TTY, type directly in the full-screen viewer to filter dynamically; Backspace relaxes the filter, Space excludes lines like the highlighted line, and Ctrl-R resets filters. --replay plays the log back with its recorded timing (Space pause/resume, . fast-forward, , rewind); to a non-TTY it is a plain linear pipe. Non-TTY output stays script-friendly; -p/--print/--plain always dumps plain text.\n";
 static const char help_attach[] =
     "Pick a running console/TTY call back up. Detach again with Ctrl-P Ctrl-Q. Start attachable calls with hold -it <cmd>. (console is an alias of attach.)\n";
 static const char help_view[] =
@@ -110,7 +110,7 @@ static const struct hold_cli_command_spec command_specs[] = {
      "usage: hold kill [--print] [--all] <target>...", NULL, help_kill},
     {"tail", NULL, 1, 1, 0, "usage: hold tail <target>", NULL, help_tail},
     {"logs", "__view", 1, -1, 0,
-     "usage: hold logs <target> [--follow|-f] [--tail|-n N] [--plain|-p|--interactive]", NULL, help_logs},
+     "usage: hold logs <target> [--follow|-f] [--replay] [--tail|-n N] [--plain|-p|--interactive]", NULL, help_logs},
     {"inspect", NULL, 1, 1, 0, "usage: hold inspect <target>", NULL, help_inspect},
     {"ports", NULL, 1, 1, 0, "usage: hold ports <target>", NULL, help_ports},
     {"stats", NULL, 1, 1, SPEC_NOSTREAM, "usage: hold stats <target> [--no-stream]", NULL, help_stats},

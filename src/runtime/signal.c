@@ -574,9 +574,52 @@ int hold_cmd_inspect_action(const struct hold_invocation *inv,
     return 0;
 }
 
+/* ---- linear replay pipe (docs/future/playback.md) ----------------------- */
+
+/* Non-TTY --replay: walk the sidecar index, sleep the recorded deltas, emit
+ * the raw bytes by pread — linear 1x, no transport, script-safe. Only
+ * display-stream records are emitted (the capture invariant: input is
+ * annotation, never display; replaying an IN record is corruption). */
+static int replay_log_pipe(const char *log_path, int log_fd) {
+    struct hold_logidx_map map;
+    if (hold_logidx_map_load(log_path, &map) != 0) return -1;
+    if (map.synthetic || map.recovered)
+        fprintf(stderr, "hold: replay: timing reconstructed, not recorded\n");
+    int rc = 0;
+    uint64_t prev_ts = 0;
+    bool have_prev = false;
+    char buf[65536];
+    for (size_t i = 0; i < map.count && rc == 0; i++) {
+        const struct hold_logidx_record *rec = &map.records[i];
+        if (hold_logidx_record_stream(rec->meta) == HOLD_LOG_STREAM_STDIN) continue;
+        if (have_prev && rec->ts_us > prev_ts) {
+            uint64_t dt = rec->ts_us - prev_ts;
+            struct timespec sl = {.tv_sec = (time_t)(dt / 1000000ULL),
+                                  .tv_nsec = (long)(dt % 1000000ULL) * 1000L};
+            while (nanosleep(&sl, &sl) != 0 && errno == EINTR) {}
+        }
+        prev_ts = rec->ts_us;
+        have_prev = true;
+        off_t off = rec->offset;
+        uint64_t left = rec->len;
+        while (left > 0) {
+            size_t chunk = left < sizeof(buf) ? (size_t)left : sizeof(buf);
+            ssize_t nr = pread(log_fd, buf, chunk, off);
+            if (nr < 0 && errno == EINTR) continue;
+            if (nr < 0) { rc = -1; break; }
+            if (nr == 0) break; /* index ahead of a torn tail: emit what exists */
+            if (hold_write_all(STDOUT_FILENO, buf, (size_t)nr) != 0) { rc = -1; break; }
+            left -= (uint64_t)nr;
+            off += nr;
+        }
+    }
+    hold_logidx_map_free(&map);
+    return rc;
+}
+
 /* ---- logs command entry -------------------------------------------------- */
 
-static const char view_usage[] = "usage: hold logs <target> [--follow|-f] [--plain|--interactive]\n";
+static const char view_usage[] = "usage: hold logs <target> [--follow|-f] [--replay] [--plain|--interactive]\n";
 
 static int view_usage_err(void) {
     fputs(view_usage, stderr);
@@ -593,6 +636,7 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
     struct hold_log_filter_options opts;
     hold_log_filter_options_init(&opts);
     bool debug_stats = false, have_limit = false, force_plain = false, force_interactive = false, follow = false;
+    bool replay = false;
     const char *target_token = NULL;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--filter")) {
@@ -614,6 +658,8 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
             force_interactive = true;
         } else if (!strcmp(argv[i], "--follow") || !strcmp(argv[i], "-f")) {
             follow = true;
+        } else if (!strcmp(argv[i], "--replay")) {
+            replay = true;
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             fputs(view_usage, stdout);
             return 0;
@@ -644,6 +690,13 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
     if (!ok) return rc;
     int fd = open(r.log_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) hold_die_errno("hold: failed to open log");
+    if (replay && !interactive) {
+        /* The plain --replay pipe: linear at 1x, no transport, script-safe. */
+        if (replay_log_pipe(r.log_path, fd) != 0) hold_die_errno("hold: failed while replaying log");
+        close(fd);
+        hold_free_run_record(&r);
+        return 0;
+    }
     if (interactive) {
         struct hold_log_viewer_follow follow_opts = {0};
         struct interactive_view_liveness live = {0};
@@ -669,6 +722,7 @@ int hold_cmd_view_action(const struct hold_invocation *inv,
             .active = view_state == STATE_RUNNING,
             .has_exit_code = r.has_exit_code,
             .exit_code = r.exit_code,
+            .replay = replay,
         };
         rc = hold_log_viewer_tty_fd(fd, target_token, &opts, follow_opts.enabled ? &follow_opts : NULL, &viewer_context, debug_stats);
         if (rc != 0) hold_die_errno("hold: failed while viewing log");

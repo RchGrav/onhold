@@ -71,6 +71,7 @@ struct hold_log_viewer_context {
     bool active;         /* process running when the viewer opened */
     bool has_exit_code;
     int exit_code;
+    bool replay;         /* open in playback mode, from the start of time */
 };
 
 void hold_log_filter_options_init(struct hold_log_filter_options *opts);
