@@ -5,11 +5,21 @@
 #include "hold/term.h"
 #include "hold/console_internal.h"
 
+#define CONSOLE_ATTACH_CTRL_P 0x10
+#define CONSOLE_ATTACH_CTRL_Q 0x11
+
 static unsigned char g_detach_keys[HOLD_TERM_DETACH_MAX_KEYS] = {
     CONSOLE_ATTACH_CTRL_P,
     CONSOLE_ATTACH_CTRL_Q,
 };
 static size_t g_detach_key_count = 2;
+
+static volatile sig_atomic_t g_resized = 0;
+
+static void handle_sigwinch(int signo) {
+    (void)signo;
+    g_resized = 1;
+}
 
 int hold_console_set_detach_keys(const unsigned char *keys, size_t len) {
     if (!keys || len == 0 || len > HOLD_TERM_DETACH_MAX_KEYS) {
@@ -21,9 +31,52 @@ int hold_console_set_detach_keys(const unsigned char *keys, size_t len) {
     return 0;
 }
 
+/* Client-side wire: 3-byte type + be16-length frames after the attach magic. */
+static int write_frame(int fd, unsigned char type, const void *payload, uint16_t len) {
+    unsigned char header[CONSOLE_FRAME_HEADER_LEN];
+    header[0] = type;
+    console_store_be16(header + 1, len);
+    if (hold_write_all(fd, header, sizeof(header)) != 0) {
+        return -1;
+    }
+    if (len > 0 && hold_write_all(fd, payload, len) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int send_resize(int fd, const struct winsize *ws) {
+    if (ws->ws_row == 0 || ws->ws_col == 0) {
+        return 0;
+    }
+    unsigned char payload[4];
+    console_store_be16(payload, ws->ws_row);
+    console_store_be16(payload + 2, ws->ws_col);
+    return write_frame(fd, CONSOLE_FRAME_RESIZE, payload, sizeof(payload));
+}
+
+static int terminal_size(struct winsize *ws) {
+    memset(ws, 0, sizeof(*ws));
+    if (ioctl(STDIN_FILENO, TIOCGWINSZ, ws) == 0 && ws->ws_row > 0 && ws->ws_col > 0) {
+        return 0;
+    }
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, ws) == 0 && ws->ws_row > 0 && ws->ws_col > 0) {
+        return 0;
+    }
+    return -1;
+}
+
+static bool install_handler(int sig, void (*fn)(int), struct sigaction *old) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = fn;
+    sigemptyset(&sa.sa_mask);
+    return sigaction(sig, &sa, old) == 0;
+}
+
 /* Bytes the detach FSM releases go to the broker as DATA frames. */
 static int attach_data_sink(void *ctx, const unsigned char *bytes, size_t n) {
-    return hold_write_console_frame(*(const int *)ctx, CONSOLE_FRAME_DATA, bytes, (uint16_t)n);
+    return write_frame(*(const int *)ctx, CONSOLE_FRAME_DATA, bytes, (uint16_t)n);
 }
 
 int hold_run_native_console(const char *sock_path) {
@@ -39,8 +92,8 @@ int hold_run_native_console(const char *sock_path) {
     bool alt_screen = false;
     struct termios old_termios;
     if (interactive && tcgetattr(STDIN_FILENO, &old_termios) == 0) {
-        struct termios raw;
-        hold_make_raw_termios(&old_termios, &raw);
+        struct termios raw = old_termios;
+        cfmakeraw(&raw);
         if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0) {
             terminal_saved = true;
             if (hold_write_all(STDOUT_FILENO, "\033[?1049h\033[H\033[2J", 15) == 0) {
@@ -49,23 +102,10 @@ int hold_run_native_console(const char *sock_path) {
         }
     }
 
-    struct sigaction sa, old_winch;
-    bool have_old_winch = false;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = hold_handle_console_sigwinch;
-    sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGWINCH, &sa, &old_winch) == 0) {
-        have_old_winch = true;
-    }
-    struct sigaction pipe_ign, old_pipe;
-    bool have_old_pipe = false;
-    memset(&pipe_ign, 0, sizeof(pipe_ign));
-    pipe_ign.sa_handler = SIG_IGN;
-    sigemptyset(&pipe_ign.sa_mask);
-    if (sigaction(SIGPIPE, &pipe_ign, &old_pipe) == 0) {
-        have_old_pipe = true;
-    }
-    g_console_resized = 1;
+    struct sigaction old_winch, old_pipe;
+    bool have_old_winch = install_handler(SIGWINCH, handle_sigwinch, &old_winch);
+    bool have_old_pipe = install_handler(SIGPIPE, SIG_IGN, &old_pipe);
+    g_resized = 1;
 
     int rc = 0;
     bool stdin_open = true;
@@ -77,10 +117,10 @@ int hold_run_native_console(const char *sock_path) {
     }
 
     while (1) {
-        if (g_console_resized) {
+        if (g_resized) {
             struct winsize ws;
-            g_console_resized = 0;
-            if (hold_maybe_get_terminal_size(&ws) == 0 && hold_send_console_resize(sock, &ws) != 0) {
+            g_resized = 0;
+            if (terminal_size(&ws) == 0 && send_resize(sock, &ws) != 0) {
                 rc = 3;
                 break;
             }
@@ -88,18 +128,11 @@ int hold_run_native_console(const char *sock_path) {
 
         struct pollfd pfds[2];
         nfds_t nfds = 0;
-        int sock_idx = (int)nfds;
-        pfds[nfds].fd = sock;
-        pfds[nfds].events = POLLIN;
-        pfds[nfds].revents = 0;
-        nfds++;
+        pfds[nfds++] = (struct pollfd){.fd = sock, .events = POLLIN};
         int stdin_idx = -1;
         if (stdin_open) {
             stdin_idx = (int)nfds;
-            pfds[nfds].fd = STDIN_FILENO;
-            pfds[nfds].events = POLLIN;
-            pfds[nfds].revents = 0;
-            nfds++;
+            pfds[nfds++] = (struct pollfd){.fd = STDIN_FILENO, .events = POLLIN};
         }
 
         int sr = poll(pfds, nfds, hold_term_detach_timeout_ms(&detach));
@@ -130,7 +163,7 @@ int hold_run_native_console(const char *sock_path) {
                             break;
                         }
                         if (detached) {
-                            if (hold_write_console_frame(sock, CONSOLE_FRAME_DETACH, NULL, 0) != 0) {
+                            if (write_frame(sock, CONSOLE_FRAME_DETACH, NULL, 0) != 0) {
                                 rc = 3;
                                 break;
                             }
@@ -140,7 +173,7 @@ int hold_run_native_console(const char *sock_path) {
                     if (rc != 0) {
                         break;
                     }
-                } else if (hold_write_console_frame(sock, CONSOLE_FRAME_DATA, buf, (uint16_t)n) != 0) {
+                } else if (write_frame(sock, CONSOLE_FRAME_DATA, buf, (uint16_t)n) != 0) {
                     rc = 3;
                     break;
                 }
@@ -157,7 +190,7 @@ int hold_run_native_console(const char *sock_path) {
             }
         }
 
-        if (pfds[sock_idx].revents & (POLLIN | POLLHUP | POLLERR)) {
+        if (pfds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
             char buf[4096];
             ssize_t n = read(sock, buf, sizeof(buf));
             if (n > 0) {
@@ -183,11 +216,10 @@ out:
     }
     if (terminal_saved) {
         /* A program run inside the console may have left terminal-global modes
-         * enabled -- mouse reporting, bracketed paste, application keypad/cursor
+         * enabled — mouse reporting, bracketed paste, application keypad/cursor
          * keys, a hidden cursor. These survive the PTY teardown and would leak
-         * back to the user's shell (mouse selection emitting control bytes, paste
-         * corruption, an invisible cursor -- i.e. an "unstable" terminal). Reset
-         * the common offenders before handing the terminal back. */
+         * back to the user's shell, so reset the common offenders before
+         * handing the terminal back. */
         static const char reset_modes[] =
             "\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1015l"
             "\033[?2004l\033[?1l\033>\033[?25h";
