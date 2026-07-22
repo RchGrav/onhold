@@ -1142,6 +1142,175 @@ if 'FOLLOWING ACTIVE' not in final:
 PY
 }
 
+# ANSI TUI detection (playback spec): a console workload that takes the
+# screen (alt-screen enter + cursor addressing) is tagged pty in the sidecar
+# by the broker, and the viewer announces a terminal recording. Esc leaves a
+# screen recording directly (a screen has no browse mode).
+test_console_tui_workload_tagged_and_announced() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  cat >"$TEST_ROOT/tui-child.sh" <<'EOF'
+#!/bin/sh
+printf '\033[?1049h\033[2J\033[2;2HTUI-FRAME-ONE'
+sleep 0.3
+printf '\033[2J\033[3;3HTUI-FRAME-TWO'
+sleep 0.2
+printf '\033[?1049l'
+EOF
+  chmod +x "$TEST_ROOT/tui-child.sh"
+  out=$("$HOLD_BIN" --console "$TEST_ROOT/tui-child.sh" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  record_ended_soon "$id" || return 1
+  set +e
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(0.8); w(b"\x1b")
+time.sleep(0.3); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive" >"$TEST_ROOT/tui-kind.out" 2>"$TEST_ROOT/tui-kind.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/tui-kind.err" >&2; return 1; }
+  grep -a -q 'terminal recording' "$TEST_ROOT/tui-kind.out" || { cat "$TEST_ROOT/tui-kind.out" >&2; return 1; }
+}
+
+# The other direction of the detection promise: a plain log — SGR colors,
+# carriage-return progress, erase-to-EOL — never misclassifies as a TUI.
+test_console_plain_output_never_misclassifies_as_tui() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  cat >"$TEST_ROOT/plainish-child.sh" <<'EOF'
+#!/bin/sh
+printf '\033[31mcolored-plain-line\033[0m\n'
+printf 'progress 1\rprogress 2\r'
+printf '\033[Kplainish-done\n'
+EOF
+  chmod +x "$TEST_ROOT/plainish-child.sh"
+  out=$("$HOLD_BIN" --console "$TEST_ROOT/plainish-child.sh" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  record_ended_soon "$id" || return 1
+  set +e
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(0.8); w(b"\x1b")
+time.sleep(0.3); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive" >"$TEST_ROOT/plainish-kind.out" 2>"$TEST_ROOT/plainish-kind.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/plainish-kind.err" >&2; return 1; }
+  ! grep -a -q 'terminal recording' "$TEST_ROOT/plainish-kind.out" || { cat "$TEST_ROOT/plainish-kind.out" >&2; return 1; }
+  grep -a -q 'plainish-done' "$TEST_ROOT/plainish-kind.out" || { cat "$TEST_ROOT/plainish-kind.out" >&2; return 1; }
+}
+
+# Console time-travel (playback spec, Rich's final ruling): a Ctrl-P
+# double-tap on an attached console jumps transparently into the viewer over
+# the same never-released session; another double-tap returns to real time,
+# where input still reaches the held process; Ctrl-P Ctrl-Q detach unchanged.
+test_attach_double_ctrl_p_time_travel_round_trip() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc log
+  cat >"$TEST_ROOT/tt-child.sh" <<'EOF'
+#!/bin/sh
+printf 'tt-ready\n'
+while IFS= read line; do printf 'tt:%s\n' "$line"; done
+EOF
+  chmod +x "$TEST_ROOT/tt-child.sh"
+  out=$("$HOLD_BIN" --console "$TEST_ROOT/tt-child.sh" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  log=$(log_path "$id") || return 1
+  set +e
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(0.6); w(b"one\n")
+time.sleep(0.5); w(b"\x10\x10")
+time.sleep(1.2); w(b"\x10\x10")
+time.sleep(0.5); w(b"two\n")
+time.sleep(0.6); w(b"\x10\x11")
+time.sleep(0.2); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN attach $id" >"$TEST_ROOT/tt-attach.out" 2>"$TEST_ROOT/tt-attach.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { echo "attach rc=$rc" >&2; cat "$TEST_ROOT/tt-attach.out" "$TEST_ROOT/tt-attach.err" >&2; return 1; }
+  # The jump happened: the viewer's chrome appeared mid-attach.
+  grep -a -q 'hold logs:' "$TEST_ROOT/tt-attach.out" || { cat "$TEST_ROOT/tt-attach.out" >&2; return 1; }
+  # The console was never released: input typed after the return round-trips.
+  grep -a -q 'tt:two' "$TEST_ROOT/tt-attach.out" || { cat "$TEST_ROOT/tt-attach.out" >&2; return 1; }
+  sleep 0.3
+  grep -q 'tt:one' "$log" || { cat "$log" >&2; return 1; }
+  grep -q 'tt:two' "$log" || { cat "$log" >&2; return 1; }
+  # Ctrl-P Ctrl-Q still detached rather than ending the call.
+  "$HOLD_BIN" ps >"$TEST_ROOT/tt-ps.out" || return 1
+  grep -Eq "^$id[[:space:]]+.*Up " "$TEST_ROOT/tt-ps.out" || { cat "$TEST_ROOT/tt-ps.out" >&2; return 1; }
+  "$HOLD_BIN" end "$id" >/dev/null 2>&1 || return 1
+}
+
+# TUI scrub repaint (decision 5): rewinding a terminal recording repaints by
+# replaying from the nearest clear, so an earlier frame reappears after a
+# later one was showing.
+test_tui_replay_rewind_repaints_from_nearest_clear() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  cat >"$TEST_ROOT/tui-scrub-child.sh" <<'EOF'
+#!/bin/sh
+printf '\033[?1049h\033[2J\033[1;1HREPAINT-FRAME-ONE'
+sleep 0.4
+printf '\033[2J\033[1;1HREPAINT-FRAME-TWO'
+sleep 0.2
+EOF
+  chmod +x "$TEST_ROOT/tui-scrub-child.sh"
+  out=$("$HOLD_BIN" --console "$TEST_ROOT/tui-scrub-child.sh" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || { printf '%s\n' "$out" >&2; return 1; }
+  record_ended_soon "$id" || return 1
+  set +e
+  # Replay traverses ~0.6 s of recorded time and pauses at the end (frame two
+  # on screen); `,` rewinds through the clear boundary; Esc leaves.
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(1.8); w(b",")
+time.sleep(1.2); w(b"\x1b")
+time.sleep(0.3); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive --replay" >"$TEST_ROOT/tui-scrub.out" 2>"$TEST_ROOT/tui-scrub.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/tui-scrub.err" >&2; return 1; }
+  python3 - "$TEST_ROOT/tui-scrub.out" <<'PY' || { cat "$TEST_ROOT/tui-scrub.out" >&2; return 1; }
+import sys
+raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'ignore')
+if 'terminal recording' not in raw:
+    raise SystemExit('replay of a pty-tagged log did not announce a terminal recording')
+two = raw.find('REPAINT-FRAME-TWO')
+if two < 0:
+    raise SystemExit('replay never reached the second frame')
+one_last = raw.rfind('REPAINT-FRAME-ONE')
+if one_last < 0:
+    raise SystemExit('first frame never appeared')
+if one_last < two:
+    raise SystemExit('rewind did not repaint the earlier frame from its nearest clear')
+PY
+}
+
 # Monotonic display: Ctrl-U cycles local -> UTC -> elapsed-since-start, the
 # same keystroke family in browsing and playback (one set of physics).
 test_log_viewer_elapsed_timestamps_via_ctrl_u() {
@@ -5090,6 +5259,10 @@ run_test "synthetic replay pipe sleeps rebuilt deltas and labels them" test_logs
 run_test "replay viewer steps the rate ladder and flashes the OSD" test_logs_replay_viewer_transport_rate_ladder_osd
 run_test "replay viewer labels reconstructed timing in the chrome" test_logs_replay_viewer_labels_reconstructed_timing
 run_test "live tail transport: Space pauses, comma rewinds, End resumes" test_logs_live_tail_transport_pause_rewind_resume
+run_test "TUI console workload is pty-tagged and announced as a recording" test_console_tui_workload_tagged_and_announced
+run_test "plain console output never misclassifies as a TUI recording" test_console_plain_output_never_misclassifies_as_tui
+run_test "attach Ctrl-P double-tap time-travels and returns, session never released" test_attach_double_ctrl_p_time_travel_round_trip
+run_test "rewinding a TUI recording repaints from the nearest clear" test_tui_replay_rewind_repaints_from_nearest_clear
 run_test "Ctrl-U cycles local, UTC, and elapsed timestamps" test_log_viewer_elapsed_timestamps_via_ctrl_u
 run_test "internal viewer harness seeds literal and similarity filters" test_log_view_internal_seed_filters
 run_test "internal viewer follows live logs through filter engine" test_log_view_follow_filters_live_output

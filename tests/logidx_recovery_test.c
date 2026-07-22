@@ -203,6 +203,45 @@ static void test_v2_roundtrip_map_load(void) {
     remove_dir(dir);
 }
 
+/* The format's reserved pty stream tag (a terminal recording, playback
+ * spec): written as meta bit 0x4, decoded as HOLD_LOG_STREAM_PTY, and
+ * preserved through CRC-anchor recovery like the other stream bits. */
+static void test_pty_stream_tag_roundtrip_and_recovery(void) {
+    char dir[HOLD_PATH_MAX], log_path[HOLD_PATH_MAX], idx_path[HOLD_PATH_MAX];
+    make_temp_dir(dir);
+    const char *lines[] = {"plain lead-in\n", "\033[?1049h\033[2;2Hframe\n"};
+    const char *streams[] = {"stdout", "pty"};
+    int logfd = build_indexed_log(dir, log_path, sizeof(log_path), lines, streams, 2);
+    EXPECT_TRUE("format idx path", hold_log_idx_path(log_path, idx_path, sizeof(idx_path)) == 0);
+
+    unsigned char buf[256];
+    size_t n = read_file(idx_path, buf, sizeof(buf));
+    EXPECT_TRUE("two entries on disk", n == 80 + 2 * 24);
+    EXPECT_TRUE("pty meta bit 0x4 on entry 1", (tget_le(buf + 120, 8) & 0xffffu) == 0x4);
+
+    struct hold_logidx_map map;
+    EXPECT_TRUE("pty-tagged sidecar loads", hold_logidx_map_load(log_path, &map) == 0 && map.count == 2);
+    EXPECT_TRUE("streams decode stdout then pty", map.count == 2 &&
+                    hold_logidx_record_stream(map.records[0].meta) == HOLD_LOG_STREAM_STDOUT &&
+                    hold_logidx_record_stream(map.records[1].meta) == HOLD_LOG_STREAM_PTY);
+    hold_logidx_map_free(&map);
+
+    /* Tear an offset word: recovery must keep the pty tag on the re-anchored
+     * line (the log stays self-describing as a terminal recording). */
+    int fd = open(idx_path, O_WRONLY | O_CLOEXEC);
+    EXPECT_TRUE("open idx for corruption", fd >= 0);
+    unsigned char junk[8];
+    memset(junk, 0xff, sizeof(junk));
+    EXPECT_TRUE("corrupt entry offset word", pwrite(fd, junk, sizeof(junk), 80) == 8);
+    close(fd);
+    EXPECT_TRUE("corrupt pty sidecar recovers", hold_logidx_map_load(log_path, &map) == 0 && map.recovered);
+    EXPECT_TRUE("pty tag survives recovery", map.count == 2 &&
+                    hold_logidx_record_stream(map.records[1].meta) == HOLD_LOG_STREAM_PTY);
+    hold_logidx_map_free(&map);
+    close(logfd);
+    remove_dir(dir);
+}
+
 static void test_v1_sidecar_still_readable(void) {
     char dir[HOLD_PATH_MAX], log_path[HOLD_PATH_MAX], idx_path[HOLD_PATH_MAX];
     make_temp_dir(dir);
@@ -444,6 +483,7 @@ static void test_corrupt_header_recovers_via_crc_anchors(void) {
 int main(void) {
     test_v2_header_and_entry_format();
     test_v2_roundtrip_map_load();
+    test_pty_stream_tag_roundtrip_and_recovery();
     test_v1_sidecar_still_readable();
     test_v1_append_discipline_stays_v1();
     test_missing_sidecar_synthetic_rebuild();

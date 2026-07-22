@@ -61,6 +61,14 @@ struct hold_log_viewer_follow {
     hold_log_viewer_running_fn is_running;
     hold_log_viewer_exit_code_fn exit_code;
     void *userdata;
+    /* Attached-console time-travel (docs/future/playback.md): the broker
+     * keeps fanning the live stream out to the attach socket while the
+     * viewer owns the terminal; those bytes are already in the indexed log
+     * the viewer renders from, so the socket copy is drained and discarded
+     * each idle tick to keep the never-released session from backing up.
+     * EOF on the drain fd means the console ended. */
+    bool drain_enabled;
+    int drain_fd;
 };
 
 struct hold_log_viewer_context {
@@ -72,6 +80,8 @@ struct hold_log_viewer_context {
     bool has_exit_code;
     int exit_code;
     bool replay;         /* open in playback mode, from the start of time */
+    bool attached;       /* entered from an attached console via the Ctrl-P
+                            double-tap: another double-tap returns to it */
 };
 
 void hold_log_filter_options_init(struct hold_log_filter_options *opts);
@@ -90,5 +100,17 @@ int hold_log_viewer_tty_fd(int fd,
                              const struct hold_log_viewer_follow *follow,
                              const struct hold_log_viewer_context *context,
                              bool debug_stats);
+
+/* Screen-recording repaint: replay-from-nearest-clear (decision 5,
+ * docs/future/playback.md). Scans a bounded window back from `end` for the
+ * last screen-clearing escape (erase-display, alt-screen switch, RIS) and
+ * emits a clear plus the recorded bytes after it, raw, onto out_fd —
+ * reconstructing the screen as of byte `end`. Alt-screen switches and RIS
+ * inside the emitted span are rewritten to plain clears so a replayed
+ * recording can never yank the live terminal out of the caller's screen.
+ * With no marker in the window: from_start re-emits the whole log at max
+ * speed (returns 0), otherwise nothing is emitted and 1 is returned so the
+ * caller can fall back to line-shaped output. -1 on I/O failure. */
+int hold_log_screen_repaint(int log_fd, off_t end, bool from_start, int out_fd);
 
 #endif /* HOLD_LOG_VIEWER_H */

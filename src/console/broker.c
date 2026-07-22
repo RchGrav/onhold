@@ -42,6 +42,7 @@ struct broker {
     pid_t adopted_pgid; /* adopted mode: group/session liveness probe */
     pid_t adopted_sid;
     pid_t hup_pid; /* adopted mode: HUP the wrapper shell on exit */
+    struct hold_term_tui_detect tui; /* tags the sidecar pty once a TUI shows */
 };
 
 static void broker_cleanup_and_exit(struct broker *b, int exit_code) {
@@ -351,7 +352,7 @@ static void broker_serve(struct broker *b) {
         }
         if (master_events & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) {
             char buf[4096];
-            ssize_t n = hold_term_pump_master(b->master, b->logfd, b->logidxfd, buf, sizeof(buf));
+            ssize_t n = hold_term_pump_master(b->master, b->logfd, b->logidxfd, &b->tui, buf, sizeof(buf));
             if (n > 0) {
                 replay_append(&replay, buf, (size_t)n);
                 if (cl.fd >= 0 && hold_write_all(cl.fd, buf, (size_t)n) != 0) {

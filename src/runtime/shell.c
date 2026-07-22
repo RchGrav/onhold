@@ -264,7 +264,7 @@ static int relay_shell_pty(int master, pid_t child, bool *detached) {
                 continue;
             }
             for (ssize_t i = 0; i < n; i++) {
-                bool chord = false;
+                int chord = 0;
                 if (hold_term_detach_feed(&fsm, buf[i], master_sink, &master, &chord) != 0) return 1;
                 if (chord) {
                     *detached = true;

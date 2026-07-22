@@ -35,7 +35,15 @@ void hold_run_console_broker(int parent_pipe,
                         const char *exec_path,
                         unsigned short init_rows,
                         unsigned short init_cols);
-int hold_run_native_console(const char *sock_path);
+/* The attach client. log_path/run_id/name (any may be NULL) describe the
+ * held call's broker-teed indexed log: when log_path is set and the attach
+ * is interactive, a Ctrl-P double-tap time-travels — the viewer opens over
+ * the same never-released session (docs/future/playback.md) and another
+ * double-tap, or Esc, returns to the console at real time. */
+int hold_run_native_console(const char *sock_path,
+                              const char *log_path,
+                              const char *run_id,
+                              const char *name);
 
 /* Provision and fork the server for an already-running PTY (hold shell
  * adoption): a console broker when the socket and log can be opened (the run

@@ -866,7 +866,8 @@ int hold_perform_start_options(const struct hold_invocation *inv,
         free_launch_and_observed_argv(launch_argv, observed_argv, argc);
         int tail_rc = 0;
         if (console_mode) {
-            tail_rc = hold_run_native_console(r.console_sock);
+            tail_rc = hold_run_native_console(r.console_sock, r.log_path, r.id,
+                                              r.has_name && r.name[0] ? r.name : NULL);
         } else {
             tail_rc = hold_tail_log_until_exit(&r, false, true);
             if (tail_rc == 0) tail_rc = foreground_exit_status(store, r.id);

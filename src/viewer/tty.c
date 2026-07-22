@@ -21,7 +21,8 @@ enum viewer_key {
     VIEWER_KEY_TOP, VIEWER_KEY_BOTTOM, VIEWER_KEY_BACKSPACE, VIEWER_KEY_TOGGLE,
     VIEWER_KEY_HELP, VIEWER_KEY_RESET, VIEWER_KEY_TS_CYCLE, VIEWER_KEY_TZ_TOGGLE,
     VIEWER_KEY_WRAP_TOGGLE, VIEWER_KEY_SOURCE_COL, VIEWER_KEY_LINE_NUMBERS,
-    VIEWER_KEY_JUMP, VIEWER_KEY_WHEEL_UP, VIEWER_KEY_WHEEL_DOWN, VIEWER_KEY_PRINTABLE
+    VIEWER_KEY_JUMP, VIEWER_KEY_WHEEL_UP, VIEWER_KEY_WHEEL_DOWN,
+    VIEWER_KEY_CTRL_P, VIEWER_KEY_PRINTABLE
 };
 
 struct viewer_row { char *line; off_t offset; };
@@ -59,6 +60,15 @@ struct viewer_state {
     struct hold_logidx_map idx_map;
     bool idx_loaded;
     off_t idx_loaded_raw_size;
+    /* Content kind (playback spec): pty-tagged records make this a terminal
+     * recording — screen physics (transport, timestamps, seek), no line
+     * controls, and repaint by replay-from-nearest-clear. */
+    bool screen_kind;
+    /* Attached-console session being drained while the viewer runs; a second
+     * Ctrl-P double-tap returns to the console (500 ms pairing window). */
+    bool drain_enabled;
+    int drain_fd;
+    uint64_t ctrl_p_last_ms;
     bool proc_active, has_exit_code;
     int exit_code;
     off_t start_offset;
@@ -178,6 +188,7 @@ static const struct { unsigned char byte; enum viewer_key key; } viewer_ctrl_key
     {21, VIEWER_KEY_TZ_TOGGLE},  {23, VIEWER_KEY_WRAP_TOGGLE},   /* Ctrl-U, Ctrl-W */
     {25, VIEWER_KEY_SOURCE_COL}, {127, VIEWER_KEY_BACKSPACE},
     {6, VIEWER_KEY_PAGE_DOWN},   {2, VIEWER_KEY_PAGE_UP},        /* Ctrl-F, Ctrl-B */
+    {16, VIEWER_KEY_CTRL_P},                                     /* attach return */
 };
 
 /* Arrow/Home/End final bytes shared by the SS3 (ESC O) and CSI (ESC [) forms. */
@@ -590,6 +601,113 @@ static void viewer_reload_idx(struct viewer_state *state) {
     state->idx_map = fresh;
     state->idx_loaded = true;
     state->idx_loaded_raw_size = size;
+    /* The stream tag decides what the viewer is looking at (playback spec):
+     * any pty-tagged record makes the log a terminal recording. Sticky —
+     * a session that goes TUI mid-capture switches to screen physics. */
+    if (!state->screen_kind) {
+        for (size_t i = state->idx_map.count; i > 0; i--) {
+            if (hold_logidx_record_stream(state->idx_map.records[i - 1].meta) == HOLD_LOG_STREAM_PTY) {
+                state->screen_kind = true;
+                break;
+            }
+        }
+    }
+}
+
+/* ---- screen-recording repaint (docs/future/playback.md, decision 5) ------ */
+
+#define SCREEN_CLEAR_SCAN_WINDOW (256u * 1024u)
+
+/* The screen-clearing markers a repaint can anchor on. Alt-screen switches
+ * and RIS are also the sequences that must never reach the live terminal
+ * raw (they would yank it out of the caller's alt screen), so the same
+ * table drives both the anchor search and the emit-time rewrite. `safe`
+ * marks sequences that may be emitted as-is. */
+static const struct { const char *seq; size_t len; bool safe; } screen_markers[] = {
+    {"\033[2J", 4, true},
+    {"\033[?1049h", 8, false}, {"\033[?1049l", 8, false},
+    {"\033[?1047h", 8, false}, {"\033[?1047l", 8, false},
+    {"\033[?47h", 6, false},   {"\033[?47l", 6, false},
+    {"\033c", 2, false},
+};
+#define SCREEN_MARKER_MAX_LEN 8
+
+static int screen_marker_at(const unsigned char *buf, size_t n, size_t i) {
+    if (buf[i] != 0x1b) return -1;
+    for (size_t m = 0; m < sizeof(screen_markers) / sizeof(screen_markers[0]); m++) {
+        size_t len = screen_markers[m].len;
+        if (i + len <= n && memcmp(buf + i, screen_markers[m].seq, len) == 0) return (int)m;
+    }
+    return -1;
+}
+
+/* Emits log bytes [start, end) raw, rewriting unsafe screen switches to
+ * plain clears. Chunked with a small carry so markers straddling chunk
+ * boundaries are still seen. */
+static int screen_emit_span(int log_fd, off_t start, off_t end, int out_fd) {
+    unsigned char buf[16384];
+    size_t have = 0;
+    off_t off = start;
+    for (;;) {
+        while (have < sizeof(buf) && off < end) {
+            ssize_t nr = pread(log_fd, buf + have, sizeof(buf) - have, off);
+            if (nr < 0 && errno == EINTR) continue;
+            if (nr < 0) return -1;
+            if (nr == 0) { end = off; break; } /* index past a torn tail */
+            have += (size_t)nr;
+            off += nr;
+        }
+        if (have == 0) return 0;
+        bool final = off >= end;
+        /* Hold back a tail that could hide a split marker, unless final. */
+        size_t scan_limit = final ? have : have - (SCREEN_MARKER_MAX_LEN - 1);
+        size_t i = 0, emitted = 0;
+        while (i < scan_limit) {
+            if (buf[i] != 0x1b) { i++; continue; }
+            int m = screen_marker_at(buf, have, i);
+            if (m < 0 || screen_markers[m].safe) { i++; continue; }
+            if (i > emitted && viewer_write_all(out_fd, (const char *)buf + emitted, i - emitted) != 0) return -1;
+            if (viewer_write_all(out_fd, "\033[2J\033[H", 7) != 0) return -1;
+            i += screen_markers[m].len;
+            emitted = i;
+        }
+        if (i > emitted && viewer_write_all(out_fd, (const char *)buf + emitted, i - emitted) != 0) return -1;
+        memmove(buf, buf + i, have - i);
+        have -= i;
+        if (final) {
+            if (have > 0 && viewer_write_all(out_fd, (const char *)buf, have) != 0) return -1;
+            return 0;
+        }
+    }
+}
+
+int hold_log_screen_repaint(int log_fd, off_t end, bool from_start, int out_fd) {
+    if (end < 0) return -1;
+    off_t win_start = end > (off_t)SCREEN_CLEAR_SCAN_WINDOW ? end - (off_t)SCREEN_CLEAR_SCAN_WINDOW : 0;
+    off_t anchor = -1;
+    size_t win_len = (size_t)(end - win_start);
+    if (win_len > 0) {
+        unsigned char *win = malloc(win_len);
+        if (!win) return -1;
+        size_t got = 0;
+        while (got < win_len) {
+            ssize_t nr = pread(log_fd, win + got, win_len - got, win_start + (off_t)got);
+            if (nr < 0 && errno == EINTR) continue;
+            if (nr <= 0) break;
+            got += (size_t)nr;
+        }
+        for (size_t i = 0; i < got; i++) {
+            int m = screen_marker_at(win, got, i);
+            if (m >= 0) anchor = win_start + (off_t)(i + screen_markers[m].len);
+        }
+        free(win);
+    }
+    if (anchor < 0) {
+        if (!from_start) return 1;
+        anchor = 0; /* no clear within bounded distance: re-emit from start */
+    }
+    if (viewer_write_all(out_fd, "\033[2J\033[H", 7) != 0) return -1;
+    return screen_emit_span(log_fd, anchor, end, out_fd);
 }
 
 /* ---- playback transport (docs/future/playback.md) ----------------------- */
@@ -1060,9 +1178,22 @@ static int render_help_overlay(const struct viewer_state *state, size_t body_row
         "Ctrl-Y      Source column",
         "Esc         Back to browsing",
     };
-    const char *const *lines = state->play_mode ? play_lines : browse_lines;
-    size_t n = state->play_mode ? sizeof(play_lines) / sizeof(play_lines[0])
-                                : sizeof(browse_lines) / sizeof(browse_lines[0]);
+    /* A terminal recording is not lines (playback spec): its help shows only
+     * transport, timestamps, and seek — line controls do not exist there. */
+    static const char *screen_lines[] = {
+        "Space       Stop / resume at 1x",
+        ".           Fast-forward: 1, 2, 3, 4, 8, 16x",
+        ",           Rewind, same ladder",
+        "Home/End    Start of time / live edge",
+        "Ctrl-T      Timestamps: off, time, date",
+        "Ctrl-U      UTC or local timestamps",
+        "Esc         Leave",
+    };
+    const char *const *lines = state->screen_kind ? screen_lines
+                               : state->play_mode ? play_lines : browse_lines;
+    size_t n = state->screen_kind ? sizeof(screen_lines) / sizeof(screen_lines[0])
+               : state->play_mode ? sizeof(play_lines) / sizeof(play_lines[0])
+                                  : sizeof(browse_lines) / sizeof(browse_lines[0]);
     size_t width = state->cols ? state->cols : 80;
     size_t blockw = 0;
     for (size_t i = 0; i < n; i++) if (strlen(lines[i]) > blockw) blockw = strlen(lines[i]);
@@ -1120,15 +1251,32 @@ static int render_body_polished(struct viewer_state *state, size_t body_rows) {
 
 static void viewer_status_text(const struct viewer_state *state, char *out, size_t n) {
     /* Honesty rule (playback spec): synthetic/recovered timing is labeled in
-     * the chrome, never presented as recorded truth. */
+     * the chrome, never presented as recorded truth. A pty-tagged log is
+     * announced as a terminal recording, and its head timestamp is the
+     * screen kind's Ctrl-T display (a screen has no per-line prefix rows). */
     const char *rebuilt = state->idx_loaded && (state->idx_map.synthetic || state->idx_map.recovered)
                               ? "timing reconstructed | "
                               : "";
-    if (state->play_mode) snprintf(out, n, "%s%s", rebuilt, state->play_paused ? "REPLAY PAUSED" : "REPLAY");
-    else if (state->follow && state->at_live_edge && state->proc_active) snprintf(out, n, "%sFOLLOWING ACTIVE", rebuilt);
-    else if (state->proc_active) snprintf(out, n, "%sVIEWING ACTIVE", rebuilt);
-    else if (state->has_exit_code) snprintf(out, n, "%sVIEWING EXITED (%d)", rebuilt, state->exit_code);
-    else snprintf(out, n, "%sVIEWING EXITED", rebuilt);
+    char screen[80];
+    screen[0] = '\0';
+    if (state->screen_kind) {
+        char ts[48];
+        ts[0] = '\0';
+        if (state->ts_mode != HOLD_TS_NONE && state->idx_loaded && state->idx_map.count > 0) {
+            size_t head = state->play_mode
+                              ? (state->play_pos > 0 ? state->play_pos : 1)
+                              : state->idx_map.count;
+            if (head > state->idx_map.count) head = state->idx_map.count;
+            hold_logidx_format_time(state->idx_map.records[head - 1].ts_us, state->ts_mode,
+                                    state->ts_zone == 1, ts, sizeof(ts));
+        }
+        snprintf(screen, sizeof(screen), "%sterminal recording | ", ts);
+    }
+    if (state->play_mode) snprintf(out, n, "%s%s%s", screen, rebuilt, state->play_paused ? "REPLAY PAUSED" : "REPLAY");
+    else if (state->follow && state->at_live_edge && state->proc_active) snprintf(out, n, "%s%sFOLLOWING ACTIVE", screen, rebuilt);
+    else if (state->proc_active) snprintf(out, n, "%s%sVIEWING ACTIVE", screen, rebuilt);
+    else if (state->has_exit_code) snprintf(out, n, "%s%sVIEWING EXITED (%d)", screen, rebuilt, state->exit_code);
+    else snprintf(out, n, "%s%sVIEWING EXITED", screen, rebuilt);
 }
 
 static int render_header_polished(const struct viewer_state *state) {
@@ -1272,11 +1420,94 @@ static int render_legacy(struct viewer_state *state) {
     return viewer_puts("\033[K\033[J");
 }
 
+/* One frame of a terminal recording: the reconstructed screen (replay from
+ * the nearest clear up to the playback head, or to EOF at the live edge),
+ * with the viewer's chrome drawn over the top and bottom rows. */
+static int render_screen_frame(struct viewer_state *state) {
+    off_t end;
+    if (state->play_mode) {
+        end = playback_edge_offset(state);
+    } else {
+        end = lseek(state->fd, 0, SEEK_END);
+        if (end < 0) end = 0;
+    }
+    if (viewer_puts("\033[?25l\033[0m") != 0) return -1;
+    if (hold_log_screen_repaint(state->fd, end, true, STDOUT_FILENO) < 0) return -1;
+    if (viewer_puts("\033[0m") != 0) return -1;
+    if (render_header_polished(state) != 0) return -1;
+    char move[32];
+    snprintf(move, sizeof(move), "\033[%zu;1H", state->rows ? state->rows : 24);
+    if (viewer_puts(move) != 0) return -1;
+    if (render_footer_polished(state) != 0) return -1;
+    if (viewer_puts("\033[?25l") != 0) return -1;
+    return render_osd(state);
+}
+
 static int render(struct viewer_state *state) {
     refresh_terminal_size(state);
+    if (state->screen_kind) {
+        /* Screen physics: no line cache, no filter machinery — the raw
+         * bytes themselves repaint the frame. */
+        viewer_reload_idx(state);
+        if (!state->help_open) return render_screen_frame(state);
+        if (render_header_polished(state) != 0) return -1;
+        if (render_help_overlay(state, viewer_body_rows(state)) != 0) return -1;
+        if (render_footer_polished(state) != 0) return -1;
+        if (viewer_puts("\033[K\033[J") != 0) return -1;
+        return render_osd(state);
+    }
     if (!state->cache_valid && refill_cache(state) != 0) return -1;
     if (state->debug_stats) return render_legacy(state);
     return render_polished(state);
+}
+
+/* Follow tick for a terminal recording at the live edge: no filter probes,
+ * just growth (repaint) and process exit. */
+static int screen_follow_tick(struct viewer_state *state) {
+    bool changed = false;
+    off_t end = lseek(state->fd, 0, SEEK_END);
+    if (end >= 0 && end > state->tail_anchor) {
+        state->tail_anchor = end;
+        if (state->at_live_edge) changed = true;
+    }
+    if (state->follow && state->is_running && !state->is_running(state->running_userdata)) {
+        state->follow = false;
+        state->follow_exited = true;
+        state->proc_active = false;
+        int code = 0;
+        if (state->get_exit_code && state->get_exit_code(state->running_userdata, &code)) {
+            state->exit_code = code;
+            state->has_exit_code = true;
+        }
+        changed = true;
+    }
+    return changed ? 1 : 0;
+}
+
+/* Attached-console drain (docs/future/playback.md): the never-released
+ * session's live fan-out is read and discarded — the same bytes are already
+ * in the indexed log being rendered. EOF means the console ended while
+ * time-traveling. Returns true when the frame must repaint. */
+static bool viewer_drain_console(struct viewer_state *state) {
+    if (!state->drain_enabled || state->drain_fd < 0) return false;
+    char buf[4096];
+    for (int guard = 256; guard > 0; guard--) {
+        struct pollfd pfd = {.fd = state->drain_fd, .events = POLLIN, .revents = 0};
+        int pr = poll(&pfd, 1, 0);
+        if (pr < 0 && errno == EINTR) continue;
+        if (pr <= 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR))) return false;
+        ssize_t n = read(state->drain_fd, buf, sizeof(buf));
+        if (n < 0 && errno == EINTR) continue;
+        if (n > 0) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return false;
+        state->drain_enabled = false;
+        state->follow = false;
+        state->follow_exited = true;
+        state->proc_active = false;
+        cache_invalidate(state);
+        return true;
+    }
+    return false;
 }
 
 static void push_history(struct viewer_state *state, off_t off) {
@@ -1525,6 +1756,8 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
     state.is_running = follow ? follow->is_running : NULL;
     state.get_exit_code = follow ? follow->exit_code : NULL;
     state.running_userdata = follow ? follow->userdata : NULL;
+    state.drain_enabled = follow && follow->drain_enabled;
+    state.drain_fd = state.drain_enabled ? follow->drain_fd : -1;
     if (context) {
         state.context = *context;
         state.proc_active = context->active;
@@ -1547,10 +1780,12 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
     if (opts->literal) snprintf(state.filter, sizeof(state.filter), "%s", opts->literal);
     const char *term = getenv("TERM");
     state.colors = !state.debug_stats && !getenv("NO_COLOR") && term && strcmp(term, "dumb") != 0;
+    /* The sidecar decides the content kind before the first frame renders
+     * (playback spec: the stream tag decides what the viewer is looking at). */
+    viewer_reload_idx(&state);
     if (state.context.replay) {
         /* --replay: play from the start of recorded time. An empty or
          * unindexable log just opens the ordinary viewer. */
-        viewer_reload_idx(&state);
         if (state.idx_loaded && state.idx_map.count > 0) playback_enter(&state, 0, +1, false);
     }
 
@@ -1572,8 +1807,10 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
         } else {
             /* A pending continuation shortens the idle tick: scanning keeps
              * its throughput while any keypress still lands instantly. A due
-             * playback step or OSD expiry shortens it further. */
-            int timeout = continuation_pending(&state) ? 10 : 250;
+             * playback step or OSD expiry shortens it further. An attached
+             * console being drained keeps the tick short so its fan-out
+             * buffer never backs the broker up. */
+            int timeout = continuation_pending(&state) ? 10 : (state.drain_enabled ? 50 : 250);
             uint64_t now = viewer_now_ms();
             if (state.play_mode && !state.play_paused) {
                 if (state.play_due_ms <= now) timeout = 0;
@@ -1585,6 +1822,7 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
         }
         if (key == VIEWER_KEY_NONE) {
             if (refresh_terminal_size(&state)) need_render = true;
+            if (viewer_drain_console(&state)) need_render = true;
             if (state.osd_until_ms && viewer_now_ms() >= state.osd_until_ms) {
                 state.osd[0] = '\0';
                 state.osd_until_ms = 0;
@@ -1593,9 +1831,13 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
             if (state.play_mode) {
                 if (playback_tick(&state)) need_render = true;
             } else if (state.follow) {
-                int tick = handle_follow_tick(&state);
-                if (tick < 0) { rc = -1; break; }
-                if (tick > 0) need_render = true;
+                if (state.screen_kind) {
+                    if (screen_follow_tick(&state)) need_render = true;
+                } else {
+                    int tick = handle_follow_tick(&state);
+                    if (tick < 0) { rc = -1; break; }
+                    if (tick > 0) need_render = true;
+                }
             }
             if (continuation_pending(&state)) {
                 int cont = continue_scan_tick(&state);
@@ -1623,7 +1865,76 @@ int hold_log_viewer_tty_fd(int fd, const char *title, const struct hold_log_filt
             }
             if (consumed) { need_render = true; continue; }
         }
-        if (state.play_mode) {
+        if (key == VIEWER_KEY_CTRL_P) {
+            /* Entered from an attached console: a second Ctrl-P double-tap
+             * returns to it (the transparent jump, both directions). A lone
+             * Ctrl-P is nothing — the key is otherwise unassigned. */
+            uint64_t now = viewer_now_ms();
+            bool doubled = state.context.attached && state.ctrl_p_last_ms != 0 &&
+                           now - state.ctrl_p_last_ms <= 500;
+            state.ctrl_p_last_ms = now;
+            if (doubled) break;
+            continue;
+        }
+        state.ctrl_p_last_ms = 0;
+        if (state.screen_kind) {
+            /* Screen physics only (playback spec: two content kinds, two
+             * control sets) — transport, timestamps, seek, help, quit. Line
+             * controls do not exist on a screen. */
+            if (key == VIEWER_KEY_PRINTABLE && printable == 'q') key = VIEWER_KEY_QUIT;
+            if (key != VIEWER_KEY_QUIT && key != VIEWER_KEY_SUSPEND) {
+                switch (key) {
+                case VIEWER_KEY_TOGGLE: transport_space(&state); need_render = true; break;
+                case VIEWER_KEY_PRINTABLE:
+                    if (printable == '.') { transport_rate(&state, +1); need_render = true; }
+                    else if (printable == ',') { transport_rate(&state, -1); need_render = true; }
+                    break;
+                case VIEWER_KEY_TOP:
+                    /* Seek to the start of time, paused at the first frame. */
+                    viewer_reload_idx(&state);
+                    if (state.idx_loaded && state.idx_map.count > 0) {
+                        if (!state.play_mode) {
+                            playback_enter(&state, 0, +1, true);
+                        } else {
+                            state.play_pos = 0;
+                            state.play_paused = true;
+                            state.play_due_ms = viewer_now_ms();
+                            playback_osd_show(&state);
+                            playback_anchor(&state);
+                        }
+                        need_render = true;
+                    }
+                    break;
+                case VIEWER_KEY_BOTTOM:
+                    /* Scrub to the live edge; a followed console resumes. */
+                    if (state.play_mode) {
+                        if (state.follow) {
+                            playback_leave(&state, true);
+                        } else {
+                            viewer_reload_idx(&state);
+                            state.play_pos = state.idx_map.count;
+                            state.play_paused = true;
+                            playback_osd_show(&state);
+                            playback_anchor(&state);
+                        }
+                        need_render = true;
+                    }
+                    break;
+                case VIEWER_KEY_TS_CYCLE:
+                    state.ts_mode = state.ts_mode == HOLD_TS_NONE ? HOLD_TS_TIME
+                                  : state.ts_mode == HOLD_TS_TIME ? HOLD_TS_DATE
+                                  : HOLD_TS_NONE;
+                    need_render = true;
+                    break;
+                case VIEWER_KEY_TZ_TOGGLE: state.ts_zone = (state.ts_zone + 1) % 3; need_render = true; break;
+                case VIEWER_KEY_HELP: state.help_open = true; need_render = true; break;
+                default:
+                    break;
+                }
+                continue;
+            }
+        }
+        if (state.play_mode && !state.screen_kind) {
             /* Playback-mode keys: transport plus the shared display toggles.
              * Filtering and browse navigation are browse-mode keys; Esc/q
              * leave playback into browsing (playback spec key scoping). */

@@ -23,7 +23,8 @@ static int attach_console_record(const struct hold_invocation *inv,
         hold_sig_note(inv, "hold: %s has no console (start with -it)\n", r->id);
         return 0;
     }
-    return hold_run_native_console(r->console_sock);
+    return hold_run_native_console(r->console_sock, r->log_path, r->id,
+                                   r->has_name && r->name[0] ? r->name : NULL);
 }
 
 int hold_cmd_console_action(const struct hold_invocation *inv,

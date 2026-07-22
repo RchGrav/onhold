@@ -3,6 +3,7 @@
 #include "hold/console.h"
 #include "hold/core.h"
 #include "hold/term.h"
+#include "hold/log_viewer.h"
 #include "hold/console_internal.h"
 
 #define CONSOLE_ATTACH_CTRL_P 0x10
@@ -79,7 +80,79 @@ static int attach_data_sink(void *ctx, const unsigned char *bytes, size_t n) {
     return write_frame(*(const int *)ctx, CONSOLE_FRAME_DATA, bytes, (uint16_t)n);
 }
 
-int hold_run_native_console(const char *sock_path) {
+/* ---- time-travel (docs/future/playback.md): the Ctrl-P double-tap -------- */
+
+/* Repaints the attach screen from the indexed log after the viewer returns:
+ * a terminal recording rebuilds by replay-from-nearest-clear; a line log
+ * re-emits its newest bytes from a line boundary. Best effort — a fresh
+ * prompt or the next output heals whatever this misses. */
+#define ATTACH_REPAINT_TAIL 4096
+
+static void attach_repaint_from_log(const char *log_path) {
+    int fd = open(log_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return;
+    off_t end = lseek(fd, 0, SEEK_END);
+    if (end < 0) {
+        close(fd);
+        return;
+    }
+    int rc = hold_log_screen_repaint(fd, end, false, STDOUT_FILENO);
+    if (rc == 1) {
+        /* No screen-clear anywhere near: line-shaped content. */
+        off_t start = end > ATTACH_REPAINT_TAIL ? end - ATTACH_REPAINT_TAIL : 0;
+        char buf[ATTACH_REPAINT_TAIL];
+        ssize_t n;
+        do {
+            n = pread(fd, buf, sizeof(buf), start);
+        } while (n < 0 && errno == EINTR);
+        if (n > 0) {
+            size_t skip = 0;
+            if (start > 0) {
+                while (skip < (size_t)n && buf[skip] != '\n') skip++;
+                if (skip < (size_t)n) skip++;
+            }
+            (void)hold_write_all(STDOUT_FILENO, buf + skip, (size_t)n - skip);
+        }
+    }
+    close(fd);
+}
+
+/* The jump: the viewer opens over the broker-teed indexed log while this
+ * very socket stays connected (the console is never released); the viewer
+ * drains the live fan-out it is not showing. Entry state is the live tail
+ * wearing chrome. Esc or another double-tap returns here. */
+static void attach_time_travel(int sock, bool alt_screen,
+                               const char *log_path, const char *run_id, const char *name) {
+    int fd = open(log_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return; /* jump unavailable; stay attached */
+    struct hold_log_filter_options opts;
+    hold_log_filter_options_init(&opts);
+    struct hold_log_viewer_follow follow;
+    memset(&follow, 0, sizeof(follow));
+    follow.enabled = true;
+    follow.drain_enabled = true;
+    follow.drain_fd = sock;
+    struct hold_log_viewer_context context;
+    memset(&context, 0, sizeof(context));
+    context.run_id = run_id;
+    context.name = name;
+    context.log_path = log_path;
+    context.active = true;
+    context.attached = true;
+    (void)hold_log_viewer_tty_fd(fd, name && *name ? name : run_id, &opts, &follow, &context, false);
+    close(fd);
+    /* The viewer left its alternate screen; rebuild ours and repaint the
+     * newest recorded state so the return is seamless. */
+    if (alt_screen) {
+        (void)hold_write_all(STDOUT_FILENO, "\033[?1049h\033[H\033[2J", 15);
+        attach_repaint_from_log(log_path);
+    }
+}
+
+int hold_run_native_console(const char *sock_path,
+                              const char *log_path,
+                              const char *run_id,
+                              const char *name) {
     int sock = hold_connect_console_socket(sock_path);
     if (sock < 0) {
         int e = errno;
@@ -111,6 +184,14 @@ int hold_run_native_console(const char *sock_path) {
     bool stdin_open = true;
     struct hold_term_detach detach;
     hold_term_detach_init(&detach, g_detach_keys, g_detach_key_count);
+    /* The Ctrl-P double-tap (playback spec, Rich's final ruling): time-travel
+     * into the viewer from any attached surface. Only offered when the call
+     * has an indexed log to walk and the attach is interactive; the lone
+     * Ctrl-P 500 ms flush and Ctrl-P Ctrl-Q detach are unchanged. */
+    static const unsigned char jump_keys[2] = {CONSOLE_ATTACH_CTRL_P, CONSOLE_ATTACH_CTRL_P};
+    if (interactive && log_path && *log_path) {
+        hold_term_detach_set_alt(&detach, jump_keys, sizeof(jump_keys));
+    }
     if (hold_write_all(sock, CONSOLE_ATTACH_MAGIC, CONSOLE_ATTACH_MAGIC_LEN) != 0) {
         rc = 3;
         goto out;
@@ -157,17 +238,24 @@ int hold_run_native_console(const char *sock_path) {
             if (n > 0) {
                 if (interactive) {
                     for (ssize_t i = 0; i < n; i++) {
-                        bool detached = false;
-                        if (hold_term_detach_feed(&detach, buf[i], attach_data_sink, &sock, &detached) != 0) {
+                        int completed = 0;
+                        if (hold_term_detach_feed(&detach, buf[i], attach_data_sink, &sock, &completed) != 0) {
                             rc = 3;
                             break;
                         }
-                        if (detached) {
+                        if (completed == 1) {
                             if (write_frame(sock, CONSOLE_FRAME_DETACH, NULL, 0) != 0) {
                                 rc = 3;
                                 break;
                             }
                             goto out;
+                        }
+                        if (completed == 2) {
+                            /* Time-travel: the socket stays connected — the
+                             * console is never released, the broker sees no
+                             * event, the held program can observe nothing. */
+                            attach_time_travel(sock, alt_screen, log_path, run_id, name);
+                            g_resized = 1; /* resync a resize made while away */
                         }
                     }
                     if (rc != 0) {

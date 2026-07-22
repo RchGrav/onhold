@@ -37,7 +37,9 @@
 #define HOLD_LOGIDX_TIME_BITS 48
 #define HOLD_LOGIDX_META_STREAM_STDERR 0x0001u
 #define HOLD_LOGIDX_META_NO_NEWLINE 0x0002u
+#define HOLD_LOGIDX_META_STREAM_PTY 0x0004u
 #define HOLD_LOGIDX_META_TRUNCATED 0x0008u
+#define HOLD_LOGIDX_META_STREAM_STDIN 0x0010u
 #define HOLD_LOGIDX_OFFSET_MASK ((1ULL << HOLD_LOGIDX_OFFSET_BITS) - 1ULL)
 #define HOLD_LOGIDX_LEN_MASK ((1ULL << 20) - 1ULL)
 #define HOLD_LOGIDX_TIME_MASK ((1ULL << HOLD_LOGIDX_TIME_BITS) - 1ULL)
@@ -280,7 +282,14 @@ int hold_write_indexed_log_bytes_fd(int log_fd, int idx_fd, const char *stream, 
         errno = EINVAL;
         return -1;
     }
-    uint32_t stream_meta = !strcmp(stream, "stderr") ? HOLD_LOGIDX_META_STREAM_STDERR : 0;
+    /* The format's four stream tags (stdout is the untagged default). The pty
+     * tag marks a terminal recording (docs/future/playback.md: ANSI TUI
+     * detected); the stdin tag is annotation, never display (capture
+     * invariant: replaying an IN record is corruption). */
+    uint32_t stream_meta = 0;
+    if (!strcmp(stream, "stderr")) stream_meta = HOLD_LOGIDX_META_STREAM_STDERR;
+    else if (!strcmp(stream, "pty")) stream_meta = HOLD_LOGIDX_META_STREAM_PTY;
+    else if (!strcmp(stream, "stdin")) stream_meta = HOLD_LOGIDX_META_STREAM_STDIN;
     size_t start = 0;
     for (size_t i = 0; i < n; i++) {
         if (data[i] != '\n') continue;
@@ -793,7 +802,10 @@ const struct hold_logidx_record *hold_logidx_map_find(const struct hold_logidx_m
 }
 
 enum hold_log_stream hold_logidx_record_stream(uint16_t meta) {
-    return (meta & HOLD_LOGIDX_META_STREAM_STDERR) ? HOLD_LOG_STREAM_STDERR : HOLD_LOG_STREAM_STDOUT;
+    if (meta & HOLD_LOGIDX_META_STREAM_STDIN) return HOLD_LOG_STREAM_STDIN;
+    if (meta & HOLD_LOGIDX_META_STREAM_PTY) return HOLD_LOG_STREAM_PTY;
+    if (meta & HOLD_LOGIDX_META_STREAM_STDERR) return HOLD_LOG_STREAM_STDERR;
+    return HOLD_LOG_STREAM_STDOUT;
 }
 
 size_t hold_logidx_format_time(uint64_t ts_us, enum hold_ts_mode mode, bool utc, char *out, size_t n) {

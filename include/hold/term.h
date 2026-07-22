@@ -29,26 +29,50 @@ int hold_term_pty_spawn(const struct hold_term_spawn *spec,
  * fds[0]=read, fds[1]=write, or -1 with errno set and nothing left open. */
 int hold_cloexec_pipe(int fds[2]);
 
+/* ANSI TUI detection (docs/future/playback.md): sticky best-effort
+ * recognition of screen-taking escapes in a PTY byte stream — alt-screen
+ * switches (CSI ? 47/1047/1049 h) and explicit cursor addressing
+ * (CSI row ; col H|f). Plain logs — even colored (SGR-only) ones, even
+ * carriage-return progress bars — contain neither, so they never
+ * misclassify; a TUI that uses only bare-\033[H homing is the accepted
+ * best-effort miss. Feed is resumable across read chunks. */
+struct hold_term_tui_detect {
+    unsigned char st;
+    unsigned param;
+    bool saw_digit;
+    bool tui; /* sticky: the stream has shown itself to be a terminal UI */
+};
+
+void hold_term_tui_feed(struct hold_term_tui_detect *d, const void *buf, size_t n);
+
 /* One drain step of a PTY master: reads once into buf[n], appends the bytes
  * to the indexed log, and returns them for caller fan-out (client, replay
- * ring, tty). Returns >0 bytes pumped; 0 when the target side is gone (EOF,
- * or EIO from a failed read after the last slave closed); -1 on a retryable
- * read error (errno preserved). */
+ * ring, tty). tui (optional) accumulates ANSI TUI detection across chunks;
+ * once it trips, the sidecar entries are tagged with the pty stream so the
+ * log is self-describing as a terminal recording. Returns >0 bytes pumped;
+ * 0 when the target side is gone (EOF, or EIO from a failed read after the
+ * last slave closed); -1 on a retryable read error (errno preserved). */
 ssize_t hold_term_pump_master(int master, int logfd, int logidxfd,
+                              struct hold_term_tui_detect *tui,
                               char *buf, size_t n);
 
 /* THE detach-key FSM (Ctrl-P Ctrl-Q by default at both call sites): input
- * bytes are fed one at a time; bytes that stop matching the chord are handed
+ * bytes are fed one at a time; bytes that stop matching a chord are handed
  * back through the sink in original order, a completed chord reports
- * *detached without forwarding, and a pending prefix left hanging is flushed
- * after HOLD_TERM_DETACH_FLUSH_USEC (drive it from poll via
- * hold_term_detach_timeout_ms: -1 = nothing pending, 0 = flush now). */
+ * through *completed without forwarding, and a pending prefix left hanging
+ * is flushed after HOLD_TERM_DETACH_FLUSH_USEC (drive it from poll via
+ * hold_term_detach_timeout_ms: -1 = nothing pending, 0 = flush now).
+ * An optional alternate chord (the attach client's Ctrl-P Ctrl-P time-travel
+ * double-tap, docs/future/playback.md) may share a prefix with the primary;
+ * *completed reports 1 for the primary chord, 2 for the alternate. */
 #define HOLD_TERM_DETACH_MAX_KEYS 8
 #define HOLD_TERM_DETACH_FLUSH_USEC 500000
 
 struct hold_term_detach {
     unsigned char keys[HOLD_TERM_DETACH_MAX_KEYS];
     size_t nkeys;
+    unsigned char alt_keys[HOLD_TERM_DETACH_MAX_KEYS];
+    size_t alt_nkeys;
     unsigned char pending[HOLD_TERM_DETACH_MAX_KEYS];
     size_t pending_len;
     int64_t deadline_usec;
@@ -58,8 +82,9 @@ struct hold_term_detach {
 typedef int (*hold_term_detach_sink)(void *ctx, const unsigned char *bytes, size_t n);
 
 void hold_term_detach_init(struct hold_term_detach *d, const unsigned char *keys, size_t nkeys);
+void hold_term_detach_set_alt(struct hold_term_detach *d, const unsigned char *keys, size_t nkeys);
 int hold_term_detach_feed(struct hold_term_detach *d, unsigned char c,
-                          hold_term_detach_sink sink, void *ctx, bool *detached);
+                          hold_term_detach_sink sink, void *ctx, int *completed);
 int hold_term_detach_flush(struct hold_term_detach *d, hold_term_detach_sink sink, void *ctx);
 int hold_term_detach_timeout_ms(const struct hold_term_detach *d);
 
