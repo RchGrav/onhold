@@ -183,7 +183,7 @@ int hold_proc_read_cmdline(pid_t pid, char ***argv_out, int *argc_out) {
     static char buf[65536];
     snprintf(path, sizeof(path), "/proc/%ld/cmdline", (long)pid);
     ssize_t nr = read_small_file(path, buf, sizeof(buf));
-    if (nr < 0) return -1;
+    if (nr <= 0) return -1; /* read_small_file maps an empty read to -1; nr>=1 here */
     int argc = 0;
     for (ssize_t i = 0; i < nr; i++)
         if (buf[i] == '\0') argc++;
