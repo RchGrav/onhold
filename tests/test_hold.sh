@@ -1142,6 +1142,74 @@ if 'FOLLOWING ACTIVE' not in final:
 PY
 }
 
+# Ctrl-H help scopes to the mode (playback spec: the overlay shows only the
+# keys that exist in the current kind/mode): playback help lists the
+# transport keys and no line-filtering keys.
+test_replay_help_overlay_lists_transport_keys() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'echo "help one"; echo "help two"; sleep 0.1' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  record_ended_soon "$id" || return 1
+  set +e
+  # Ctrl-H opens help in playback; any key dismisses it; Esc then leaves
+  # playback into browsing, and the final Esc quits.
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(0.6); w(b"\x08")
+time.sleep(0.4); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive --replay" >"$TEST_ROOT/replay-help.out" 2>"$TEST_ROOT/replay-help.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/replay-help.err" >&2; return 1; }
+  local plain="$TEST_ROOT/replay-help.plain"
+  python3 -c 'import re,sys; raw=open(sys.argv[1],"rb").read().decode("utf-8","ignore"); sys.stdout.write(re.sub(r"\x1b\[[0-9;?]*[A-Za-z~]","",raw).replace("\r",""))' "$TEST_ROOT/replay-help.out" >"$plain"
+  grep -q 'Fast-forward: 1, 2, 3, 4, 8, 16x' "$plain" || { cat "$plain" >&2; return 1; }
+  grep -q 'Stop / resume at 1x' "$plain" || { cat "$plain" >&2; return 1; }
+  ! grep -q 'Exclude lines like the selected line' "$plain" || { cat "$plain" >&2; return 1; }
+}
+
+# At the live tail the transport keys are live too: the help overlay must
+# say so (Space freezes the edge, `,` rewinds) instead of offering the
+# browse-mode zap that has no selection to act on.
+test_tail_help_overlay_lists_transport_keys() {
+  command -v script >/dev/null 2>&1 || skip "script not available"
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local out id rc
+  out=$("$HOLD_BIN" -d -- /bin/sh -c 'for i in $(seq 1 60); do echo "tail-help-$i"; sleep 0.05; done' 2>&1) || return 1
+  id=$(printf '%s\n' "$out" | extract_id)
+  [ -n "$id" ] || return 1
+  sleep 0.4
+  set +e
+  python3 -c 'import os,sys,time
+o=sys.stdout.buffer
+def w(b):
+  try: o.write(b); o.flush()
+  except OSError: pass
+time.sleep(0.6); w(b"\x08")
+time.sleep(0.4); w(b"\x1b")
+time.sleep(0.2); w(b"\x1b")
+time.sleep(0.1); os._exit(0)' |
+    pty_run "stty rows 24 cols 80; $HOLD_BIN logs $id --interactive" >"$TEST_ROOT/tail-help.out" 2>"$TEST_ROOT/tail-help.err"
+  rc=$?
+  set -e
+  "$HOLD_BIN" end "$id" >/dev/null 2>&1 || true
+  [ "$rc" -eq 0 ] || { cat "$TEST_ROOT/tail-help.err" >&2; return 1; }
+  local plain="$TEST_ROOT/tail-help.plain"
+  python3 -c 'import re,sys; raw=open(sys.argv[1],"rb").read().decode("utf-8","ignore"); sys.stdout.write(re.sub(r"\x1b\[[0-9;?]*[A-Za-z~]","",raw).replace("\r",""))' "$TEST_ROOT/tail-help.out" >"$plain"
+  grep -q 'Freeze the live edge' "$plain" || { cat "$plain" >&2; return 1; }
+  grep -q 'Rewind into the recorded history' "$plain" || { cat "$plain" >&2; return 1; }
+  ! grep -q 'Exclude lines like the selected line' "$plain" || { cat "$plain" >&2; return 1; }
+}
+
 # ANSI TUI detection (playback spec): a console workload that takes the
 # screen (alt-screen enter + cursor addressing) is tagged pty in the sidecar
 # by the broker, and the viewer announces a terminal recording. Esc leaves a
@@ -5259,6 +5327,8 @@ run_test "synthetic replay pipe sleeps rebuilt deltas and labels them" test_logs
 run_test "replay viewer steps the rate ladder and flashes the OSD" test_logs_replay_viewer_transport_rate_ladder_osd
 run_test "replay viewer labels reconstructed timing in the chrome" test_logs_replay_viewer_labels_reconstructed_timing
 run_test "live tail transport: Space pauses, comma rewinds, End resumes" test_logs_live_tail_transport_pause_rewind_resume
+run_test "playback help overlay lists transport keys, not filter keys" test_replay_help_overlay_lists_transport_keys
+run_test "live-tail help overlay lists the live transport keys" test_tail_help_overlay_lists_transport_keys
 run_test "TUI console workload is pty-tagged and announced as a recording" test_console_tui_workload_tagged_and_announced
 run_test "plain console output never misclassifies as a TUI recording" test_console_plain_output_never_misclassifies_as_tui
 run_test "attach Ctrl-P double-tap time-travels and returns, session never released" test_attach_double_ctrl_p_time_travel_round_trip

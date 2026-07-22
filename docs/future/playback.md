@@ -158,6 +158,32 @@ recovery degrades to rebuild); recovery/rebuild always writes v2. The CRC32
 is the "basic tiny hash": cheap to compute line-by-line on rescan, strong
 enough to anchor-match sequences for realignment.
 
+## Deferred (recorded 2026-07-22, polish pass — honest gaps, with reasons)
+
+- **In-viewer playback entry for a finished line log.** A finished log
+  opened with plain `hold logs <target>` has no keystroke that starts
+  playback; `--replay` is the entry. Reason: the canonical key map gives
+  every printable to type-to-filter and browse-mode Space to zap-exclude
+  (the map is the collision authority), so no non-colliding key exists
+  without a new ruling. Live tails (Space/`,` at the edge), screen
+  recordings (transport always live), and attached consoles (double-tap)
+  all have in-viewer entries.
+- **Keystrokes at live-tail-with-chrome are not forwarded to the held
+  process.** The entry-state clause says input is "suspended only while
+  you actually leave the live edge", but the later ruling "inside, every
+  key is the viewer's own — no prefix needed" governs: while the chrome is
+  up, keys are viewer keys even at the live edge. Typing to the program
+  means Esc (or the double-tap) back to the bare console — one keystroke.
+- **Interactive `--replay` of a line log renders page-anchored, not
+  byte-streamed.** The head reveals whole index records and the page
+  re-renders at its edge; recorded intra-line timing is honored between
+  records, exactly as the index stores it. The byte-for-byte pread walk is
+  the non-TTY pipe and the screen-recording path.
+- **The recovery ladder's "missing data MAY be inferred" is implemented
+  for timing only** (interpolated deltas between anchors, 50 ms steps past
+  the edges). Stream tags of unanchored lines default to stdout; nothing
+  else is invented.
+
 ## Honesty rules
 
 - Synthetic or recovered timing is labeled in the chrome — never presented

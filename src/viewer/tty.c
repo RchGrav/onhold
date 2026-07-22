@@ -1164,6 +1164,26 @@ static int render_help_overlay(const struct viewer_state *state, size_t body_row
         "Wheel       Scroll (spin faster, move faster)",
         "Esc         Quit",
     };
+    /* At the live tail the transport keys are live too (playback spec:
+     * transport during tail) — the help says so, and there is no zap line
+     * because the tail has no selection to zap. */
+    static const char *tail_lines[] = {
+        "Space       Freeze the live edge (playback, paused)",
+        ",           Rewind into the recorded history",
+        "Type        Filter as you type",
+        "Backspace   Relax the filter",
+        "Ctrl-R      Reset all filters",
+        "Up/PgUp     Browse back through matches",
+        "Home/End    Oldest page / live tail",
+        "Ctrl-G      Go to line number",
+        "Ctrl-L      Line numbers",
+        "Ctrl-T      Timestamps: off, time, date",
+        "Ctrl-U      Local, UTC, or elapsed timestamps",
+        "Ctrl-W      Wrap long lines",
+        "Ctrl-Y      Source column",
+        "Wheel       Scroll (spin faster, move faster)",
+        "Esc         Quit",
+    };
     /* Playback mode shows only the keys that exist in it: transport plus the
      * shared display toggles (one set of physics). */
     static const char *play_lines[] = {
@@ -1189,10 +1209,13 @@ static int render_help_overlay(const struct viewer_state *state, size_t body_row
         "Ctrl-U      UTC or local timestamps",
         "Esc         Leave",
     };
+    bool tailing = state->follow && state->at_live_edge && !state->play_mode;
     const char *const *lines = state->screen_kind ? screen_lines
-                               : state->play_mode ? play_lines : browse_lines;
+                               : state->play_mode ? play_lines
+                               : tailing          ? tail_lines : browse_lines;
     size_t n = state->screen_kind ? sizeof(screen_lines) / sizeof(screen_lines[0])
                : state->play_mode ? sizeof(play_lines) / sizeof(play_lines[0])
+               : tailing          ? sizeof(tail_lines) / sizeof(tail_lines[0])
                                   : sizeof(browse_lines) / sizeof(browse_lines[0]);
     size_t width = state->cols ? state->cols : 80;
     size_t blockw = 0;

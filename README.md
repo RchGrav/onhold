@@ -126,7 +126,15 @@ read without Hold's help.
 hold logs web               # full-screen viewer (filter as you type)
 hold logs -f web            # follow (tail is an alias)
 hold logs -p -n 100 web     # plain text, last 100 records
+hold logs --replay web      # play it back with its recorded timing
 ```
+
+Playback is a mode of the viewer: Space pauses and resumes, `.` and `,`
+step fast-forward and rewind through a 1-16x ladder, and transport is live
+while tailing — Space freezes the live edge, `,` rewinds mid-tail. To a
+non-TTY, `--replay` is a plain linear pipe. A damaged or missing sidecar
+index heals itself on read; reconstructed timing is labeled, never passed
+off as recorded.
 
 Output a program sends somewhere else on purpose — its own logfile, a
 redirect — is respected, not captured; `hold inspect` reports where the

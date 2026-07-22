@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased - Play it back
+
+### Added
+
+- Log playback: `hold logs <target> --replay` plays a finished (or live) log
+  back with its recorded timing. Playback is a mode of the viewer, one set
+  of physics: `Space` stops and resumes at 1x, `.` steps fast-forward
+  through 1-2-3-4-8-16x, `,` rewinds through the same ladder, Home/End
+  seek to the start of time and the live edge, and every mode change
+  flashes a corner indicator (`PLAY`, `PAUSED`, chevrons whose count reads
+  as speed). To a non-TTY, `--replay` is a plain linear pipe at 1x —
+  script-safe, no transport.
+- Transport is live while tailing: mid-tail, `Space` freezes the recorded
+  edge and `,` rewinds through the captured history; scrubbing back to the
+  live edge (End) resumes the tail.
+- Console time-travel: while attached, tap `Ctrl-P` twice to open the
+  viewer over the live console and rewind everything the broker recorded;
+  `Esc` or another double-tap returns to real time. The console is never
+  released — no detach event, nothing the held program can observe. The
+  lone-`Ctrl-P` flush and `Ctrl-P Ctrl-Q` detach are unchanged.
+- Terminal recordings: a console workload that takes the screen (alt-screen,
+  cursor addressing) is detected and pty-tagged in the sidecar. The viewer
+  announces "terminal recording" and offers screen physics — transport,
+  timestamps, seek — instead of line filtering; rewind repaints from the
+  nearest screen clear. Plain logs never misclassify.
+- The sidecar index self-heals on read: a corrupt index is realigned
+  against the log text by per-line CRC anchors (unanchored entries drop,
+  unanchored lines get interpolated timing); a missing index is rebuilt
+  with synthetic 50 ms timing from the log file's birth time. Reconstructed
+  timing is always labeled ("timing reconstructed"), never presented as
+  recorded.
+- Viewer keys: `Ctrl-G` go to line number, `Ctrl-L` line numbers, `Ctrl-U`
+  now cycles local, UTC, and elapsed-since-start timestamps. `Ctrl-H` help
+  lists exactly the keys that exist in the current mode — transport keys
+  appear in playback and at the live tail.
+
+### Changed
+
+- Sidecar v2 is what writers emit: 24-byte entries carrying a per-line
+  CRC32 and a full 64-bit nanosecond delta, plus a header hash for edit
+  detection. v1 sidecars stay readable and keep appending v1; any recovery
+  or rebuild upgrades them to v2 automatically.
+- Logs captured before 0.5 (no readable sidecar) open as plain text: the
+  index rebuilds synthetically, so they gain line numbers, elapsed
+  timestamps, and playback — labeled as reconstructed, since their timing
+  was never recorded.
+
 ## 0.6.1
 
 ### Fixed

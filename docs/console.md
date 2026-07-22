@@ -75,7 +75,15 @@ flowchart LR
 
 `run_native_console` checks that the socket path exists and is a socket, connects directly, and speaks On Hold's console attach protocol. For an interactive TTY it saves the current terminal settings, switches to raw mode, enters the alternate screen, forwards window-size changes to the PTY, and restores the original terminal state on detach or exit. Ctrl-P Ctrl-Q detaches without stopping the run. Non-TTY attaches stream stdin/stdout without screen switching.
 
-The broker keeps a small in-memory replay buffer of recent PTY output. When a client attaches or reattaches, the broker writes that replay first and then resumes live streaming. This gives an idle reattach something to draw on the fresh alternate screen without sending input to the target process. It is recent output replay, not a full terminal-emulator snapshot, so extremely old or very large screen histories may still require the program to redraw itself.
+The broker keeps a small in-memory replay buffer of recent PTY output. When a client attaches or reattaches, the broker writes that replay first and then resumes live streaming. This gives an idle reattach something to draw on the fresh alternate screen without sending input to the target process. It is recent output replay, not a full terminal-emulator snapshot — but the full indexed history is one Ctrl-P double-tap away (see Time-travel below), because the viewer walks the whole log, not the ring.
+
+## Time-travel: Ctrl-P twice
+
+While attached, tap `Ctrl-P` twice within half a second to jump into the log viewer over the same console. The jump is transparent: you are still watching real time, still tailing — the only change is the viewer's chrome appears. From there Space freezes the recorded edge, `,` rewinds through everything the broker teed to the indexed log, and `.` fast-forwards back toward now. `Esc` (or another double-tap) returns to the bare console at real time.
+
+The console is never released during the jump: the broker session persists, no detach event fires, and the held program can observe nothing. Input to the held process is suspended while the viewer is open; a lone `Ctrl-P` still reaches the program after the 500 ms pairing window, and `Ctrl-P Ctrl-Q` detach is unchanged.
+
+Console workloads that take the screen (alt-screen, cursor addressing) are detected and recorded as terminal recordings: the viewer announces "terminal recording" and offers transport and timestamps instead of line filtering, repainting rewinds from the nearest screen clear.
 
 ## Detach Without Stopping
 

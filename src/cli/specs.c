@@ -66,7 +66,7 @@ static const char help_tail[] =
 static const char help_logs[] =
     "Open the log viewer for a call. In a TTY, type directly in the full-screen viewer to filter dynamically; Backspace relaxes the filter, Space excludes lines like the highlighted line, and Ctrl-R resets filters. --replay plays the log back with its recorded timing (Space pause/resume, . fast-forward, , rewind); to a non-TTY it is a plain linear pipe. Non-TTY output stays script-friendly; -p/--print/--plain always dumps plain text.\n";
 static const char help_attach[] =
-    "Pick a running console/TTY call back up. Detach again with Ctrl-P Ctrl-Q. Start attachable calls with hold -it <cmd>. (console is an alias of attach.)\n";
+    "Pick a running console/TTY call back up. Detach again with Ctrl-P Ctrl-Q. Tap Ctrl-P twice to time-travel: the log viewer opens over the live console (pause, rewind, replay everything recorded) and Esc or another double-tap returns to real time — the console is never released. Start attachable calls with hold -it <cmd>. (console is an alias of attach.)\n";
 static const char help_view[] =
     "Internal regression/debug entrypoint for the log viewer engine. The product UX is hold logs <target>, then type inside the full-screen viewer to filter dynamically.\n";
 static const char help_purge[] =

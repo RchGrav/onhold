@@ -56,6 +56,15 @@ anything can read a call's log without Hold's help. Plain output never
 requires the sidecar; the viewer's timestamps and source filters come only
 from it.
 
+Writers emit sidecar v2 (24-byte entries with a per-line CRC32 and a
+64-bit ns delta); v1 sidecars stay readable and keep appending v1. The
+sidecar self-heals on read: a corrupt index is realigned against the log
+text by its per-line CRC anchors, a missing one is rebuilt with synthetic
+50 ms timing from the file's birth time, and either path rewrites the
+index as v2. Reconstructed timing is always labeled ("timing
+reconstructed"), never presented as recorded; the raw log stays the sole
+source of truth.
+
 ## Safety invariants
 
 - Every managed call gets its own process group and session.

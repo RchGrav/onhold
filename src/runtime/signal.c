@@ -619,7 +619,7 @@ static int replay_log_pipe(const char *log_path, int log_fd) {
 
 /* ---- logs command entry -------------------------------------------------- */
 
-static const char view_usage[] = "usage: hold logs <target> [--follow|-f] [--replay] [--plain|--interactive]\n";
+static const char view_usage[] = "usage: hold logs <target> [--follow|-f] [--replay] [--tail|-n N] [--plain|-p|--interactive]\n";
 
 static int view_usage_err(void) {
     fputs(view_usage, stderr);
