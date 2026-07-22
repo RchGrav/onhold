@@ -52,10 +52,29 @@ viewer means the same thing here):
 | monotonic display | same keystroke family as the viewer |
 | Esc / q | leave playback, exactly as the viewer quits |
 
-Rate model: multistep — each `.` press steps the playback rate up through a
-ladder (e.g. 1x → 2x → 4x → 8x → 16x), each `,` steps down/back through
-rewind rates; Space always returns to paused/1x resume. Rewind on a PTY
+Rate model: multistep — each `.` press steps the playback rate up through
+the ladder **1x → 2x → 3x → 4x → 8x → 16x**, each `,` steps the rewind
+ladder likewise; Space always returns to paused/1x resume. Rewind on a PTY
 stream repaints via replay-from-nearest-clear (decision 5, registry).
+
+### Mode-change OSD (Rich, 2026-07-22 — verbatim requirement)
+
+Every playback mode change (rate step, play, stop) flashes an on-screen
+indicator in the **upper right corner**: blank out **7 characters of the
+top row and the second-to-top row**, and center the indicator text in that
+blanked area. It shows for **2 seconds**, then the display returns to
+normal (the blanked characters restore).
+
+| state | indicator |
+| --- | --- |
+| play at 1x | `PLAY` |
+| paused | `PAUSED` |
+| FF 2x / 3x / 4x / 8x / 16x | `▶▶` `▶▶▶` `▶▶▶▶` `▶▶▶▶▶` `▶▶▶▶▶▶` |
+| RW 2x / 3x / 4x / 8x / 16x | `◀◀` `◀◀◀` `◀◀◀◀` `◀◀◀◀◀` `◀◀◀◀◀◀` |
+
+(Chevron count = ladder position + 1, so the glyph itself reads as speed.
+`PAUSED` is 6 characters and the widest chevron run is 6 — both center in
+the 7-character blank with a space to spare.)
 
 ## Sidecar recovery (self-healing index)
 
