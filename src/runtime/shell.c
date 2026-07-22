@@ -7,6 +7,7 @@
 #include "hold/console.h"
 #include "hold/console_internal.h"
 #include "hold/observe.h"
+#include "hold/term.h"
 
 struct shell_raw_terminal {
     struct termios original;
@@ -78,55 +79,32 @@ static void shell_close_stdio_to_devnull(void) {
 }
 #endif
 
-static int open_pty_master(char *slave_path, size_t slave_path_n) {
-    int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
-    if (master < 0) return -1;
-    if (grantpt(master) != 0 || unlockpt(master) != 0) {
-        int saved = errno;
-        close(master);
-        errno = saved;
-        return -1;
+/* The session shell rides the one spawn engine (term/spawn); if the user's
+ * shell cannot be spawned the session falls back to /bin/sh, preserving the
+ * old in-child exec ladder's behavior. */
+static int spawn_shell_session(const char *shell,
+                               unsigned short rows,
+                               unsigned short cols,
+                               int *master_out,
+                               pid_t *child_out) {
+    char *shell_argv[2] = {(char *)shell, NULL};
+    struct hold_term_spawn spec = {
+        .argv = shell_argv,
+        .exec_path = shell,
+        .rows = rows,
+        .cols = cols,
+    };
+    if (hold_term_pty_spawn(&spec, master_out, child_out) == 0) {
+        return 0;
     }
-    char *name = ptsname(master);
-    if (!name || hold_checked_snprintf(slave_path, slave_path_n, "%s", name) != 0) {
-        int saved = errno ? errno : ENAMETOOLONG;
-        close(master);
-        errno = saved;
-        return -1;
-    }
-    return master;
-}
-
-static void apply_window_size(int master) {
-    if (!isatty(STDOUT_FILENO)) return;
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
-        ioctl(master, TIOCSWINSZ, &ws);
-    }
-}
-
-static int spawn_shell_child(int master, const char *slave_path, const char *shell) {
-    pid_t child = fork();
-    if (child < 0) return -1;
-    if (child == 0) {
-        close(master);
-        if (setsid() < 0) _exit(127);
-        int slave = open(slave_path, O_RDWR);
-        if (slave < 0) _exit(127);
-#ifdef TIOCSCTTY
-        ioctl(slave, TIOCSCTTY, 0);
-#endif
-        if (dup2(slave, STDIN_FILENO) < 0 ||
-            dup2(slave, STDOUT_FILENO) < 0 ||
-            dup2(slave, STDERR_FILENO) < 0) {
-            _exit(127);
-        }
-        if (slave > STDERR_FILENO) close(slave);
-        execl(shell, shell, (char *)NULL);
-        execl("/bin/sh", "sh", (char *)NULL);
-        _exit(127);
-    }
-    return child;
+    char *sh_argv[2] = {"sh", NULL};
+    struct hold_term_spawn fallback = {
+        .argv = sh_argv,
+        .exec_path = "/bin/sh",
+        .rows = rows,
+        .cols = cols,
+    };
+    return hold_term_pty_spawn(&fallback, master_out, child_out);
 }
 
 #if defined(__linux__)
@@ -244,11 +222,11 @@ static void shell_background_logger(int master, const char *log_path, pid_t shel
             ready = poll(&pfd, 1, 200);
         } while (ready < 0 && errno == EINTR);
         if (ready > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+            /* The one master pump: bytes land in the indexed log; 0 means the
+             * adopted side is gone (EOF, or EIO after the last slave closed). */
             char buf[4096];
-            ssize_t n = read(master, buf, sizeof(buf));
-            if (n > 0) {
-                (void)hold_write_indexed_log_bytes_fd(fd, idxfd, "stdout", buf, (size_t)n);
-            } else if (n == 0 || (n < 0 && errno != EINTR)) {
+            ssize_t n = hold_term_pump_master(master, fd, idxfd, buf, sizeof(buf));
+            if (n == 0 || (n < 0 && errno != EINTR)) {
                 break;
             }
         }
@@ -645,13 +623,16 @@ static int relay_shell_pty(int master, pid_t child, bool *detached) {
 }
 
 int hold_cmd_shell_action(const struct hold_invocation *inv, const struct hold_store *store) {
-    char slave_path[HOLD_PATH_MAX];
     const char *shell = resolve_user_shell();
-    int master = open_pty_master(slave_path, sizeof(slave_path));
-    if (master < 0) {
-        hold_die_errno("hold: failed to allocate shell PTY");
+
+    /* Size the session PTY from the invoking terminal; when there is none the
+     * spawn engine presets 80x24 rather than the kernel's 0x0. */
+    unsigned short rows = 0, cols = 0;
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+        rows = ws.ws_row;
+        cols = ws.ws_col;
     }
-    apply_window_size(master);
 
     /* The shell (and anything it launches) inherits HOLD_ON_PID so a `hold off`
      * run from inside the session can find and signal this proxy. */
@@ -670,11 +651,9 @@ int hold_cmd_shell_action(const struct hold_invocation *inv, const struct hold_s
             "Hold is now active. Ctrl-P Ctrl-Q puts the foreground program on hold; "
             "'hold off' or exit ends the session.\n");
 
-    pid_t child = spawn_shell_child(master, slave_path, shell);
-    if (child < 0) {
-        int saved = errno;
-        close(master);
-        errno = saved;
+    int master = -1;
+    pid_t child = -1;
+    if (spawn_shell_session(shell, rows, cols, &master, &child) != 0) {
         hold_die_errno("hold: failed to start shell");
     }
 
