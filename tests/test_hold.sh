@@ -3186,7 +3186,10 @@ test_rename_saves_an_unsaved_call() {
 
 test_redial_honors_recorded_foreground_mode() {
   local out
-  "$HOLD_BIN" --name fgredial -- /bin/sh -c 'echo fg-redial-hit' >/dev/null 2>&1 || return 1
+  # A brief tail on the recipe so the foreground stream is deterministically
+  # observable before the child exits (siblings below do the same); the test
+  # pins redial honoring the foreground MODE, not zero-latency capture.
+  "$HOLD_BIN" --name fgredial -- /bin/sh -c 'echo fg-redial-hit; sleep 0.2' >/dev/null 2>&1 || return 1
   # Foreground recipe: redial streams the output and prints no id of its own.
   out=$("$HOLD_BIN" fgredial 2>/dev/null) || return 1
   printf '%s\n' "$out" | grep -q 'fg-redial-hit' || { echo "foreground redial did not stream output: [$out]" >&2; return 1; }
