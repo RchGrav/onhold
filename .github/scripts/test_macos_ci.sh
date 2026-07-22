@@ -40,7 +40,7 @@ run_native_smoke() {
     fail "macOS smoke logs did not capture stdout"
   }
   env HOME="$home" ./hold inspect "$id" >"$tmp/inspect.json"
-  grep -Fq '"Name": "mac-smoke"' "$tmp/inspect.json" || {
+  grep -Fq '"name": "mac-smoke"' "$tmp/inspect.json" || {
     cat "$tmp/inspect.json" >&2
     fail "macOS smoke inspect did not preserve the call name"
   }
