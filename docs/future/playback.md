@@ -13,14 +13,22 @@ places with one set of physics:
 2. **During tail/follow** — the transport keys are live while tailing: `.`
    `,` Space scrub the recorded history mid-tail; returning to the live
    edge resumes the tail.
-3. **Attached to a live console (time-travel)** — `Ctrl-P Ctrl-W` freezes
-   the console: the live view pauses, input to the held process is
-   suspended, and the same transport keys scrub back through what the
-   broker already teed to the indexed log. **Return to real time by either
-   scrubbing forward to the realtime edge or pressing the freeze sequence
-   again** — the live edge is never more than one gesture away. (Ctrl-P is
-   already the detach prefix; the FSM grows one more suffix: Q detaches,
-   W freezes. The lone-Ctrl-P 500 ms flush rule is unchanged.)
+3. **Attached to a live console (time-travel)** — `Ctrl-P Ctrl-L` (revised
+   from Ctrl-W per Rich, 2026-07-22: W reads as the viewer's wrap toggle;
+   L matches the verb — you are dropping into `hold logs`' viewer; and
+   Ctrl-P Ctrl-P stays reserved for sending a literal Ctrl-P, which
+   emacs-bound shells need constantly). The sequence does not bolt scrub
+   controls into attach — it **enters the log viewer** over the same
+   indexed log, paused at the live edge, input to the held process
+   suspended. There is ONE playback implementation and it lives in the
+   viewer; attach merely switches surfaces. Inside, every key is the
+   viewer's own — no prefix needed, exactly as in normal `hold logs`.
+   **Return to real time by scrubbing forward to the realtime edge or by
+   quitting the viewer surface** (and `Ctrl-P Ctrl-L` from tail-follow
+   context is a no-op-friendly synonym where applicable) — the live edge
+   is never more than one gesture away. The detach FSM grows the one
+   suffix: Q detaches, L freezes-into-viewer. The lone-Ctrl-P 500 ms
+   flush rule is unchanged.
 
 ## ANSI TUI detection and recording
 
