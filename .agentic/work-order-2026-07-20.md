@@ -1,6 +1,19 @@
 # Work order — deep-dive findings and repair plan (2026-07-20)
 
-## PLAYBACK CAMPAIGN IN FLIGHT (2026-07-22) — resume here if cut off
+## PLAYBACK CAMPAIGN COMPLETE (2026-07-22) — WO-6 SHIPPED
+
+All four generations landed and validated (Phase 2 ledger): sidecar v2 +
+self-healing recovery cd59fad (162/0, Darwin-checked); transport b88eda5
+(--replay, tail scrub, chevron OSD, 168/0, Darwin); time-travel 33b12dd
+(Ctrl-P double-tap into the viewer, pty tagging, nearest-clear repaint,
+172/0, Darwin — correctly applied the spec over its stale brief); polish
+748b63d (mode-scoped help, honest Deferred section in the spec, docs +
+release notes; CONFIRMED-WITH-CORRECTION 6fec6d0 — suite is 174/0, the
+builder grep-counted PASS lines). Final: Linux 174/0/0, tree 13,282
+(11,771 + ~1,511 of WO-6 feature). Deferrals recorded in
+docs/future/playback.md "Deferred". WO-6 items struck below as landed.
+
+## (superseded) PLAYBACK CAMPAIGN IN FLIGHT (2026-07-22)
 
 Phase 2 rewrite COMPLETE and sealed (11,771 lines; Linux 160/0/0, macOS
 141/2/17 WO-8-proofs-only; ten generations, all validator-confirmed —
