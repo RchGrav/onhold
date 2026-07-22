@@ -5,9 +5,9 @@
 #include "hold/config.h"
 #include "hold/types.h"
 
-/* Live observation of a call's process group through /proc. Every function here
- * reads only kernel-exported state (never signals or ptrace) and is a no-op
- * that reports "nothing observed" on platforms without /proc. This is the one
+/* Live observation of a call's process group, orchestrated over platform's
+ * /proc-shaped primitives (never signals or ptrace); a no-op that reports
+ * "nothing observed" on platforms without /proc. This is the one
  * implementation behind the PORTS column, `hold ports`, and `hold stats`. */
 
 /* A growable list of formatted listening endpoints, e.g. "127.0.0.1:8080/tcp". */
@@ -16,19 +16,6 @@ struct hold_port_list {
     size_t count;
 };
 void hold_port_list_free(struct hold_port_list *list);
-
-/* Read pgid / sid / run-state from /proc/<pid>/stat. Any out pointer may be
- * NULL. Returns 0 on success, -1 with errno set otherwise. */
-int hold_proc_read_ids(pid_t pid, pid_t *pgid_out, pid_t *sid_out, char *state_out);
-
-/* Read a process's cumulative CPU jiffies (utime+stime) and resident set size
- * in bytes. Returns 0 on success, -1 otherwise. */
-int hold_proc_read_cpu_rss(pid_t pid, uint64_t *cpu_ticks_out, uint64_t *rss_bytes_out);
-
-/* Resolve where a live process's fd points (readlink /proc/<pid>/fd/<fd>),
- * mapping Hold's capture pipes to the stable label "pipe:hold". Returns 0 on
- * success. */
-int hold_proc_fd_target(pid_t pid, int fd, char *out, size_t n);
 
 /* Collect the non-zombie pids that belong to the call's process group
  * (matching both pgid and sid). Caller frees *pids_out with free(). *denied is
