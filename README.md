@@ -1,5 +1,8 @@
 # Hold On
 
+[![CI](https://github.com/RchGrav/HoldOn/actions/workflows/ci.yml/badge.svg)](https://github.com/RchGrav/HoldOn/actions/workflows/ci.yml)
+[![Multi-arch Release](https://github.com/RchGrav/HoldOn/actions/workflows/release.yml/badge.svg)](https://github.com/RchGrav/HoldOn/actions/workflows/release.yml)
+
 `nohup` says *no hang-up*: abandon the call gracefully. Hold says **hold on**:
 the line stays open.
 
